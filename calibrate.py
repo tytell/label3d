@@ -3,9 +3,21 @@ import platform
 import logging
 from typing import Callable, List, Optional, Tuple
 
+import qtpy
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import QEvent, Qt
-from qtpy.QtWidgets import QApplication, QMainWindow, QMessageBox
+from qtpy.QtWidgets import QApplication, QMainWindow, QMessageBox, QDockWidget, QAction
+
+from widgets.docks import ParameterDock
+
+parameterDefinitions = [
+    {'name': 'Calibration', 'type': 'group', 'children': [
+        {'name': 'Get calibration...', 'type': 'action'},
+        {'name': 'Calibration file', 'type': 'str', 'readonly': True},
+    ]},
+    {'name':'thing', 'type':'int', 'value':12},
+    {'name':'stuff', 'type':'int', 'value':13},
+]
 
 class MainWindow(QMainWindow):
 
@@ -23,6 +35,43 @@ class MainWindow(QMainWindow):
                 of stored preferences.
         """
         super(MainWindow, self).__init__(*args, **kwargs)
+
+        self._create_actions()
+        self._create_menus()
+        self._create_dock_window()
+
+    def _create_actions(self):
+        self.newProjectAction = QAction("&New Project", self)
+        self.openProjectAction = QAction("&Open Project...", self)
+        
+        self.quitAction = QAction("&Quit", self)
+        self.quitAction.triggered.connect(self.close)
+
+    def _create_menus(self):
+
+        ### File Menu ###
+
+        fileMenu = self.menuBar().addMenu("File")
+        fileMenu.addAction(self.newProjectAction)
+        fileMenu.addAction(self.openProjectAction)
+        
+        fileMenu.addSeparator()
+        self.addAction(self.quitAction)
+
+        ### View Menu ###
+
+        viewMenu = self.menuBar().addMenu("View")
+        self.viewMenu = viewMenu  # store as attribute so docks can add items
+
+    def _create_dock_window(self):
+        self.dock = ParameterDock("Parameters", self, parameterDefinitions)
+        self.params = self.dock.parameters
+        
+    def newProject(self):
+        pass
+
+    def openProject(self):
+        pass
 
 def create_app():
     """Creates Qt application."""
@@ -42,6 +91,7 @@ def main(args: Optional[list] = None):
 
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
     logging.debug("Started!")
+    logging.debug("qtpy API: {}".format(qtpy.API_NAME))
 
     if platform.system() == "Darwin":
         # TODO: Remove this workaround when we update to qtpy >= 5.15.
