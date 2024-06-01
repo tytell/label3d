@@ -17,8 +17,7 @@ from qtpy.QtGui import (
 from widgets.docks import ParameterDock
 from widgets.video import VideoDock
 
-# from sleap.io.video import Video
-# from sleap.gui.widgets.video import QtVideoPlayer
+from settings import SETTINGS_FILE
 
 parameterDefinitions = [
     {'name': 'Calibration', 'type': 'group', 'children': [
@@ -39,6 +38,7 @@ class MainWindow(QMainWindow):
         super(MainWindow, self).__init__(*args, **kwargs)
 
         self.setWindowTitle("Label 3D")
+        self.setObjectName("Label3DMainWindow")
 
         self._create_actions()
         self._create_menus()
@@ -47,6 +47,8 @@ class MainWindow(QMainWindow):
 
         self._create_video_windows()
         self._create_dock_windows()
+
+        self.readSettings()
 
     def _create_actions(self):
         self.newProjectAction = QAction("&New Project", self)
@@ -62,6 +64,7 @@ class MainWindow(QMainWindow):
     def _create_toolbars(self):
         vidtoolbar = QToolBar("Video")
         vidtoolbar.addAction(self.zoomAction)
+        vidtoolbar.setObjectName("VideoToolBar")
 
         self.addToolBar(vidtoolbar)
         
@@ -100,6 +103,28 @@ class MainWindow(QMainWindow):
     def openProject(self):
         pass
 
+    def readSettings(self):
+        settings = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+
+        settings.beginGroup("MainWindow")
+        self.restoreGeometry(settings.value("geometry"))
+        self.restoreState(settings.value("windowState"))
+        settings.endGroup()
+
+    def writeSettings(self):
+        settings = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
+
+        logging.debug('Writing settings!')
+
+        settings.beginGroup("MainWindow")
+        settings.setValue("geometry", self.saveGeometry())
+        settings.setValue("windowState", self.saveState())
+        settings.endGroup()
+
+    def closeEvent(self, event):
+        self.writeSettings()
+        event.accept()
+
 def create_app():
     """Creates Qt application."""
 
@@ -130,7 +155,8 @@ def main(args: Optional[list] = None):
     app = create_app()
 
     window = MainWindow()
-    window.showMaximized()
+    window.show()
+    # window.showMaximized()
 
     app.exec_()
 
