@@ -9,6 +9,10 @@ from qtpy.QtCore import QEvent, Qt
 from qtpy.QtWidgets import QApplication, QMainWindow, QMessageBox, QDockWidget, QAction
 
 from widgets.docks import ParameterDock
+from widgets.video import VideoDock
+
+# from sleap.io.video import Video
+# from sleap.gui.widgets.video import QtVideoPlayer
 
 parameterDefinitions = [
     {'name': 'Calibration', 'type': 'group', 'children': [
@@ -26,19 +30,12 @@ class MainWindow(QMainWindow):
         *args,
         **kwargs,
     ):
-        """Initialize the app.
-
-        Args:
-            labels_path: Path to saved :class:`Labels` dataset.
-            reset: If `True`, reset preferences to default (including window state).
-            no_usage_data: If `True`, launch GUI without sharing usage data regardless
-                of stored preferences.
-        """
         super(MainWindow, self).__init__(*args, **kwargs)
 
         self._create_actions()
         self._create_menus()
-        self._create_dock_window()
+        self._create_video_windows()
+        self._create_dock_windows()
 
     def _create_actions(self):
         self.newProjectAction = QAction("&New Project", self)
@@ -63,10 +60,14 @@ class MainWindow(QMainWindow):
         viewMenu = self.menuBar().addMenu("View")
         self.viewMenu = viewMenu  # store as attribute so docks can add items
 
-    def _create_dock_window(self):
-        self.dock = ParameterDock("Parameters", self, parameterDefinitions)
-        self.params = self.dock.parameters
-        
+    def _create_video_windows(self):
+        self.videodock = []
+        self.videodock.append(VideoDock(name="test", main_window=self))
+
+    def _create_dock_windows(self):
+        self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)
+        self.params = self.parameterdock.parameters
+
     def newProject(self):
         pass
 
@@ -92,6 +93,7 @@ def main(args: Optional[list] = None):
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
     logging.debug("Started!")
     logging.debug("qtpy API: {}".format(qtpy.API_NAME))
+    logging.debug("Qt: v {}".format(QtCore._qt_version))
 
     if platform.system() == "Darwin":
         # TODO: Remove this workaround when we update to qtpy >= 5.15.
