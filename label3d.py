@@ -6,7 +6,13 @@ from typing import Callable, List, Optional, Tuple
 import qtpy
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import QEvent, Qt
-from qtpy.QtWidgets import QApplication, QMainWindow, QMessageBox, QDockWidget, QAction
+from qtpy.QtWidgets import (
+    QApplication, QMainWindow, QMessageBox, 
+    QDockWidget, QAction, QToolBar, QLabel, QStatusBar,
+)
+from qtpy.QtGui import (
+    QKeySequence
+)
 
 from widgets.docks import ParameterDock
 from widgets.video import VideoDock
@@ -32,8 +38,13 @@ class MainWindow(QMainWindow):
     ):
         super(MainWindow, self).__init__(*args, **kwargs)
 
+        self.setWindowTitle("Label 3D")
+
         self._create_actions()
         self._create_menus()
+
+        self._create_toolbars()
+
         self._create_video_windows()
         self._create_dock_windows()
 
@@ -44,6 +55,16 @@ class MainWindow(QMainWindow):
         self.quitAction = QAction("&Quit", self)
         self.quitAction.triggered.connect(self.close)
 
+        self.zoomAction = QAction("&Zoom", self)
+        self.zoomAction.setCheckable(True)
+        self.zoomAction.setShortcut(QKeySequence("z"))
+
+    def _create_toolbars(self):
+        vidtoolbar = QToolBar("Video")
+        vidtoolbar.addAction(self.zoomAction)
+
+        self.addToolBar(vidtoolbar)
+        
     def _create_menus(self):
 
         ### File Menu ###
@@ -63,6 +84,11 @@ class MainWindow(QMainWindow):
     def _create_video_windows(self):
         self.videodock = []
         self.videodock.append(VideoDock(name="test", main_window=self))
+
+        self.activeVideo = 0
+        for vid in self.videodock:
+            self.zoomAction.toggled.connect(vid.view.set_zoom)
+            vid.view.zoomModeChanged.connect(self.zoomAction.setChecked)
 
     def _create_dock_windows(self):
         self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)

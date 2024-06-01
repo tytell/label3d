@@ -1,12 +1,13 @@
 import os
 from typing import Callable, List, Optional, Tuple, Union
 import numpy as np
+import logging
 
 import qtpy
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import (
     QEvent, Qt,
-    QRectF
+    QRectF, Slot
 )
 from qtpy.QtWidgets import (
     QApplication, QMainWindow, QMessageBox, QDockWidget, 
@@ -29,6 +30,8 @@ from qtpy.QtGui import (
     QTransform,
 )
 
+logger = logging.getLogger(__name__)
+
 def get_package_file(filename: str) -> str:
     """Returns full path to specified file within sleap package."""
     
@@ -38,17 +41,17 @@ def get_package_file(filename: str) -> str:
 
 class GraphicsView(QGraphicsView):
   
-    # updatedViewer = QtCore.Signal()
-    # updatedSelection = QtCore.Signal()
-    # instanceDoubleClicked = QtCore.Signal(Instance, QMouseEvent)
-    # areaSelected = QtCore.Signal(float, float, float, float)
-    # pointSelected = QtCore.Signal(float, float)
-    # leftMouseButtonPressed = QtCore.Signal(float, float)
-    # rightMouseButtonPressed = QtCore.Signal(float, float)
-    # leftMouseButtonReleased = QtCore.Signal(float, float)
-    # rightMouseButtonReleased = QtCore.Signal(float, float)
-    # leftMouseButtonDoubleClicked = QtCore.Signal(float, float)
-    # rightMouseButtonDoubleClicked = QtCore.Signal(float, float)
+    updatedViewer = QtCore.Signal()
+    updatedSelection = QtCore.Signal()
+    areaSelected = QtCore.Signal(float, float, float, float)
+    pointSelected = QtCore.Signal(float, float)
+    leftMouseButtonPressed = QtCore.Signal(float, float)
+    rightMouseButtonPressed = QtCore.Signal(float, float)
+    leftMouseButtonReleased = QtCore.Signal(float, float)
+    rightMouseButtonReleased = QtCore.Signal(float, float)
+    leftMouseButtonDoubleClicked = QtCore.Signal(float, float)
+    rightMouseButtonDoubleClicked = QtCore.Signal(float, float)
+    zoomModeChanged = QtCore.Signal(bool)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -71,7 +74,7 @@ class GraphicsView(QGraphicsView):
         self.canZoom = True
         self.canPan = True
         self.click_mode = ""
-        self.in_zoom = False
+        self.zoom_mode = ""
 
         self.zoomFactor = 1
         anchor_mode = QGraphicsView.AnchorUnderMouse
@@ -90,6 +93,16 @@ class GraphicsView(QGraphicsView):
     # def dropEvent(self, event):
     #     if self.parentWidget():
     #         self.parentWidget().dropEvent(event)
+
+    @Slot(bool)
+    def set_zoom(self, on):
+        if on:
+            self.zoom_mode = "button"
+            self.click_mode = "area"
+        else:
+            self.zoom_mode = ""
+
+        logger.debug("Zoom {}".format(on))
 
     def hasImage(self) -> bool:
         """Returns whether or not the scene contains an image pixmap."""
@@ -173,253 +186,128 @@ class GraphicsView(QGraphicsView):
         self.setTransform(transform)
         # self.updatedViewer.emit()
 
-    # @property
-    # def instances(self) -> List["QtInstance"]:
-    #     """
-    #     Returns a list of instances.
+    def resizeEvent(self, event):
+        """Maintain current zoom on resize."""
+        self.updateViewer()
 
-    #     Order should match the order in which instances were added to scene.
-    #     """
-    #     return list(filter(lambda x: not x.predicted, self.all_instances))
+    def mousePressEvent(self, event):
+        """Start mouse pan or zoom mode."""
+        scenePos = self.mapToScene(event.pos())
+        # keep track of click location
+        self._down_pos = event.pos()
+        # behavior depends on which button is pressed
+        if event.button() == Qt.LeftButton:
 
-    # @property
-    # def predicted_instances(self) -> List["QtInstance"]:
-    #     """
-    #     Returns a list of predicted instances.
+            if event.modifiers() == Qt.NoModifier:
+                if self.click_mode == "area":
+                    self.setDragMode(QGraphicsView.RubberBandDrag)
+                elif self.click_mode == "point":
+                    self.setDragMode(QGraphicsView.NoDrag)
+                elif self.canPan:
+                    self.setDragMode(QGraphicsView.ScrollHandDrag)
 
-    #     Order should match the order in which instances were added to scene.
-    #     """
-    #     return list(filter(lambda x: x.predicted, self.all_instances))
+            elif event.modifiers() == Qt.AltModifier:
+                if self.canZoom:
+                    self.zoom_mode = "alt"
+                    self.zoomModeChanged.emit(True)
+                    self.setDragMode(QGraphicsView.RubberBandDrag)
 
-    # @property
-    # def selectable_instances(self) -> List["QtInstance"]:
-    #     """
-    #     Returns a list of instances which user can select.
+            self.leftMouseButtonPressed.emit(scenePos.x(), scenePos.y())
 
-    #     Order should match the order in which instances were added to scene.
-    #     """
-    #     return list(filter(lambda x: x.selectable, self.all_instances))
+        elif event.button() == Qt.RightButton:
+            self.rightMouseButtonPressed.emit(scenePos.x(), scenePos.y())
+        QGraphicsView.mousePressEvent(self, event)
 
-    # @property
-    # def all_instances(self) -> List["QtInstance"]:
-    #     """
-    #     Returns a list of all `QtInstance` objects in scene.
+    def mouseReleaseEvent(self, event):
+        """Stop mouse pan or zoom mode (apply zoom if valid)."""
+        QGraphicsView.mouseReleaseEvent(self, event)
+        scenePos = self.mapToScene(event.pos())
 
-    #     Order should match the order in which instances were added to scene.
-    #     """
-    #     scene_items = self.scene.items(Qt.SortOrder.AscendingOrder)
-    #     return list(filter(lambda x: isinstance(x, QtInstance), scene_items))
+        # check if mouse moved during click
+        has_moved = event.pos() != self._down_pos
+        if event.button() == Qt.LeftButton:
 
-    # def selectInstance(self, select: Union[Instance, int]):
-    #     """
-    #     Select a particular instance in view.
+            if has_moved and self.zoom_mode != "":
+                # if self.zoom_mode == "alt":
+                self.zoom_mode = ""
+                self.click_mode = ""
+                self.zoomModeChanged.emit(False)
 
-    #     Args:
-    #         select: Either `Instance` or index of instance in view.
+                zoom_rect = self.scene.selectionArea().boundingRect()
+                self.scene.setSelectionArea(QPainterPath())  # clear selection
+                self.zoomToRect(zoom_rect)
 
-    #     Returns:
-    #         None
-    #     """
-    #     for idx, instance in enumerate(self.all_instances):
-    #         instance.selected = select == idx or select == instance.instance
-    #     self.updatedSelection.emit()
+            elif self.click_mode == "":
+                # Check if this was just a tap (not a drag)
+                pass
 
-    # def getSelectionIndex(self) -> Optional[int]:
-    #     """Returns the index of the currently selected instance.
-    #     If no instance selected, returns None.
-    #     """
-    #     instances = self.all_instances
-    #     if len(instances) == 0:
-    #         return None
-    #     for idx, instance in enumerate(instances):
-    #         if instance.selected:
-    #             return idx
+            elif self.click_mode == "area":
+                # Check if user was selecting rectangular area
+                selection_rect = self.scene.selectionArea().boundingRect()
 
-    # def getSelectionInstance(self) -> Optional[Instance]:
-    #     """Returns the currently selected instance.
-    #     If no instance selected, returns None.
-    #     """
-    #     instances = self.all_instances
-    #     if len(instances) == 0:
-    #         return None
-    #     for idx, instance in enumerate(instances):
-    #         if instance.selected:
-    #             return instance.instance
+                self.areaSelected.emit(
+                    selection_rect.left(),
+                    selection_rect.top(),
+                    selection_rect.right(),
+                    selection_rect.bottom(),
+                )
+            elif self.click_mode == "point":
+                self.pointSelected.emit(scenePos.x(), scenePos.y())
 
-    # def getTopInstanceAt(self, scenePos) -> Optional[Instance]:
-    #     """Returns topmost instance at position in scene."""
-    #     # Get all items at scenePos
-    #     clicked = self.scene.items(scenePos, Qt.IntersectsItemBoundingRect)
+            self.unsetCursor()
 
-    #     # Filter by selectable instances
-    #     def is_selectable(item):
-    #         return type(item) == QtInstance and item.selectable
+            # finish drag
+            self.setDragMode(QGraphicsView.NoDrag)
+            # pass along event
+            self.leftMouseButtonReleased.emit(scenePos.x(), scenePos.y())
+        elif event.button() == Qt.RightButton:
 
-    #     clicked = list(filter(is_selectable, clicked))
+            self.setDragMode(QGraphicsView.NoDrag)
+            self.rightMouseButtonReleased.emit(scenePos.x(), scenePos.y())
 
-    #     if len(clicked):
-    #         return clicked[0].instance
+    def mouseMoveEvent(self, event):
+        QGraphicsView.mouseMoveEvent(self, event)
 
-    #     return None
+    def zoomToRect(self, zoom_rect: QRectF):
+        """
+        Method to zoom scene to a given rectangle.
 
-    # def resizeEvent(self, event):
-    #     """Maintain current zoom on resize."""
-    #     self.updateViewer()
+        The rect can either be given relative to the current zoom
+        (this is useful if it's the rect drawn by user) or it can be
+        given in absolute coordinates for displayed frame.
 
-    # def mousePressEvent(self, event):
-    #     """Start mouse pan or zoom mode."""
-    #     scenePos = self.mapToScene(event.pos())
-    #     # keep track of click location
-    #     self._down_pos = event.pos()
-    #     # behavior depends on which button is pressed
-    #     if event.button() == Qt.LeftButton:
+        Args:
+            zoom_rect: The `QRectF` to which we want to zoom.
+        """
 
-    #         if event.modifiers() == Qt.NoModifier:
-    #             if self.click_mode == "area":
-    #                 self.setDragMode(QGraphicsView.RubberBandDrag)
-    #             elif self.click_mode == "point":
-    #                 self.setDragMode(QGraphicsView.NoDrag)
-    #             elif self.canPan:
-    #                 self.setDragMode(QGraphicsView.ScrollHandDrag)
+        if zoom_rect.isNull():
+            return
 
-    #         elif event.modifiers() == Qt.AltModifier:
-    #             if self.canZoom:
-    #                 self.in_zoom = True
-    #                 self.setDragMode(QGraphicsView.RubberBandDrag)
+        scale_h = self.scene.height() / zoom_rect.height()
+        scale_w = self.scene.width() / zoom_rect.width()
+        scale = min(scale_h, scale_w)
 
-    #         self.leftMouseButtonPressed.emit(scenePos.x(), scenePos.y())
+        self.zoomFactor = scale
+        self.updateViewer()
+        self.centerOn(zoom_rect.center())
 
-    #     elif event.button() == Qt.RightButton:
-    #         self.rightMouseButtonPressed.emit(scenePos.x(), scenePos.y())
-    #     QGraphicsView.mousePressEvent(self, event)
+    def clearZoom(self):
+        """Clear zoom stack. Doesn't update display."""
+        self.zoomFactor = 1
 
-    # def mouseReleaseEvent(self, event):
-    #     """Stop mouse pan or zoom mode (apply zoom if valid)."""
-    #     QGraphicsView.mouseReleaseEvent(self, event)
-    #     scenePos = self.mapToScene(event.pos())
+    def mouseDoubleClickEvent(self, event: QMouseEvent):
+        """Custom event handler, clears zoom."""
+        scenePos = self.mapToScene(event.pos())
+        if event.button() == Qt.LeftButton:
 
-    #     # check if mouse moved during click
-    #     has_moved = event.pos() != self._down_pos
-    #     if event.button() == Qt.LeftButton:
+            if self.zoom_mode != "":
+                self.clearZoom()
+                self.updateViewer()
 
-    #         if self.in_zoom:
-    #             self.in_zoom = False
-    #             zoom_rect = self.scene.selectionArea().boundingRect()
-    #             self.scene.setSelectionArea(QPainterPath())  # clear selection
-    #             self.zoomToRect(zoom_rect)
-
-    #         elif self.click_mode == "":
-    #             # Check if this was just a tap (not a drag)
-    #             if not has_moved:
-    #                 self.state["instance"] = self.getTopInstanceAt(scenePos)
-
-    #         elif self.click_mode == "area":
-    #             # Check if user was selecting rectangular area
-    #             selection_rect = self.scene.selectionArea().boundingRect()
-
-    #             self.areaSelected.emit(
-    #                 selection_rect.left(),
-    #                 selection_rect.top(),
-    #                 selection_rect.right(),
-    #                 selection_rect.bottom(),
-    #             )
-    #         elif self.click_mode == "point":
-    #             self.pointSelected.emit(scenePos.x(), scenePos.y())
-
-    #         self.click_mode = ""
-    #         self.unsetCursor()
-
-    #         # finish drag
-    #         self.setDragMode(QGraphicsView.NoDrag)
-    #         # pass along event
-    #         self.leftMouseButtonReleased.emit(scenePos.x(), scenePos.y())
-    #     elif event.button() == Qt.RightButton:
-
-    #         self.setDragMode(QGraphicsView.NoDrag)
-    #         self.rightMouseButtonReleased.emit(scenePos.x(), scenePos.y())
-
-    # def mouseMoveEvent(self, event):
-    #     # re-enable contextual menu if necessary
-    #     if self.player:
-    #         self.player.is_menu_enabled = True
-    #     QGraphicsView.mouseMoveEvent(self, event)
-
-    # def zoomToRect(self, zoom_rect: QRectF):
-    #     """
-    #     Method to zoom scene to a given rectangle.
-
-    #     The rect can either be given relative to the current zoom
-    #     (this is useful if it's the rect drawn by user) or it can be
-    #     given in absolute coordinates for displayed frame.
-
-    #     Args:
-    #         zoom_rect: The `QRectF` to which we want to zoom.
-    #     """
-
-    #     if zoom_rect.isNull():
-    #         return
-
-    #     scale_h = self.scene.height() / zoom_rect.height()
-    #     scale_w = self.scene.width() / zoom_rect.width()
-    #     scale = min(scale_h, scale_w)
-
-    #     self.zoomFactor = scale
-    #     self.updateViewer()
-    #     self.centerOn(zoom_rect.center())
-
-    # def clearZoom(self):
-    #     """Clear zoom stack. Doesn't update display."""
-    #     self.zoomFactor = 1
-
-    # @staticmethod
-    # def getInstancesBoundingRect(
-    #     instances: List["QtInstance"], margin: float = 0.0
-    # ) -> QRectF:
-    #     """Return a rectangle containing all instances.
-
-    #     Args:
-    #         instances: List of QtInstance objects.
-    #         margin: Margin for padding the rectangle. Padding is applied equally on all
-    #             sides.
-
-    #     Returns:
-    #         The `QRectF` which contains all of the instances.
-
-    #     Notes:
-    #         The returned rectangle will be null if the instance list is empty.
-    #     """
-    #     rect = QRectF()
-    #     for item in instances:
-    #         rect = rect.united(item.boundingRect())
-    #     if margin > 0 and not rect.isNull():
-    #         rect = rect.marginsAdded(QMarginsF(margin, margin, margin, margin))
-    #     return rect
-
-    # def instancesBoundingRect(self, margin: float = 0) -> QRectF:
-    #     """
-    #     Returns a rect which contains all displayed skeleton instances.
-
-    #     Args:
-    #         margin: Margin for padding the rect.
-    #     Returns:
-    #         The `QRectF` which contains the skeleton instances.
-    #     """
-    #     return GraphicsView.getInstancesBoundingRect(self.all_instances, margin=margin)
-
-    # def mouseDoubleClickEvent(self, event: QMouseEvent):
-    #     """Custom event handler, clears zoom."""
-    #     scenePos = self.mapToScene(event.pos())
-    #     if event.button() == Qt.LeftButton:
-
-    #         if event.modifiers() == Qt.AltModifier:
-    #             if self.canZoom:
-    #                 self.clearZoom()
-    #                 self.updateViewer()
-
-    #         self.leftMouseButtonDoubleClicked.emit(scenePos.x(), scenePos.y())
-    #     elif event.button() == Qt.RightButton:
-    #         self.rightMouseButtonDoubleClicked.emit(scenePos.x(), scenePos.y())
-    #     QGraphicsView.mouseDoubleClickEvent(self, event)
+            self.leftMouseButtonDoubleClicked.emit(scenePos.x(), scenePos.y())
+        elif event.button() == Qt.RightButton:
+            self.rightMouseButtonDoubleClicked.emit(scenePos.x(), scenePos.y())
+        QGraphicsView.mouseDoubleClickEvent(self, event)
 
     # def wheelEvent(self, event):
     #     """Custom event handler. Zoom in/out based on scroll wheel change."""
@@ -464,10 +352,10 @@ class VideoDock(QDockWidget):
         self.setObjectName(self.name + "VideoDock")
         self.setAllowedAreas(Qt.AllDockWidgetAreas)
 
-        dock_widget = GraphicsView()
-        dock_widget.setObjectName(self.name + "VideoView")
+        self.view = GraphicsView()
+        self.view.setObjectName(self.name + "VideoView")
 
-        self.setWidget(dock_widget)
+        self.setWidget(self.view)
 
         self.main_window.addDockWidget(Qt.LeftDockWidgetArea, self)
         self.main_window.viewMenu.addAction(self.toggleViewAction())
