@@ -350,7 +350,7 @@ class VideoDock(QDockWidget):
         self.main_window = main_window
 
         self.setObjectName(self.name + "VideoDock")
-        self.setAllowedAreas(Qt.AllDockWidgetAreas)
+        self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
 
         self.view = GraphicsView()
         self.view.setObjectName(self.name + "VideoView")
