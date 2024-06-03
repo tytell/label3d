@@ -14,7 +14,7 @@ from qtpy.QtGui import (
     QKeySequence
 )
 
-from widgets.docks import ParameterDock
+from widgets.docks import ParameterDock, CalibrationDock
 from widgets.video import VideoDock
 
 from settings import SETTINGS_FILE
@@ -94,8 +94,9 @@ class MainWindow(QMainWindow):
             vid.view.zoomModeChanged.connect(self.zoomAction.setChecked)
 
     def _create_dock_windows(self):
-        self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)
-        self.params = self.parameterdock.parameters
+        # self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)
+        # self.params = self.parameterdock.parameters
+        self.calibrationDock = CalibrationDock(self)
 
     def newProject(self):
         pass
