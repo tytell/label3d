@@ -14,7 +14,7 @@ from qtpy.QtGui import (
     QKeySequence
 )
 
-from widgets.docks import ParameterDock, CalibrationDock
+from widgets.docks import ParameterDock, CalibrationDock, VideoControlDock
 from widgets.video import VideoDock
 
 from settings import SETTINGS_FILE
@@ -97,7 +97,8 @@ class MainWindow(QMainWindow):
         # self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)
         # self.params = self.parameterdock.parameters
         self.calibrationDock = CalibrationDock(self)
-
+        self.videoControlDock = VideoControlDock(self)
+        
     def newProject(self):
         pass
 

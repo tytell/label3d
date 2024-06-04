@@ -9,12 +9,15 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDockWidget,
     QFileDialog,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QPushButton,
+    QScrollBar,
+    QSpinBox,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -144,6 +147,64 @@ class CalibrationDock(QDockWidget):
         layout.addStretch()                
         parent.setLayout(layout)
 
+class VideoControlDock(QDockWidget):
+    def __init__(self, main_window: QMainWindow):
+        super().__init__("Video Control")
+        self.name = "Video Control"
+        self.main_window = main_window
+
+        self.setObjectName(self.name + "Dock")
+        self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+
+        dock_widget = QWidget()
+        dock_widget.setObjectName(self.name + "Widget")
+
+        self._create_widgets(dock_widget)
+
+        self.setWidget(dock_widget)
+
+        self.main_window.addDockWidget(Qt.RightDockWidgetArea, self)
+        self.main_window.viewMenu.addAction(self.toggleViewAction())
+
+    def _create_widgets(self, parent):
+        layout = QVBoxLayout()
+
+        self.rewindButton = QPushButton("Rewind")
+        self.playButton = QPushButton("Play")
+        self.fastfwdButton = QPushButton("Fast forward")
+
+        self.stepBackButton = QPushButton("Back")
+        self.stepFwdButton = QPushButton("Forward")
+
+        self.jumpBackButton = QPushButton("Jump back")
+        self.jumpFramesSpin = QSpinBox()
+        self.jumpFramesSpin.setMinimum(1)
+        self.jumpFramesSpin.setValue(5)
+        self.jumpFwdButton = QPushButton("Jump fwd")
+
+        gridlayout = QGridLayout()
+        gridlayout.addWidget(self.rewindButton, 0,0, Qt.AlignCenter | Qt.AlignVCenter)
+        gridlayout.addWidget(self.playButton, 0,1, Qt.AlignCenter | Qt.AlignVCenter)
+        gridlayout.addWidget(self.fastfwdButton, 0,2, Qt.AlignCenter | Qt.AlignVCenter)
+        
+        gridlayout.addWidget(self.stepBackButton, 1,0, Qt.AlignCenter | Qt.AlignVCenter)
+        gridlayout.addWidget(self.stepFwdButton, 1,2, Qt.AlignCenter | Qt.AlignVCenter)
+        
+        gridlayout.addWidget(self.jumpBackButton, 2,0, Qt.AlignCenter | Qt.AlignVCenter)
+        gridlayout.addWidget(self.jumpFramesSpin, 2,1, Qt.AlignCenter | Qt.AlignVCenter)
+        gridlayout.addWidget(self.jumpFwdButton, 2,2, Qt.AlignCenter | Qt.AlignVCenter)
+
+        layout.addLayout(gridlayout)
+
+        hlayout = QHBoxLayout()
+        self.frameScrollBar = QScrollBar(Qt.Horizontal)
+        self.frameNumberEdit = QLineEdit()
+
+        hlayout.addWidget(self.frameScrollBar)
+        hlayout.addWidget(self.frameNumberEdit)
+
+        layout.addLayout(hlayout)
+        parent.setLayout(layout)
 
 class ParameterDock(QDockWidget):
     def __init__(self, name: str, 
