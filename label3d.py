@@ -20,7 +20,8 @@ from qtpy.QtGui import (
 )
 
 from widgets.panels import VideoControlPanel, CalibrationPanel
-from widgets.video import VideoWindow
+from widgets.videowindow import VideoWindow
+from videofile import Video
 
 from settings import SETTINGS_FILE
 
@@ -138,16 +139,23 @@ class MainWindow(QMainWindow):
             return
 
         self.videowindows = []
+        self.videos = []
+        nfr = []
         for f in videofiles:
-            vid = VideoWindow(filename=f, main_window=self)
+            vid = Video.from_media(f)
+            nfr.append(vid.nframes)
 
-            self._zoom_act.toggled.connect(vid.view.set_zoom)
-            vid.view.zoomModeChanged.connect(self._zoom_act.setChecked)
+            vw = VideoWindow(filename=f, video=vid, main_window=self)
 
-            self.videowindows.append(vid)
-            self._mdi_area.addSubWindow(vid)
-            vid.show()
+            self._zoom_act.toggled.connect(vw.view.set_zoom)
+            vw.view.zoomModeChanged.connect(self._zoom_act.setChecked)
 
+            self.videowindows.append(vw)
+            self._mdi_area.addSubWindow(vw)
+            vw.show()
+
+        maxframes = max(nfr)
+        
         self.activeVideo = 0
 
     def _create_panels(self):

@@ -2,6 +2,7 @@ import os
 from typing import Callable, List, Optional, Tuple, Union
 import numpy as np
 import logging
+import qimage2ndarray
 
 import qtpy
 from qtpy import QtCore, QtGui
@@ -30,6 +31,8 @@ from qtpy.QtGui import (
     QPolygonF,
     QTransform,
 )
+
+from videofile import Video
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +148,9 @@ class GraphicsView(QGraphicsView):
         Returns:
             None.
         """
-        # if type(image) is np.ndarray:
-        #     # Convert numpy array of frame image to QImage
-        #     image = qimage2ndarray.array2qimage(image)
+        if type(image) is np.ndarray:
+            # Convert numpy array of frame image to QImage
+            image = qimage2ndarray.array2qimage(image)
 
         if type(image) is QPixmap:
             pixmap = image
@@ -345,11 +348,13 @@ class GraphicsView(QGraphicsView):
 
 class VideoWindow(QWidget):
     def __init__(self, filename: str,
+                 video: Video,
                  main_window: QWidget):
         super().__init__()
         self.filename = filename
         self.name = os.path.basename(filename)
         self.main_window = main_window
+        self.video = video
 
         self.setAttribute(Qt.WA_DeleteOnClose)
 
@@ -358,6 +363,9 @@ class VideoWindow(QWidget):
 
         self.view = GraphicsView()
         self.view.setObjectName(self.name + "VideoView")
+
+        img = video.get_frame(0)
+        self.view.setImage(img)        
 
         l = QVBoxLayout()
         l.addWidget(self.view)
