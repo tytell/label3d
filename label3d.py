@@ -7,7 +7,7 @@ import qtpy
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import QEvent, Qt
 from qtpy.QtWidgets import (
-    QApplication, QMainWindow, QMessageBox, 
+    QApplication, QWidget, QMessageBox, 
     QDockWidget, QAction, QToolBar, QLabel, QStatusBar,
 )
 from qtpy.QtGui import (
@@ -15,7 +15,7 @@ from qtpy.QtGui import (
 )
 
 from widgets.docks import ParameterDock, CalibrationDock, VideoControlDock
-from widgets.video import VideoDock
+from widgets.video import VideoWindow
 
 from settings import SETTINGS_FILE
 
@@ -28,7 +28,7 @@ parameterDefinitions = [
     {'name':'stuff', 'type':'int', 'value':13},
 ]
 
-class MainWindow(QMainWindow):
+class MainWindow(QWidget):
 
     def __init__(
         self,
@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
 
         self._create_toolbars()
 
-        self._create_video_windows()
+        self.videowindows = []
         self._create_dock_windows()
 
         self.readSettings()
@@ -85,8 +85,8 @@ class MainWindow(QMainWindow):
         self.viewMenu = viewMenu  # store as attribute so docks can add items
 
     def _create_video_windows(self):
-        self.videodock = []
-        self.videodock.append(VideoDock(name="test", main_window=self))
+        self.videowindows = []
+        self.videowindows.append(VideoWindow(name="test", main_window=self))
 
         self.activeVideo = 0
         for vid in self.videodock:

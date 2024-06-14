@@ -10,8 +10,9 @@ from qtpy.QtCore import (
     QRectF, Slot
 )
 from qtpy.QtWidgets import (
-    QApplication, QMainWindow, QMessageBox, QDockWidget, 
-    QGraphicsView, QGraphicsScene
+    QApplication, QWidget, QMessageBox, 
+    QGraphicsView, QGraphicsScene,
+    QAction
 )
 from qtpy.QtGui import (
     QBrush,
@@ -342,15 +343,14 @@ class GraphicsView(QGraphicsView):
     #     """Custom event hander, disables default QGraphicsView behavior."""
     #     event.ignore()  # Kicks the event up to parent
 
-class VideoDock(QDockWidget):
+class VideoWindow(QWidget):
     def __init__(self, name: str,
-                 main_window: QMainWindow):
+                 main_window: QWidget):
         super().__init__(name)
         self.name = name
         self.main_window = main_window
 
-        self.setObjectName(self.name + "VideoDock")
-        self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.setObjectName(self.name + "VideoWindow")
 
         self.view = GraphicsView()
         self.view.setObjectName(self.name + "VideoView")
@@ -358,4 +358,10 @@ class VideoDock(QDockWidget):
         self.setWidget(self.view)
 
         self.main_window.addDockWidget(Qt.LeftDockWidgetArea, self)
-        self.main_window.viewMenu.addAction(self.toggleViewAction())
+
+        self.toggleViewAction = QAction("Show video", self)
+        self.toggleViewAction.triggered.connect(self.toggleView)
+    
+    @Slot()
+    def toggleView(self):
+        self.setVisible(not self.isVisible())
