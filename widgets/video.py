@@ -10,9 +10,9 @@ from qtpy.QtCore import (
     QRectF, Slot
 )
 from qtpy.QtWidgets import (
-    QApplication, QWidget, QMessageBox, 
+    QApplication, QMainWindow, QWidget, QMessageBox, 
     QGraphicsView, QGraphicsScene,
-    QAction
+    QAction, QVBoxLayout
 )
 from qtpy.QtGui import (
     QBrush,
@@ -344,24 +344,23 @@ class GraphicsView(QGraphicsView):
     #     event.ignore()  # Kicks the event up to parent
 
 class VideoWindow(QWidget):
-    def __init__(self, name: str,
+    def __init__(self, filename: str,
                  main_window: QWidget):
-        super().__init__(name)
-        self.name = name
+        super().__init__()
+        self.filename = filename
+        self.name = os.path.basename(filename)
         self.main_window = main_window
 
+        self.setAttribute(Qt.WA_DeleteOnClose)
+
         self.setObjectName(self.name + "VideoWindow")
+        self.setWindowTitle(self.name)
 
         self.view = GraphicsView()
         self.view.setObjectName(self.name + "VideoView")
 
-        self.setWidget(self.view)
+        l = QVBoxLayout()
+        l.addWidget(self.view)
 
-        self.main_window.addDockWidget(Qt.LeftDockWidgetArea, self)
+        self.setLayout(l)
 
-        self.toggleViewAction = QAction("Show video", self)
-        self.toggleViewAction.triggered.connect(self.toggleView)
-    
-    @Slot()
-    def toggleView(self):
-        self.setVisible(not self.isVisible())

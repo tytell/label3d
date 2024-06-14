@@ -1,6 +1,7 @@
 from typing import Callable, Dict, Iterable, List, Optional, Type, Union
+import logging
 
-from qtpy import QtGui
+from qtpy import QtGui, QtCore
 from qtpy.QtCore import (
     Qt,
     QAbstractTableModel
@@ -28,7 +29,7 @@ import pyqtgraph as pg
 pg.setConfigOption('background', 'w')
 pg.setConfigOption('foreground', 'k')
 
-class CalibrationFilesModel(QAbstractTableModel):
+class VideoFilesModel(QAbstractTableModel):
     keynames = ["camera", "filename"]
     colnames = ["Camera Name", "File"]
 
@@ -64,13 +65,15 @@ class CalibrationFilesModel(QAbstractTableModel):
         else:
             return Qt.ItemIsSelectable | Qt.ItemIsEnabled
 
-class CalibrationDock(QDockWidget):
+class VideoControlPanel(QDockWidget):
+    addedVideos = QtCore.Signal(list)
+
     def __init__(self, main_window: QMainWindow):
-        super().__init__("Calibration")
-        self.name = "Calibration"
+        super().__init__("Video Control")
+        self.name = "Video Control"
         self.main_window = main_window
 
-        self.setObjectName(self.name + "Dock")
+        self.setObjectName(self.name + "Panel")
         self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
 
         dock_widget = QWidget()
@@ -91,80 +94,11 @@ class CalibrationDock(QDockWidget):
             camfiles = [{"camera": "cam{}".format(i+1),
                          "filename": fn} for i, fn in enumerate(vids)]
             
-            self.calibrationFilesTable.reset()
-            self.calibrationFilesModel = CalibrationFilesModel(camfiles)
-            self.calibrationFilesTable.setModel(self.calibrationFilesModel)
+            self.videoFilesTable.reset()
+            self.videoFilesModel = VideoFilesModel(camfiles)
+            self.videoFilesTable.setModel(self.videoFilesModel)
 
-    def _create_widgets(self, parent):
-        layout = QVBoxLayout()
-
-        def makeLabeledWidget(widget: QWidget, name: str, label: Optional[str] = None):
-            widget.setObjectName(name)
-
-            if label is not None:
-                hlay = QHBoxLayout()
-                qlab = QLabel(label)
-                qlab.setAlignment(Qt.AlignRight)
-                qlab.setBuddy(widget)
-
-                hlay.addWidget(qlab)
-                hlay.addWidget(widget)
-
-                return hlay
-            else:
-                return widget
-        
-        self.calibrationFileNameEdit = QLineEdit(parent)
-        h = makeLabeledWidget(self.calibrationFileNameEdit, "calibrationFileNameEdit", "Calibration file:")
-        self.calibrationFileBrowse = QPushButton("...", parent)
-        h.addWidget(self.calibrationFileBrowse)
-
-        self.loadCalibrationButton = QPushButton("Load calibration...", parent)
-        h.addWidget(self.loadCalibrationButton)
-
-        layout.addLayout(h)
-
-        gp = QGroupBox("Calibration")
-
-        self.calibrationFilesModel = CalibrationFilesModel()
-        self.calibrationFilesTable = QTableView(parent)
-        self.calibrationFilesTable.setModel(self.calibrationFilesModel)
-
-        callayout = QVBoxLayout()
-        callayout.addWidget(self.calibrationFilesTable)
-
-        h = QHBoxLayout()
-        h.addStretch()
-
-        self.selectCalibrationVideosButton = QPushButton("Select videos...", parent)
-        self.selectCalibrationVideosButton.clicked.connect(self.selectVideos)
-        h.addWidget(self.selectCalibrationVideosButton)
-
-        callayout.addLayout(h)
-        gp.setLayout(callayout)
-
-        layout.addWidget(gp)
-        layout.addStretch()                
-        parent.setLayout(layout)
-
-class VideoControlDock(QDockWidget):
-    def __init__(self, main_window: QMainWindow):
-        super().__init__("Video Control")
-        self.name = "Video Control"
-        self.main_window = main_window
-
-        self.setObjectName(self.name + "Dock")
-        self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
-
-        dock_widget = QWidget()
-        dock_widget.setObjectName(self.name + "Widget")
-
-        self._create_widgets(dock_widget)
-
-        self.setWidget(dock_widget)
-
-        self.main_window.addDockWidget(Qt.RightDockWidgetArea, self)
-        self.main_window.viewMenu.addAction(self.toggleViewAction())
+            self.addedVideos.emit(vids)
 
     def _create_widgets(self, parent):
         layout = QVBoxLayout()
@@ -199,50 +133,78 @@ class VideoControlDock(QDockWidget):
         hlayout = QHBoxLayout()
         self.frameScrollBar = QScrollBar(Qt.Horizontal)
         self.frameNumberEdit = QLineEdit()
+        fm = self.frameNumberEdit.fontMetrics()
+        m = self.frameNumberEdit.textMargins()
+        c = self.frameNumberEdit.contentsMargins()
+        w = 5*fm.width('9')+m.left()+m.right()+c.left()+c.right()
+        self.frameNumberEdit.setFixedWidth(w)
 
         hlayout.addWidget(self.frameScrollBar)
         hlayout.addWidget(self.frameNumberEdit)
 
         layout.addLayout(hlayout)
+
+        gp = QGroupBox("Videos")
+
+        self.videoFilesModel = VideoFilesModel()
+        self.videoFilesTable = QTableView(self)
+        self.videoFilesTable.setModel(self.videoFilesModel)
+
+        callayout = QVBoxLayout()
+        callayout.addWidget(self.videoFilesTable)
+
+        h = QHBoxLayout()
+        h.addStretch()
+
+        self.selectVideosButton = QPushButton("Select videos...", self)
+        self.selectVideosButton.clicked.connect(self.selectVideos)
+        h.addWidget(self.selectVideosButton)
+
+        callayout.addLayout(h)
+        gp.setLayout(callayout)
+
+        layout.addWidget(gp)
+
         parent.setLayout(layout)
 
-class ParameterDock(QDockWidget):
-    def __init__(self, name: str, 
-                 main_window: QMainWindow,
-                 parameters):
-        super().__init__(name)
-        self.name = name
+class CalibrationPanel(QWidget):
+    def __init__(self, main_window: QWidget):
+        super().__init__()
+        self.name = "Calibration"
         self.main_window = main_window
 
-        self.setObjectName(self.name + "Dock")
-        self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.setObjectName(self.name + "Panel")
 
-        dock_widget = QWidget()
-        dock_widget.setObjectName(self.name + "Widget")
+        self._create_widgets()
 
+    def _create_widgets(self, parent):
         layout = QVBoxLayout()
-        parameterTreeWidget = ParameterTree(dock_widget)
-        parameterTreeWidget.setObjectName("ParameterTree")
-        layout.addWidget(parameterTreeWidget)
 
-        self.parameters = Parameter.create(name='params', type='group',
-                                           children=parameters)
-        parameterTreeWidget.setParameters(self.parameters, showTop=False)
+        def makeLabeledWidget(widget: QWidget, name: str, label: Optional[str] = None):
+            widget.setObjectName(name)
 
-        horiz = QHBoxLayout()
-        horiz.addStretch()
-        loadParametersButton = QPushButton("Load parameters...", dock_widget)
-        loadParametersButton.setObjectName("loadParametersButton")
-        horiz.addWidget(loadParametersButton)
-        saveParametersButton = QPushButton("Save parameters...", dock_widget)
-        saveParametersButton.setObjectName("saveParametersButton")
-        horiz.addWidget(saveParametersButton)
-        layout.addLayout(horiz)
+            if label is not None:
+                hlay = QHBoxLayout()
+                qlab = QLabel(label)
+                qlab.setAlignment(Qt.AlignRight)
+                qlab.setBuddy(widget)
 
-        dock_widget.setLayout(layout)
-        self.setWidget(dock_widget)
+                hlay.addWidget(qlab)
+                hlay.addWidget(widget)
 
-        self.main_window.addDockWidget(Qt.RightDockWidgetArea, self)
-        self.main_window.viewMenu.addAction(self.toggleViewAction())
+                return hlay
+            else:
+                return widget
         
+        self.calibrationFileNameEdit = QLineEdit(parent)
+        h = makeLabeledWidget(self.calibrationFileNameEdit, "calibrationFileNameEdit", "Calibration file:")
+        self.calibrationFileBrowse = QPushButton("...", parent)
+        h.addWidget(self.calibrationFileBrowse)
 
+        self.loadCalibrationButton = QPushButton("Load calibration...", parent)
+        h.addWidget(self.loadCalibrationButton)
+
+        layout.addLayout(h)
+
+        layout.addStretch()                
+        parent.setLayout(layout)
