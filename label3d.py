@@ -19,7 +19,7 @@ from qtpy.QtGui import (
     QKeySequence
 )
 
-from widgets.panels import VideoControlPanel, CalibrationPanel
+from widgets.panels import VideoControlPanel, VideoFramePanel, CalibrationPanel
 from widgets.videowindow import VideoWindow
 from videofile import Video
 
@@ -141,9 +141,10 @@ class MainWindow(QMainWindow):
         self.videowindows = []
         self.videos = []
         nfr = []
-        for f in videofiles:
+        for i, f in enumerate(videofiles):
             vid = Video.from_media(f)
-            nfr.append(vid.nframes)
+            nfr1 = vid.nframes
+            nfr.append(nfr1)
 
             vw = VideoWindow(filename=f, video=vid, main_window=self)
 
@@ -154,9 +155,14 @@ class MainWindow(QMainWindow):
             self._mdi_area.addSubWindow(vw)
             vw.show()
 
+            logging.debug(f"{f}: nframes = {nfr1}")
+            self.videoControlPanel.setVideoInfo(i, [{'name': 'Number of frames', 'type': 'int', 'value': nfr1, 'readonly': True}])
+
         maxframes = max(nfr)
         
         self.activeVideo = 0
+
+        self.videoFramePanel.setNumFrames(maxframes)
 
     def _create_panels(self):
         # self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)
@@ -164,6 +170,8 @@ class MainWindow(QMainWindow):
         # self.calibrationDock = CalibrationDock(self)
         self.videoControlPanel = VideoControlPanel(self)
         self.videoControlPanel.addedVideos.connect(self.setVideos)
+
+        self.videoFramePanel = VideoFramePanel(self)
 
     @Slot()
     def update_window_menu(self):

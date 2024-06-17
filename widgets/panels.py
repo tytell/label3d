@@ -4,7 +4,8 @@ import logging
 from qtpy import QtGui, QtCore
 from qtpy.QtCore import (
     Qt,
-    QAbstractTableModel
+    QAbstractTableModel,
+    Slot
 )
 from qtpy.QtWidgets import (
     QComboBox,
@@ -17,6 +18,7 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QPushButton,
+    QSlider,
     QScrollBar,
     QSpinBox,
     QTableView,
@@ -28,42 +30,6 @@ import pyqtgraph as pg
 
 pg.setConfigOption('background', 'w')
 pg.setConfigOption('foreground', 'k')
-
-class VideoFilesModel(QAbstractTableModel):
-    keynames = ["camera", "filename"]
-    colnames = ["Camera Name", "File"]
-
-    def __init__(self, camfiles: Optional[List[Dict]] = None):
-        super().__init__()
-        self._data = camfiles or []
-
-    def rowCount(self, index):
-        return len(self._data)
-    
-    def columnCount(self, parent=None):
-        return 2
-    
-    def data(self, index, role=Qt.DisplayRole):
-        if index.isValid():
-            if role == Qt.DisplayRole or role == Qt.EditRole:
-                value = self._data[index.row()][self.keynames[index.column()]]
-                return value
-    
-    def setData(self, index, value, role):
-        if role == Qt.EditRole:
-            self._data[index.row()][self.keynames[index.column()]] = value
-            return True
-        return False
-    
-    def headerData(self, col, orientation, role):
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return self.colnames[col]
-    
-    def flags(self, index):
-        if index.column() == 0:
-            return Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsEditable
-        else:
-            return Qt.ItemIsSelectable | Qt.ItemIsEnabled
 
 class VideoControlPanel(QDockWidget):
     addedVideos = QtCore.Signal(list)
@@ -90,15 +56,22 @@ class VideoControlPanel(QDockWidget):
         vids, filt = QFileDialog.getOpenFileNames(parent=self.main_window, 
                                             caption="Select videos",
                                          dir="", filter="Videos (*.mp4)")
+        
         if vids is not None:
-            camfiles = [{"camera": "cam{}".format(i+1),
-                         "filename": fn} for i, fn in enumerate(vids)]
-            
-            self.videoFilesTable.reset()
-            self.videoFilesModel = VideoFilesModel(camfiles)
-            self.videoFilesTable.setModel(self.videoFilesModel)
+            p = []
+            for i, fn in enumerate(vids):
+                p1 = {'name': f"cam{i+1}", 'type': 'group', 'children': [
+                    {'name': 'File', 'type': 'str', 'value': fn}
+                ]}
+                p.append(p1)
 
+            self.cameraParams = Parameter.create(name='cameras', type='group', children=p)
+            self.parameterTreeWidget.setParameters(self.cameraParams, showTop=False)
+                                      
             self.addedVideos.emit(vids)
+
+    def setVideoInfo(self, i, info):
+        self.cameraParams.childs[i].addChildren(info)
 
     def _create_widgets(self, parent):
         layout = QVBoxLayout()
@@ -130,28 +103,13 @@ class VideoControlPanel(QDockWidget):
 
         layout.addLayout(gridlayout)
 
-        hlayout = QHBoxLayout()
-        self.frameScrollBar = QScrollBar(Qt.Horizontal)
-        self.frameNumberEdit = QLineEdit()
-        fm = self.frameNumberEdit.fontMetrics()
-        m = self.frameNumberEdit.textMargins()
-        c = self.frameNumberEdit.contentsMargins()
-        w = 5*fm.width('9')+m.left()+m.right()+c.left()+c.right()
-        self.frameNumberEdit.setFixedWidth(w)
-
-        hlayout.addWidget(self.frameScrollBar)
-        hlayout.addWidget(self.frameNumberEdit)
-
-        layout.addLayout(hlayout)
-
         gp = QGroupBox("Videos")
 
-        self.videoFilesModel = VideoFilesModel()
-        self.videoFilesTable = QTableView(self)
-        self.videoFilesTable.setModel(self.videoFilesModel)
+        self.parameterTreeWidget = ParameterTree(parent)
+        self.parameterTreeWidget.setObjectName("ParameterTree")
 
         callayout = QVBoxLayout()
-        callayout.addWidget(self.videoFilesTable)
+        callayout.addWidget(self.parameterTreeWidget)
 
         h = QHBoxLayout()
         h.addStretch()
@@ -166,6 +124,61 @@ class VideoControlPanel(QDockWidget):
         layout.addWidget(gp)
 
         parent.setLayout(layout)
+
+class VideoFramePanel(QDockWidget):
+    changeFrames = QtCore.Signal(int)
+
+    def __init__(self, main_window: QMainWindow):
+        super().__init__("Frame Control")
+        self.name = "Frame Control"
+        self.main_window = main_window
+
+        self.setObjectName(self.name + "Panel")
+        self.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.TopDockWidgetArea)
+
+        dock_widget = QWidget()
+        dock_widget.setObjectName(self.name + "Widget")
+
+        self._create_widgets(dock_widget)
+        self._set_slots()
+
+        self.setWidget(dock_widget)
+
+        self.main_window.addDockWidget(Qt.BottomDockWidgetArea, self)
+        self.main_window.viewMenu.addAction(self.toggleViewAction())
+
+    @Slot(int)
+    def setNumFrames(self, nframes):
+        self.nframes = nframes
+        self.frameSlider.setMinimum(1)
+        self.frameSlider.setMaximum(nframes)
+        self.frameNumberBox.setMinimum(1)
+        self.frameNumberBox.setMaximum(nframes)
+
+    def _create_widgets(self, parent):
+        layout = QVBoxLayout()
+
+        hlayout = QHBoxLayout()
+        self.frameSlider = QSlider(Qt.Horizontal)
+        self.frameSlider.setTickPosition(QSlider.TicksBelow)
+        self.frameSlider.setTickInterval(10)
+
+        self.frameNumberBox = QSpinBox()
+        fm = self.frameNumberBox.fontMetrics()
+        # m = self.frameNumberBox.textMargins()
+        # c = self.frameNumberBox.contentsMargins()
+        w = 6*fm.width('9') #+m.left()+m.right()+c.left()+c.right()
+        self.frameNumberBox.setFixedWidth(w)
+
+        hlayout.addWidget(self.frameSlider)
+        hlayout.addWidget(self.frameNumberBox)
+
+        layout.addLayout(hlayout)
+        parent.setLayout(layout)
+    
+    def _set_slots(self):
+        self.frameSlider.valueChanged.connect(self.frameNumberBox.setValue)
+        self.frameNumberBox.valueChanged.connect(self.frameSlider.setValue)
 
 class CalibrationPanel(QWidget):
     def __init__(self, main_window: QWidget):
