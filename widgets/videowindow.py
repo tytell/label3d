@@ -347,6 +347,23 @@ class GraphicsView(QGraphicsView):
     #     event.ignore()  # Kicks the event up to parent
 
 class VideoWindow(QWidget):
+    @Slot(int)
+    def set_frame(self, fr):
+        try:
+            img = self.video.get_frame(fr)
+            self.view.setImage(img)
+            logging.debug(f"Get frame {fr} from {self.video}")
+        except Exception:
+            logging.error("Couldn't read video {} frame {}".format(self.video, fr))
+
+    @Slot()
+    def next_frame(self):
+        try:
+            img = self.video.get_next_frame()
+            self.view.setImage(img)
+        except Exception:
+            logging.error("Couldn't get next frame from video {}".format(self.video))
+
     def __init__(self, filename: str,
                  video: Video,
                  main_window: QWidget):

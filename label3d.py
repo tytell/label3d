@@ -35,6 +35,7 @@ parameterDefinitions = [
 ]
 
 class MainWindow(QMainWindow):
+    _cameraParams = None
 
     def __init__(
         self,
@@ -63,6 +64,10 @@ class MainWindow(QMainWindow):
 
         self.readSettings()
 
+    @property
+    def cameraParams(self):
+        return self.videoControlPanel.cameraParams
+    
     def _create_actions(self):
         self._newProject_act = QAction("&New Project", self)
         self._openProject_act = QAction("&Open Project...", self)
@@ -150,13 +155,19 @@ class MainWindow(QMainWindow):
 
             self._zoom_act.toggled.connect(vw.view.set_zoom)
             vw.view.zoomModeChanged.connect(self._zoom_act.setChecked)
+            
+            self.videoFramePanel.set_frame.connect(vw.set_frame)
 
             self.videowindows.append(vw)
             self._mdi_area.addSubWindow(vw)
             vw.show()
 
             logging.debug(f"{f}: nframes = {nfr1}")
-            self.videoControlPanel.setVideoInfo(i, [{'name': 'Number of frames', 'type': 'int', 'value': nfr1, 'readonly': True}])
+            self.videoControlPanel.addVideoInfo(i, [{'name': 'Number of frames', 'type': 'int', 'value': nfr1, 'readonly': True}])
+            
+            info = vid.get_info_as_parameters()
+            if len(info) > 0:
+                self.videoControlPanel.addVideoInfo(i, info)
 
         maxframes = max(nfr)
         
@@ -164,12 +175,17 @@ class MainWindow(QMainWindow):
 
         self.videoFramePanel.setNumFrames(maxframes)
 
+    def sync_videos(self):
+        if self.cameraParams['Synchronization', 'Method'] == 'Timecode':
+            logging.debug('Syncing by timecode!')
+
     def _create_panels(self):
         # self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)
         # self.params = self.parameterdock.parameters
         # self.calibrationDock = CalibrationDock(self)
         self.videoControlPanel = VideoControlPanel(self)
         self.videoControlPanel.addedVideos.connect(self.setVideos)
+        self.videoControlPanel.syncVideos.connect(self.sync_videos)
 
         self.videoFramePanel = VideoFramePanel(self)
 

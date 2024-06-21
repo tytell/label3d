@@ -33,6 +33,7 @@ pg.setConfigOption('foreground', 'k')
 
 class VideoControlPanel(QDockWidget):
     addedVideos = QtCore.Signal(list)
+    syncVideos = QtCore.Signal()
 
     def __init__(self, main_window: QMainWindow):
         super().__init__("Video Control")
@@ -65,16 +66,48 @@ class VideoControlPanel(QDockWidget):
                 ]}
                 p.append(p1)
 
+            p.append({'name': 'Synchronization', 'type': 'group', 'children': [
+                {'name': 'Method', 'type': 'list', 'values': ['None', 'Timecode', 'Audio', 'Timecode+Audio'],
+                 'value': 'Timecode'},
+                {'name': 'Synchronize...', 'type': 'action'},
+                    {'name': 'Sign convention', 'type': 'list', 'values': ['Left is positive', 'Left is negative', 'None'],
+     'value': 'Left is positive'}
+                ]})
+            
             self.cameraParams = Parameter.create(name='cameras', type='group', children=p)
             self.parameterTreeWidget.setParameters(self.cameraParams, showTop=False)
-                                      
+            self.cameraParams.child('Synchronization', 'Synchronize...').sigActivated.connect(self.syncVideos)
+                          
             self.addedVideos.emit(vids)
 
-    def setVideoInfo(self, i, info):
+    def addVideoInfo(self, i, info):
         self.cameraParams.childs[i].addChildren(info)
 
     def _create_widgets(self, parent):
         layout = QVBoxLayout()
+
+        gp = QGroupBox("Videos")
+        vbox = QVBoxLayout()
+
+        h = QHBoxLayout()
+
+        self.selectVideosButton = QPushButton("Select videos...", self)
+        self.selectVideosButton.clicked.connect(self.selectVideos)
+        h.addWidget(self.selectVideosButton)
+        h.addStretch()
+
+        vbox.addLayout(h)
+
+        self.parameterTreeWidget = ParameterTree(parent)
+        self.parameterTreeWidget.setObjectName("ParameterTree")
+        self.cameraParams = Parameter.create(name='cameras', type='group', children=[])
+        self.parameterTreeWidget.setParameters(self.cameraParams, showTop=False)
+
+        vbox.addWidget(self.parameterTreeWidget)
+        gp.setLayout(vbox)
+        layout.addWidget(gp)
+
+        gp = QGroupBox("Control")
 
         self.rewindButton = QPushButton("Rewind")
         self.playButton = QPushButton("Play")
@@ -101,32 +134,13 @@ class VideoControlPanel(QDockWidget):
         gridlayout.addWidget(self.jumpFramesSpin, 2,1, Qt.AlignCenter | Qt.AlignVCenter)
         gridlayout.addWidget(self.jumpFwdButton, 2,2, Qt.AlignCenter | Qt.AlignVCenter)
 
-        layout.addLayout(gridlayout)
-
-        gp = QGroupBox("Videos")
-
-        self.parameterTreeWidget = ParameterTree(parent)
-        self.parameterTreeWidget.setObjectName("ParameterTree")
-
-        callayout = QVBoxLayout()
-        callayout.addWidget(self.parameterTreeWidget)
-
-        h = QHBoxLayout()
-        h.addStretch()
-
-        self.selectVideosButton = QPushButton("Select videos...", self)
-        self.selectVideosButton.clicked.connect(self.selectVideos)
-        h.addWidget(self.selectVideosButton)
-
-        callayout.addLayout(h)
-        gp.setLayout(callayout)
-
+        gp.setLayout(gridlayout)
         layout.addWidget(gp)
 
         parent.setLayout(layout)
 
 class VideoFramePanel(QDockWidget):
-    changeFrames = QtCore.Signal(int)
+    set_frame = QtCore.Signal(int)
 
     def __init__(self, main_window: QMainWindow):
         super().__init__("Frame Control")
@@ -179,6 +193,8 @@ class VideoFramePanel(QDockWidget):
     def _set_slots(self):
         self.frameSlider.valueChanged.connect(self.frameNumberBox.setValue)
         self.frameNumberBox.valueChanged.connect(self.frameSlider.setValue)
+
+        self.frameSlider.valueChanged.connect(self.set_frame)
 
 class CalibrationPanel(QWidget):
     def __init__(self, main_window: QWidget):
