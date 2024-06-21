@@ -176,6 +176,7 @@ class MainWindow(QMainWindow):
         self.videoFramePanel.setNumFrames(maxframes)
 
     def sync_videos(self):
+        logging.debug('Syncing')
         if self.cameraParams['Synchronization', 'Method'] == 'Timecode':
             logging.debug('Syncing by timecode!')
 

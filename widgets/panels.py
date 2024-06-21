@@ -25,7 +25,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from pyqtgraph.parametertree import Parameter, ParameterTree
+from pyqtgraph.parametertree import Parameter, ParameterTree, parameterTypes
 import pyqtgraph as pg
 
 pg.setConfigOption('background', 'w')
@@ -70,11 +70,10 @@ class VideoControlPanel(QDockWidget):
                 {'name': 'Method', 'type': 'list', 'values': ['None', 'Timecode', 'Audio', 'Timecode+Audio'],
                  'value': 'Timecode'},
                 {'name': 'Synchronize...', 'type': 'action'},
-                    {'name': 'Sign convention', 'type': 'list', 'values': ['Left is positive', 'Left is negative', 'None'],
-     'value': 'Left is positive'}
                 ]})
             
             self.cameraParams = Parameter.create(name='cameras', type='group', children=p)
+
             self.parameterTreeWidget.setParameters(self.cameraParams, showTop=False)
             self.cameraParams.child('Synchronization', 'Synchronize...').sigActivated.connect(self.syncVideos)
                           
