@@ -1,36 +1,27 @@
 import os, sys
-import subprocess
-import json
 import cv2
 from attrs import define, field
 import numpy as np
+from scipy import signal
 from datetime import datetime, time
 import re
+import ffmpegio
 
 import logging
 
-if sys.platform == 'darwin':
-    FFPROBE = '/opt/homebrew/bin/ffprobe'
-    FFMPEG = '/opt/homebrew/bin/ffmpeg'
-elif sys.platform == 'win32':
-    FFPROBE = ''
-    FFMPEG = ''
-else:
+if not ffmpegio.is_ready():
     raise(OSError("Could not find ffprobe or ffmpeg"))
-
-if not os.path.exists(FFPROBE):
-    raise(OSError("Could not find ffprobe at path {}".format(FFPROBE)))
-if not os.path.exists(FFMPEG):
-    raise(OSError("Could not find ffmpeg at path {}".format(FFMPEG)))
 
 @define(order=False)
 class MediaVideo:
     filename: str = field()
+    timecode = field(default=None)
+    audiorate = field(default=None)
 
     _reader_ = field(default=None)
     _filedata_ = field(default=None)
-    timecode = field(default=None)
     _frame = field(default=None)
+    _audio = field(default=None)
 
     @property
     def __reader(self):
@@ -54,13 +45,7 @@ class MediaVideo:
     @property
     def __filedata(self):
         if self._filedata_ is None:
-            cmd = [FFPROBE, '-print_format', 'json',
-                '-show_format', '-show_streams',
-                    self.filename]
-            logging.debug("Command: {}".format(' '.join(cmd)))
-            r = subprocess.run(cmd, capture_output=True)
-
-            self._filedata_ = json.loads(r.stdout)
+            self._filedata_ = ffmpegio.probe.video_streams_basic(self.filename)
 
         return self._filedata_
 
@@ -82,25 +67,43 @@ class MediaVideo:
         if self._frame != fr:
             self.__reader.set(cv2.CAP_PROP_POS_FRAMES, fr)
 
+    def audio(self, audiorate=500):
+        if self._audio is None:
+            hirate, a = ffmpegio.audio.read(self.filename)
+            self.audiorate, self._audio = self._decimate_audio(a, hirate, audiorate)
+
+        return self.audiorate, self._audio
+
+    def _decimate_audio(self, a, hirate, audiorate):
+        dec = round(hirate/1000)
+        audiorate = hirate / dec
+
+        if dec > 13:
+            dec = [8, int(dec/8)]
+        else:
+            dec = [int(dec)]
+
+        logging.debug(f"Decimate audio by {dec}")
+
+        alo = np.abs(a[:,0])
+        for d1 in dec:
+            alo = signal.decimate(alo, d1)
+        
+        return audiorate, alo
+
+    def is_audio(self):
+        ## TODO: Make this actually do something
+        return True
+    
     def __repr__(self):
         return os.path.basename(self.filename)
     
-    def _get_video_stream(self):
-        for s in self.__filedata['streams']:
-            if s['codec_type'] == 'video':
-                break
-        else:
-            raise KeyError("No video stream found")
-        
-        return s
-
     def _parse_timecode(self):
         frame_rate = self.fps
 
         try:
-            video_stream = self._get_video_stream()
-            creation_time = video_stream['tags']['creation_time']
-            timecode = video_stream['tags']['timecode']
+            creation_time = self.__filedata[0]['tags']['creation_time']
+            timecode = self.__filedata[0]['tags']['timecode']
             
             creation_time = datetime.fromisoformat(str(creation_time).replace('Z', '+00:00'))
 
@@ -124,7 +127,7 @@ class MediaVideo:
         success, frame = self.__reader.read()
 
         if not success or frame is None:
-            raise KeyError(f"Unable to load frame {idx} from {self}.")
+            raise KeyError(f"Unable to load frame from {self}.")
 
         return frame
 

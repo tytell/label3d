@@ -27,6 +27,7 @@ from qtpy.QtWidgets import (
 )
 from pyqtgraph.parametertree import Parameter, ParameterTree, parameterTypes
 import pyqtgraph as pg
+import numpy as np
 
 pg.setConfigOption('background', 'w')
 pg.setConfigOption('foreground', 'k')
@@ -168,8 +169,26 @@ class VideoFramePanel(QDockWidget):
         self.frameNumberBox.setMinimum(1)
         self.frameNumberBox.setMaximum(nframes)
 
+    @Slot(list)
+    def addAudio(self, vids):
+        w = self.graphicsWidget
+        w.clear()
+
+        self._audio = []
+        self._audio_t = []
+
+        for i, v1 in enumerate(vids):
+            arate, a = v1.audio()
+            self._audio.append(a)
+
+            t1 = np.arange(0, len(a)) / arate
+            self._audio_t.append(t1)
+
+            p1 = w.addPlot(row=i, col=0)
+            p1.plot(t1, a, pen=(i, len(vids)))
+                    
     def _create_widgets(self, parent):
-        layout = QVBoxLayout()
+        self.layout = QVBoxLayout()
 
         hlayout = QHBoxLayout()
         self.frameSlider = QSlider(Qt.Horizontal)
@@ -186,8 +205,12 @@ class VideoFramePanel(QDockWidget):
         hlayout.addWidget(self.frameSlider)
         hlayout.addWidget(self.frameNumberBox)
 
-        layout.addLayout(hlayout)
-        parent.setLayout(layout)
+        self.layout.addLayout(hlayout)
+
+        self.graphicsWidget = pg.GraphicsLayoutWidget()
+        self.layout.addWidget(self.graphicsWidget)
+
+        parent.setLayout(self.layout)
     
     def _set_slots(self):
         self.frameSlider.valueChanged.connect(self.frameNumberBox.setValue)

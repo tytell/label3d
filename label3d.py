@@ -168,6 +168,8 @@ class MainWindow(QMainWindow):
             info = vid.get_info_as_parameters()
             if len(info) > 0:
                 self.videoControlPanel.addVideoInfo(i, info)
+            
+            self.videos.append(vid)
 
         maxframes = max(nfr)
         
@@ -175,6 +177,11 @@ class MainWindow(QMainWindow):
 
         self.videoFramePanel.setNumFrames(maxframes)
 
+        # handle audio
+        isaudio = [vid.is_audio() for vid in self.videos]
+        if all(isaudio):
+            self.videoFramePanel.addAudio(self.videos)
+            
     def sync_videos(self):
         logging.debug('Syncing')
         if self.cameraParams['Synchronization', 'Method'] == 'Timecode':
