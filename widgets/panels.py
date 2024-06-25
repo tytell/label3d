@@ -1,5 +1,6 @@
 from typing import Callable, Dict, Iterable, List, Optional, Type, Union
 import logging
+import itertools
 
 from qtpy import QtGui, QtCore
 from qtpy.QtCore import (
@@ -176,6 +177,7 @@ class VideoFramePanel(QDockWidget):
 
         self._audio = []
         self._audio_t = []
+        self._audio_plots = []
 
         for i, v1 in enumerate(vids):
             arate, a = v1.audio()
@@ -186,6 +188,12 @@ class VideoFramePanel(QDockWidget):
 
             p1 = w.addPlot(row=i, col=0)
             p1.plot(t1, a, pen=(i, len(vids)))
+            p1.showAxis('left', False)
+            p1.setMouseEnabled(x=True, y=False)
+            self._audio_plots.append(p1)
+        
+        for p1, p2 in zip(self._audio_plots[:-1], self._audio_plots[1:]):
+            p1.setXLink(p2)
                     
     def _create_widgets(self, parent):
         self.layout = QVBoxLayout()
