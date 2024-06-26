@@ -73,7 +73,20 @@ class VideoControlPanel(QDockWidget):
                  'value': 'Timecode'},
                 {'name': 'Synchronize...', 'type': 'action'},
                 ]})
-            
+                                                
+            p.append({'name': 'Calibration', 'type': 'group', 'children': [
+                {'name': 'Type', 'type': 'list', 'values': ['Charuco', 'Checkboard'],
+                 'value': 'Charuco'},
+                {'name': 'Number of squares horizontally', 'type': 'int', 'value': 6},
+                {'name': 'Number of squares vertically', 'type': 'int', 'value': 6},
+                {'name': 'Size of square', 'type': 'float', 'value':24.33, 'suffix': 'mm'},
+                {'name': 'Size of marker', 'type': 'float', 'value':17, 'suffix': 'mm'},
+                {'name': 'Marker bits', 'type': 'int', 'value':5, 'tip':'Information bits in the markers'},
+                {'name': 'Number of markers', 'type': 'int', 'value':50, 'tip':'Number of markers in the dictionary'},
+                {'name': 'Output file', 'type': 'str', 'value': ''},
+                {'name': 'Select output file...', 'type': 'action'},
+                {'name': 'Calibrate...', 'type': 'action'}
+                ]})
             self.cameraParams = Parameter.create(name='cameras', type='group', children=p)
 
             self.parameterTreeWidget.setParameters(self.cameraParams, showTop=False)
@@ -174,6 +187,7 @@ class VideoFramePanel(QDockWidget):
     def addAudio(self, vids):
         w = self.graphicsWidget
         w.clear()
+        w.show()
 
         self._audio = []
         self._audio_t = []
@@ -191,6 +205,21 @@ class VideoFramePanel(QDockWidget):
             p1.showAxis('left', False)
             p1.setMouseEnabled(x=True, y=False)
             self._audio_plots.append(p1)
+
+        self.frame_dur = 1 / vids[0].fps
+
+        tfr1 = 0
+        tfr2 = tfr1 + self.frame_dur
+
+        self._frame_rgns = []
+        for p1 in self._audio_plots:
+            fr1 = pg.LinearRegionItem([tfr1, tfr2], movable=True)
+            fr1.setZValue(-10)
+
+            p1.addItem(fr1)
+            self._frame_rgns.append(fr1)
+        
+        # self._frame_rgns[0].sigRegionChanged.connect(self._frame_rgns[1].setRegion)
         
         for p1, p2 in zip(self._audio_plots[:-1], self._audio_plots[1:]):
             p1.setXLink(p2)
@@ -217,6 +246,7 @@ class VideoFramePanel(QDockWidget):
 
         self.graphicsWidget = pg.GraphicsLayoutWidget()
         self.layout.addWidget(self.graphicsWidget)
+        self.graphicsWidget.hide()
 
         parent.setLayout(self.layout)
     
