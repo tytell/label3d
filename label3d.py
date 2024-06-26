@@ -178,7 +178,7 @@ class MainWindow(QMainWindow):
         self.videoFramePanel.setNumFrames(maxframes)
 
         # handle audio
-        isaudio = [vid.is_audio() for vid in self.videos]
+        isaudio = [vid.is_audio for vid in self.videos]
         if all(isaudio):
             self.videoFramePanel.addAudio(self.videos)
             

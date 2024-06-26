@@ -21,6 +21,7 @@ class MediaVideo:
     _reader_ = field(default=None)
     _filedata_ = field(default=None)
     _frame = field(default=None)
+    _is_audio = field(default=None)
     _audio = field(default=None)
 
     @property
@@ -68,6 +69,9 @@ class MediaVideo:
             self.__reader.set(cv2.CAP_PROP_POS_FRAMES, fr)
 
     def audio(self, audiorate=500):
+        if not self.is_audio:
+            return None, None
+        
         if self._audio is None:
             hirate, a = ffmpegio.audio.read(self.filename)
             self.audiorate, self._audio = self._decimate_audio(a, hirate, audiorate)
@@ -91,9 +95,11 @@ class MediaVideo:
         
         return audiorate, alo
 
+    @property
     def is_audio(self):
-        ## TODO: Make this actually do something
-        return True
+        if self._is_audio is None:
+            self._is_audio = len(ffmpegio.probe.audio_streams_basic(self.filename)) > 0
+        return self._is_audio
     
     def __repr__(self):
         return os.path.basename(self.filename)
@@ -146,10 +152,12 @@ class MediaVideo:
         return frame
     
     def get_info_as_parameters(self):
+        p = [{'name': 'Frame rate', 'type': 'float', 
+              'value': self.fps, 'suffix': 'fps', 'readonly': True}]
         self._parse_timecode()
-        tc = "{:%H:%M:%S}.{:03d}".format(self.timecode, int(round(self.timecode.microsecond/1000)))
-        p = [{'name': 'Timecode', 'type': 'str', 'value': tc, 'readonly': True},
-             {'name': 'Frame rate', 'type': 'float', 'value': self.fps, 'suffix': 'fps', 'readonly': True}]
+        if self.timecode is not None:
+            tc = "{:%H:%M:%S}.{:03d}".format(self.timecode, int(round(self.timecode.microsecond/1000)))
+            p.append({'name': 'Timecode', 'type': 'str', 'value': tc, 'readonly': True})
 
         return p
     
