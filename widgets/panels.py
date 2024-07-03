@@ -36,6 +36,7 @@ pg.setConfigOption('foreground', 'k')
 class VideoControlPanel(QDockWidget):
     addedVideos = QtCore.Signal(list)
     syncVideos = QtCore.Signal()
+    doCalibrate = QtCore.Signal()
 
     def __init__(self, main_window: QMainWindow):
         super().__init__("Video Control")
@@ -61,42 +62,57 @@ class VideoControlPanel(QDockWidget):
                                          dir="", filter="Videos (*.mp4)")
         
         if vids is not None:
-            p = []
+            cams = []
             for i, fn in enumerate(vids):
-                p1 = {'name': f"cam{i+1}", 'type': 'group', 'children': [
+                cams1 = {'name': f"cam{i+1}", 'type': 'group', 'children': [
                     {'name': 'File', 'type': 'str', 'value': fn}
                 ]}
-                p.append(p1)
+                cams.append(cams1)
+
+            p = [{'name': 'Videos', 'type': 'group', 'children': cams}]
 
             p.append({'name': 'Synchronization', 'type': 'group', 'children': [
-                {'name': 'Method', 'type': 'list', 'values': ['None', 'Timecode', 'Audio', 'Timecode+Audio'],
+                {'name': 'Method', 'type': 'list', 'limits': ['None', 'Timecode', 'Audio', 'Timecode+Audio'],
                  'value': 'Timecode'},
                 {'name': 'Synchronize...', 'type': 'action'},
                 ]})
                                                 
             p.append({'name': 'Calibration', 'type': 'group', 'children': [
-                {'name': 'Type', 'type': 'list', 'values': ['Charuco', 'Checkboard'],
+                {'name': 'Type', 'type': 'list', 'limits': ['Charuco', 'Checkboard'],
                  'value': 'Charuco'},
+                {'name': 'Frame Step', 'type': 'int', 'value': 5,  
+                 'tip': "Calibrate on every nth frame"},
                 {'name': 'Number of squares horizontally', 'type': 'int', 'value': 6},
                 {'name': 'Number of squares vertically', 'type': 'int', 'value': 6},
                 {'name': 'Size of square', 'type': 'float', 'value':24.33, 'suffix': 'mm'},
                 {'name': 'Size of marker', 'type': 'float', 'value':17, 'suffix': 'mm'},
                 {'name': 'Marker bits', 'type': 'int', 'value':5, 'tip':'Information bits in the markers'},
                 {'name': 'Number of markers', 'type': 'int', 'value':50, 'tip':'Number of markers in the dictionary'},
-                {'name': 'Output file', 'type': 'str', 'value': ''},
-                {'name': 'Select output file...', 'type': 'action'},
+                {'name': 'Output file', 'type': 'file', 'value': '', 'acceptMode':'AcceptSave'},
                 {'name': 'Calibrate...', 'type': 'action'}
                 ]})
+            
             self.cameraParams = Parameter.create(name='cameras', type='group', children=p)
 
             self.parameterTreeWidget.setParameters(self.cameraParams, showTop=False)
             self.cameraParams.child('Synchronization', 'Synchronize...').sigActivated.connect(self.syncVideos)
-                          
+            
+            self.cameraParams.child('Calibration', 'Calibrate...').sigActivated.connect(self.doCalibrate)
+
             self.addedVideos.emit(vids)
 
     def addVideoInfo(self, i, info):
-        self.cameraParams.childs[i].addChildren(info)
+        self.cameraParams.child('Videos').children()[i].addChildren(info)
 
+    def get_videos(self):
+        camnames = []
+        vidnames = []
+        for p1 in self.cameraParams.child('Videos'):
+            camnames.append(p1.name())
+            vidnames.append(p1['File'])
+
+        return camnames, vidnames
+    
     def _create_widgets(self, parent):
         layout = QVBoxLayout()
 

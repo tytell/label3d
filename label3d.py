@@ -22,6 +22,7 @@ from qtpy.QtGui import (
 from widgets.panels import VideoControlPanel, VideoFramePanel, CalibrationPanel
 from widgets.videowindow import VideoWindow
 from videofile import Video
+from triangulate import Calibration
 
 from settings import SETTINGS_FILE
 
@@ -187,6 +188,11 @@ class MainWindow(QMainWindow):
         if self.cameraParams['Synchronization', 'Method'] == 'Timecode':
             logging.debug('Syncing by timecode!')
 
+    def do_calibrate(self):
+        camnames, vidnames = self.videoControlPanel.get_videos()
+
+        calib = Calibration.from_parameters(camnames, vidnames, self.cameraParams.child('Calibration'))
+
     def _create_panels(self):
         # self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)
         # self.params = self.parameterdock.parameters
@@ -194,6 +200,7 @@ class MainWindow(QMainWindow):
         self.videoControlPanel = VideoControlPanel(self)
         self.videoControlPanel.addedVideos.connect(self.setVideos)
         self.videoControlPanel.syncVideos.connect(self.sync_videos)
+        self.videoControlPanel.doCalibrate.connect(self.do_calibrate)
 
         self.videoFramePanel = VideoFramePanel(self)
 
