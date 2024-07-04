@@ -68,6 +68,13 @@ class MediaVideo:
         if self._frame != fr:
             self.__reader.set(cv2.CAP_PROP_POS_FRAMES, fr)
 
+    @property
+    def frame_size(self):
+        width  = int(self.__reader.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(self.__reader.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        return (width, height)
+    
     def audio(self, audiorate=500):
         if not self.is_audio:
             return None, None

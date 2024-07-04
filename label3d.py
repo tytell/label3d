@@ -190,7 +190,9 @@ class MainWindow(QMainWindow):
 
     def do_calibrate(self):
         camnames, videonames = self.videoControlPanel.get_camera_names()
-
+        sz = self.videos[0].frame_size
+        logging.debug(f"{sz=}")
+        
         calib = Calibration.from_parameters(cameranames=camnames, videos=self.videos, 
                                             params=self.cameraParams.child('Calibration'))
 

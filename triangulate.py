@@ -60,37 +60,63 @@ class Calibration(QObject):
 
     @Slot()
     def run(self):
-        board = aniposelib.boards.CharucoBoard(squaresX=self.nx,
-                                            squaresY=self.ny,
-                                            square_length=self.square_size,
-                                            marker_length=self.marker_size,
-                                            marker_bits=self.marker_bits,
-                                            dict_size=self.n_markers_in_dict)
-        logging.debug("Set up boards")
-        self.camgroup = aniposelib.cameras.CameraGroup.from_names(self.cameranames)
+        try:
+            board = aniposelib.boards.CharucoBoard(squaresX=self.nx,
+                                                squaresY=self.ny,
+                                                square_length=self.square_size,
+                                                marker_length=self.marker_size,
+                                                marker_bits=self.marker_bits,
+                                                dict_size=self.n_markers_in_dict)
+            logging.debug("Set up boards")
+            self.camgroup = aniposelib.cameras.CameraGroup.from_names(self.cameranames)
 
-        nframes_in_vid = self.videos[0].nframes // self.framestep
-        n = nframes_in_vid * len(self.videos)
+            nframes_in_vid = self.videos[0].nframes // self.framestep
+            n = nframes_in_vid * len(self.videos)
 
-        logging.debug(f"Calibration: using {nframes_in_vid} frames in each video for {len(self.videos)}")
+            logging.debug(f"Calibration: using {nframes_in_vid} frames in each video for {len(self.videos)}")
 
-        for vnum, vid in enumerate(self.videos):
-            framenums = range(0, vid.nframes, self.framestep)
-            self.progress.emit(vnum*nframes_in_vid, n)
+            # from aniposelib.CameraGroup.get_rows_videos
+            all_rows = []
+            for vnum, vid in enumerate(self.videos):
+                logging.debug(f"Detecting board in video #{vnum}: {vid}")
 
-            vidrows = []
-            for framenum in framenums:
-                frame = vid.get_frame(framenum)
+                framenums = range(0, vid.nframes, self.framestep)
+                self.progress.emit(vnum*nframes_in_vid, n)
 
-                corners, ids = board.detect_image(frame)
+                # from aniposelib.CalibrationObject.detect_video
+                rows_cam = []
+                for i, framenum in enumerate(framenums):
+                    frame = vid.get_frame(framenum)
 
-                if corners is not None:
-                    key = (vnum, framenum)
-                vidrows.append({'framenum': key, 'corners': corners, 'ids': ids})
+                    corners, ids = board.detect_image(frame)
 
-                self.progress.emit(vnum*nframes_in_vid + framenum, n)
-        
-        logging.debug("Thread done!")
-        self.finished.emit()
+                    if corners is not None:
+                        key = (vnum, framenum)
+                        rows_cam.append({'framenum': key, 'corners': corners, 'ids': ids})
+
+                    self.progress.emit(vnum*nframes_in_vid + i, n)
+
+                rows_cam = board.fill_points_rows(rows_cam)
+                logging.debug(f"{len(rows_cam)} boards detected")
+
+                all_rows.append(rows_cam)
+
+            logging.debug(all_rows)
+            
+            logging.debug("Setting video sizes")
+
+            # from aniposelib.CameraGroup.calibrate_videos
+            for cam, vid in zip(self.camgroup.cameras, self.videos):
+                cam.set_size(vid.frame_size)
+            
+            logging.debug("Running calibration!")
+            error = self.camgroup.calibrate_rows(all_rows, board, init_intrinsics=True, init_extrinsics=True)
+
+        except Exception as ex:
+            logging.error(ex)
+
+        finally:
+            logging.debug("Thread done!")
+            self.finished.emit()
 
 

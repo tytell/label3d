@@ -80,7 +80,7 @@ class VideoControlPanel(QDockWidget):
             p.append({'name': 'Calibration', 'type': 'group', 'children': [
                 {'name': 'Type', 'type': 'list', 'limits': ['Charuco', 'Checkboard'],
                  'value': 'Charuco'},
-                {'name': 'Frame Step', 'type': 'int', 'value': 5,  
+                {'name': 'Frame Step', 'type': 'int', 'value': 40,  
                  'tip': "Calibrate on every nth frame"},
                 {'name': 'Number of squares horizontally', 'type': 'int', 'value': 6},
                 {'name': 'Number of squares vertically', 'type': 'int', 'value': 6},
@@ -127,10 +127,6 @@ class VideoControlPanel(QDockWidget):
         if i < n:
             pct = int((i*100) / n)
             progress.setValue(pct)
-        else:
-            progress.remove()
-            calibrate_button = self.cameraParams.child('Calibration', 'Calibrate...')
-            calibrate_button.show()
 
     @Slot()
     def calibration_finished(self):
