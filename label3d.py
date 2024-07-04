@@ -7,7 +7,7 @@ from functools import partial
 import qtpy
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import (
-    QEvent, Qt,
+    QEvent, Qt, QThread,
     Slot
 )
 from qtpy.QtWidgets import (
@@ -19,7 +19,7 @@ from qtpy.QtGui import (
     QKeySequence
 )
 
-from widgets.panels import VideoControlPanel, VideoFramePanel, CalibrationPanel
+from widgets.panels import VideoControlPanel, VideoFramePanel
 from widgets.videowindow import VideoWindow
 from videofile import Video
 from triangulate import Calibration
@@ -189,9 +189,24 @@ class MainWindow(QMainWindow):
             logging.debug('Syncing by timecode!')
 
     def do_calibrate(self):
-        camnames, vidnames = self.videoControlPanel.get_videos()
+        camnames, videonames = self.videoControlPanel.get_camera_names()
 
-        calib = Calibration.from_parameters(camnames, vidnames, self.cameraParams.child('Calibration'))
+        calib = Calibration.from_parameters(cameranames=camnames, videos=self.videos, 
+                                            params=self.cameraParams.child('Calibration'))
+
+        self._calibration_thread = QThread()
+        self._calibration_worker = calib
+        self._calibration_worker.moveToThread(self._calibration_thread)
+
+        self._calibration_thread.started.connect(self._calibration_worker.run)
+        self._calibration_worker.finished.connect(self._calibration_thread.quit)
+        self._calibration_worker.finished.connect(self._calibration_worker.deleteLater)
+        self._calibration_worker.finished.connect(self._calibration_thread.deleteLater)
+        
+        self._calibration_worker.progress.connect(self.videoControlPanel.show_calibration_progress)
+        self._calibration_worker.finished.connect(self.videoControlPanel.calibration_finished)
+
+        self._calibration_thread.start()
 
     def _create_panels(self):
         # self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)

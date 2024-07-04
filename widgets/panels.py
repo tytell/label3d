@@ -104,15 +104,44 @@ class VideoControlPanel(QDockWidget):
     def addVideoInfo(self, i, info):
         self.cameraParams.child('Videos').children()[i].addChildren(info)
 
-    def get_videos(self):
+    def get_camera_names(self):
         camnames = []
-        vidnames = []
+        videonames = []
         for p1 in self.cameraParams.child('Videos'):
             camnames.append(p1.name())
-            vidnames.append(p1['File'])
+            videonames.append(p1['File'])
 
-        return camnames, vidnames
+        return camnames, videonames
     
+    @Slot(int, int)
+    def show_calibration_progress(self, i,n):
+        try:
+            progress = self.cameraParams.child('Calibration', 'Progress')
+        except KeyError:
+            progress = parameterTypes.ProgressBarParameter(name="Progress")
+            self.cameraParams.child('Calibration').addChild(progress)
+
+            calibrate_button = self.cameraParams.child('Calibration', 'Calibrate...')
+            calibrate_button.hide()
+        
+        if i < n:
+            pct = int((i*100) / n)
+            progress.setValue(pct)
+        else:
+            progress.remove()
+            calibrate_button = self.cameraParams.child('Calibration', 'Calibrate...')
+            calibrate_button.show()
+
+    @Slot()
+    def calibration_finished(self):
+        try:
+            progress = self.cameraParams.child('Calibration', 'Progress')
+            progress.remove()
+            calibrate_button = self.cameraParams.child('Calibration', 'Calibrate...')
+            calibrate_button.show()
+        except KeyError:
+            pass
+
     def _create_widgets(self, parent):
         layout = QVBoxLayout()
 
@@ -271,45 +300,3 @@ class VideoFramePanel(QDockWidget):
         self.frameNumberBox.valueChanged.connect(self.frameSlider.setValue)
 
         self.frameSlider.valueChanged.connect(self.set_frame)
-
-class CalibrationPanel(QWidget):
-    def __init__(self, main_window: QWidget):
-        super().__init__()
-        self.name = "Calibration"
-        self.main_window = main_window
-
-        self.setObjectName(self.name + "Panel")
-
-        self._create_widgets()
-
-    def _create_widgets(self, parent):
-        layout = QVBoxLayout()
-
-        def makeLabeledWidget(widget: QWidget, name: str, label: Optional[str] = None):
-            widget.setObjectName(name)
-
-            if label is not None:
-                hlay = QHBoxLayout()
-                qlab = QLabel(label)
-                qlab.setAlignment(Qt.AlignRight)
-                qlab.setBuddy(widget)
-
-                hlay.addWidget(qlab)
-                hlay.addWidget(widget)
-
-                return hlay
-            else:
-                return widget
-        
-        self.calibrationFileNameEdit = QLineEdit(parent)
-        h = makeLabeledWidget(self.calibrationFileNameEdit, "calibrationFileNameEdit", "Calibration file:")
-        self.calibrationFileBrowse = QPushButton("...", parent)
-        h.addWidget(self.calibrationFileBrowse)
-
-        self.loadCalibrationButton = QPushButton("Load calibration...", parent)
-        h.addWidget(self.loadCalibrationButton)
-
-        layout.addLayout(h)
-
-        layout.addStretch()                
-        parent.setLayout(layout)
