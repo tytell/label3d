@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
 from pyqtgraph.parametertree import Parameter, ParameterTree, parameterTypes
 import pyqtgraph as pg
 import numpy as np
+from string import ascii_uppercase
 
 pg.setConfigOption('background', 'w')
 pg.setConfigOption('foreground', 'k')
@@ -63,8 +64,9 @@ class VideoControlPanel(QDockWidget):
         
         if vids is not None:
             cams = []
+            camletter = ascii_uppercase
             for i, fn in enumerate(vids):
-                cams1 = {'name': f"cam{i+1}", 'type': 'group', 'children': [
+                cams1 = {'name': f"cam{camletter[i]}", 'type': 'group', 'children': [
                     {'name': 'File', 'type': 'str', 'value': fn}
                 ]}
                 cams.append(cams1)

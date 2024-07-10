@@ -3,6 +3,7 @@ from attrs import define, field, Factory
 import aniposelib
 import cv2
 from time import sleep
+import numpy as np
 
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import (
@@ -14,7 +15,9 @@ import logging
 
 from videofile import Video
 
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
+import io
+
 @contextmanager
 def VideoCapture(filename, *args, **kwargs):
     cap = cv2.VideoCapture(filename, *args, **kwargs)
@@ -58,6 +61,9 @@ class Calibration(QObject):
                    marker_bits=params['Marker bits'], n_markers_in_dict=params['Number of markers'],
                    outputfile=params['Output file'])
 
+    def save_calibration(self, outputfile):
+        self.camgroup.dump(outputfile)
+        
     @Slot()
     def run(self):
         try:
@@ -77,7 +83,7 @@ class Calibration(QObject):
 
             # from aniposelib.CameraGroup.get_rows_videos
             all_rows = []
-            for vnum, vid in enumerate(self.videos):
+            for vnum, (cam, vid) in enumerate(zip(self.camgroup.cameras, self.videos)):
                 logging.debug(f"Detecting board in video #{vnum}: {vid}")
 
                 framenums = range(0, vid.nframes, self.framestep)
@@ -85,24 +91,27 @@ class Calibration(QObject):
 
                 # from aniposelib.CalibrationObject.detect_video
                 rows_cam = []
+                rows_vid = []
                 for i, framenum in enumerate(framenums):
                     frame = vid.get_frame(framenum)
 
                     corners, ids = board.detect_image(frame)
 
-                    if corners is not None:
-                        key = (vnum, framenum)
-                        rows_cam.append({'framenum': key, 'corners': corners, 'ids': ids})
+                    if corners is not None and len(corners) > 0:
+                        # first element in key is the video group number - which would allow us, in principle to calibrate
+                        # on multiple videos from each camera
+                        key = (0, framenum)
+                        rows_vid.append({'framenum': key, 'corners': corners, 'ids': ids})
 
                     self.progress.emit(vnum*nframes_in_vid + i, n)
 
-                rows_cam = board.fill_points_rows(rows_cam)
-                logging.debug(f"{len(rows_cam)} boards detected")
+                rows_vid = board.fill_points_rows(rows_vid)
+                logging.debug(f"{len(rows_vid)} boards detected")
+
+                rows_cam.extend(rows_vid)
 
                 all_rows.append(rows_cam)
 
-            logging.debug(all_rows)
-            
             logging.debug("Setting video sizes")
 
             # from aniposelib.CameraGroup.calibrate_videos
@@ -110,6 +119,13 @@ class Calibration(QObject):
                 cam.set_size(vid.frame_size)
             
             logging.debug("Running calibration!")
+
+            # f = io.StringIO()            
+            # with redirect_stdout(f):
+            #     error = self.camgroup.calibrate_rows(all_rows, board, init_intrinsics=True, init_extrinsics=True)
+            # output = f.getvalue()
+            # logging.debug(output)
+
             error = self.camgroup.calibrate_rows(all_rows, board, init_intrinsics=True, init_extrinsics=True)
 
         except Exception as ex:

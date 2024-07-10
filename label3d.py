@@ -13,7 +13,7 @@ from qtpy.QtCore import (
 from qtpy.QtWidgets import (
     QApplication, QWidget, QMainWindow, QMdiArea, QMessageBox, 
     QDockWidget, QAction, QToolBar, QLabel, QStatusBar,
-    QVBoxLayout
+    QVBoxLayout, QFileDialog
 )
 from qtpy.QtGui import (
     QKeySequence
@@ -24,7 +24,7 @@ from widgets.videowindow import VideoWindow
 from videofile import Video
 from triangulate import Calibration
 
-from settings import SETTINGS_FILE
+from settings import SETTINGS_FILE, DEBUG_CALIBRATION
 
 parameterDefinitions = [
     {'name': 'Calibration', 'type': 'group', 'children': [
@@ -193,23 +193,39 @@ class MainWindow(QMainWindow):
         sz = self.videos[0].frame_size
         logging.debug(f"{sz=}")
         
-        calib = Calibration.from_parameters(cameranames=camnames, videos=self.videos, 
+        self.calibration = Calibration.from_parameters(cameranames=camnames, videos=self.videos, 
                                             params=self.cameraParams.child('Calibration'))
 
-        self._calibration_thread = QThread()
-        self._calibration_worker = calib
-        self._calibration_worker.moveToThread(self._calibration_thread)
+        if DEBUG_CALIBRATION:
+            # run the calibration in the main thread so that we can debug more easily
+            self.calibration.run()
 
-        self._calibration_thread.started.connect(self._calibration_worker.run)
-        self._calibration_worker.finished.connect(self._calibration_thread.quit)
-        self._calibration_worker.finished.connect(self._calibration_worker.deleteLater)
-        self._calibration_worker.finished.connect(self._calibration_thread.deleteLater)
+        else:
+            self._calibration_thread = QThread()
+            self._calibration_worker = self.calibration
+            self._calibration_worker.moveToThread(self._calibration_thread)
+
+            self._calibration_thread.started.connect(self._calibration_worker.run)
+            self._calibration_worker.finished.connect(self._calibration_thread.quit)
+            self._calibration_worker.finished.connect(self._calibration_worker.deleteLater)
+            self._calibration_worker.finished.connect(self._calibration_thread.deleteLater)
+            
+            self._calibration_worker.progress.connect(self.videoControlPanel.show_calibration_progress)
+            self._calibration_worker.finished.connect(self.videoControlPanel.calibration_finished)
+            self._calibration_worker.finished.connect(self.finish_calibration)
+
+            self._calibration_thread.start()
+
+    @Slot()
+    def finish_calibration(self):
+        if len(self.cameraParams['Calibration', 'Output file']) == 0:
+            filename, ok = QFileDialog.getSaveFileName(self, "Calibration output file", filter="TOML files (*.toml)")
+            self.cameraParams['Calibration', 'Output file'] = filename
+        else:
+            filename = self.cameraParams['Calibration', 'Output file']
         
-        self._calibration_worker.progress.connect(self.videoControlPanel.show_calibration_progress)
-        self._calibration_worker.finished.connect(self.videoControlPanel.calibration_finished)
-
-        self._calibration_thread.start()
-
+        self.calibration.save_calibration(filename)
+        
     def _create_panels(self):
         # self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)
         # self.params = self.parameterdock.parameters
