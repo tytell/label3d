@@ -23,6 +23,7 @@ from widgets.panels import VideoControlPanel, VideoFramePanel
 from widgets.videowindow import VideoWindow
 from videofile import Video
 from triangulate import Calibration
+from points import Points
 
 from settings import SETTINGS_FILE, DEBUG_CALIBRATION
 
@@ -197,6 +198,12 @@ class MainWindow(QMainWindow):
                                             params=self.cameraParams.child('Calibration'))
 
         if DEBUG_CALIBRATION:
+            self._calibration_worker = self.calibration
+            
+            self._calibration_worker.progress.connect(self.videoControlPanel.show_calibration_progress)
+            self._calibration_worker.finished.connect(self.videoControlPanel.calibration_finished)
+            self._calibration_worker.finished.connect(self.finish_calibration)
+
             # run the calibration in the main thread so that we can debug more easily
             self.calibration.run()
 
@@ -217,7 +224,7 @@ class MainWindow(QMainWindow):
             self._calibration_thread.start()
 
     @Slot()
-    def finish_calibration(self):
+    def finish_calibration(self, rows):
         if len(self.cameraParams['Calibration', 'Output file']) == 0:
             filename, ok = QFileDialog.getSaveFileName(self, "Calibration output file", filter="TOML files (*.toml)")
             self.cameraParams['Calibration', 'Output file'] = filename
@@ -225,6 +232,8 @@ class MainWindow(QMainWindow):
             filename = self.cameraParams['Calibration', 'Output file']
         
         self.calibration.save_calibration(filename)
+
+        self.points = Points.from_calibration_rows(rows, self.calibration)
         
     def _create_panels(self):
         # self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)

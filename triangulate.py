@@ -29,7 +29,7 @@ def VideoCapture(filename, *args, **kwargs):
         cap.release()
     
 class Calibration(QObject):
-    finished = QtCore.Signal()
+    finished = QtCore.Signal(list)
     progress = QtCore.Signal(int, int)
 
     def __init__(self, cameranames, videos, framestep, type,
@@ -126,6 +126,10 @@ class Calibration(QObject):
             # output = f.getvalue()
             # logging.debug(output)
 
+            self.progress.emit(-1, n)
+            self.board = board
+            self.rows = all_rows
+
             error = self.camgroup.calibrate_rows(all_rows, board, init_intrinsics=True, init_extrinsics=True)
 
         except Exception as ex:
@@ -133,6 +137,6 @@ class Calibration(QObject):
 
         finally:
             logging.debug("Thread done!")
-            self.finished.emit()
+            self.finished.emit(all_rows)
 
 

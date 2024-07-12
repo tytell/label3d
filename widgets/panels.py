@@ -126,12 +126,15 @@ class VideoControlPanel(QDockWidget):
             calibrate_button = self.cameraParams.child('Calibration', 'Calibrate...')
             calibrate_button.hide()
         
-        if i < n:
+        if i < 0:
+            progress.setName('Working...')
+            progress.setValue(-1)
+        elif i < n:
             pct = int((i*100) / n)
             progress.setValue(pct)
 
     @Slot()
-    def calibration_finished(self):
+    def calibration_finished(self, rows):
         try:
             progress = self.cameraParams.child('Calibration', 'Progress')
             progress.remove()
