@@ -3,6 +3,7 @@ import platform
 import logging
 from typing import Callable, List, Optional, Tuple
 from functools import partial
+import yaml
 
 import qtpy
 from qtpy import QtCore, QtGui
@@ -56,6 +57,8 @@ class MainWindow(QMainWindow):
 
         # self._mdi_area.subWindowActivated.connect(self.update_menus)
 
+        self.project_name = None
+
         self._create_actions()
         self._create_menus()
 
@@ -73,7 +76,9 @@ class MainWindow(QMainWindow):
     def _create_actions(self):
         self._newProject_act = QAction("&New Project", self)
         self._openProject_act = QAction("&Open Project...", self)
-        
+        self._saveProject_act = QAction("&Save Project...", self,
+                                        triggered=self.saveProject)
+
         self._quit_act = QAction("&Quit", self, triggered=self.close)
 
         self._zoom_act = QAction("&Zoom", self, shortcut=QKeySequence('z'))
@@ -120,6 +125,7 @@ class MainWindow(QMainWindow):
         fileMenu = self.menuBar().addMenu("File")
         fileMenu.addAction(self._newProject_act)
         fileMenu.addAction(self._openProject_act)
+        fileMenu.addAction(self._saveProject_act)
         
         fileMenu.addSeparator()
         self.addAction(self._quit_act)
@@ -179,6 +185,10 @@ class MainWindow(QMainWindow):
 
         self.videoFramePanel.setNumFrames(maxframes)
 
+        camnames, videonames = self.videoControlPanel.get_camera_names()
+        for camnm1, vw1 in zip(camnames, self.videowindows):
+            vw1.set_camera_name(camnm1)
+
         # handle audio
         isaudio = [vid.is_audio for vid in self.videos]
         if all(isaudio):
@@ -225,6 +235,9 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def finish_calibration(self, rows):
+        logging.debug('finish_calibration')
+        self.points = Points.from_calibration_rows(rows, self.calibration)
+
         if len(self.cameraParams['Calibration', 'Output file']) == 0:
             filename, ok = QFileDialog.getSaveFileName(self, "Calibration output file", filter="TOML files (*.toml)")
             self.cameraParams['Calibration', 'Output file'] = filename
@@ -233,7 +246,8 @@ class MainWindow(QMainWindow):
         
         self.calibration.save_calibration(filename)
 
-        self.points = Points.from_calibration_rows(rows, self.calibration)
+        for vw1 in self.videowindows:
+            vw1.set_points(self.points)
         
     def _create_panels(self):
         # self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)
@@ -281,6 +295,36 @@ class MainWindow(QMainWindow):
 
     def openProject(self):
         pass
+
+    def saveProject(self):
+        if self.project_name is None:
+            filename, ok = QFileDialog.getSaveFileName(self, "Project file", filter="YAML files (*.yml)")
+            if not ok:
+                return
+            self.project_name = filename
+        
+        self.writeProject(self.project_name, overwrite=True)
+
+    def writeProject(self, filename, overwrite=False):
+        if not overwrite and os.path.exists(filename):
+            logging.debug(f'File {filename} exists. Not overwriting')
+            return
+        
+        def convert_parameters_to_list(params):
+            d = []
+            for p in params:
+                if p.hasChildren():
+                    val = convert_parameters_to_list(p.children())
+                    d1 = {p.name(): val}
+                elif p.hasValue():
+                    d1 = {p.name(): p.value()}
+                d.append(d1)
+            return d
+
+        projdata = convert_parameters_to_list(self.cameraParams)
+
+        with open(filename, mode='wt', encoding='utf-8') as file:
+            yaml.dump(projdata, file)            
 
     def readSettings(self):
         settings = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)

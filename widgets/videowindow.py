@@ -13,7 +13,12 @@ from qtpy.QtCore import (
 from qtpy.QtWidgets import (
     QApplication, QMainWindow, QWidget, QMessageBox, 
     QGraphicsView, QGraphicsScene,
-    QAction, QVBoxLayout
+    QAction, QVBoxLayout,
+    QGraphicsObject,
+    QGraphicsItem,
+    QGraphicsEllipseItem,
+    QGraphicsLineItem,
+    QGraphicsPolygonItem
 )
 from qtpy.QtGui import (
     QBrush,
@@ -190,6 +195,12 @@ class GraphicsView(QGraphicsView):
         self.setTransform(transform)
         # self.updatedViewer.emit()
 
+    def clearInstances(self):
+        scene_items = self.scene.items(Qt.SortOrder.AscendingOrder)
+        for item1 in scene_items:
+            if isinstance(item1, QtInstance):
+                self.scene.removeItem(item1)
+
     def resizeEvent(self, event):
         """Maintain current zoom on resize."""
         self.updateViewer()
@@ -353,6 +364,10 @@ class VideoWindow(QWidget):
             img = self.video.get_frame(fr)
             self.view.setImage(img)
             logging.debug(f"Get frame {fr} from {self.video}")
+            self.frame = fr
+
+            self.show_points_in_frame()
+
         except Exception:
             logging.error("Couldn't read video {} frame {}".format(self.video, fr))
 
@@ -361,6 +376,10 @@ class VideoWindow(QWidget):
         try:
             img = self.video.get_next_frame()
             self.view.setImage(img)
+            self.frame = self.frame + 1
+
+            self.show_points_in_frame()
+
         except Exception:
             logging.error("Couldn't get next frame from video {}".format(self.video))
 
@@ -373,6 +392,8 @@ class VideoWindow(QWidget):
         self.main_window = main_window
         self.video = video
 
+        self._points = None
+
         self.setAttribute(Qt.WA_DeleteOnClose)
 
         self.setObjectName(self.name + "VideoWindow")
@@ -381,6 +402,9 @@ class VideoWindow(QWidget):
         self.view = GraphicsView()
         self.view.setObjectName(self.name + "VideoView")
 
+        self.setnum = 0
+        self.frame = 0
+
         img = video.get_frame(0)
         self.view.setImage(img)        
 
@@ -388,4 +412,66 @@ class VideoWindow(QWidget):
         l.addWidget(self.view)
 
         self.setLayout(l)
+    
+    def set_camera_name(self, camname):
+        self.camname = camname
 
+    def set_points(self, points):
+        self._points = points
+        self.show_points_in_frame()
+
+    def show_points_in_frame(self):
+        if self._points is None:
+            return
+
+        self.view.clearInstances()
+
+        pts_fr = self._points.loc[(self.setnum, self.frame, slice(None)), 
+                                  (self.camname, slice(None), slice(None))]
+        pts_fr = pts_fr.reset_index(col_level='axis')
+
+        inst = QtInstance(pts_fr.loc[:, (self.camname, 'auto', 'x')].to_numpy(),
+                                pts_fr.loc[:, (self.camname, 'auto', 'y')].to_numpy(),
+                                pts_fr.loc[:, (self.camname, 'auto', 'id')].to_numpy())
+        self.view.scene.addItem(inst)
+
+class QtNode(QGraphicsEllipseItem):
+    def __init__(self, parent, x,y,radius, movable=False, *args, **kwargs):
+        self.x = x
+        self.y = y
+        self.radius = radius
+
+        self.movable = movable
+
+        super(QtNode, self).__init__(-self.radius,-self.radius,
+                                     2*self.radius, 2*self.radius,
+                                     parent=parent,
+                                     *args, **kwargs)
+        
+        self.pen_default = QPen(QColor(255,255,0, 127), 1)
+        self.brush = QBrush(QColor(128,128,128, 128))
+
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        self.setFlag(QGraphicsItem.ItemIsMovable, self.movable)
+
+        self.setPen(self.pen_default)
+        self.setBrush(self.brush)
+
+        self.setPos(self.x, self.y)
+
+        self.show()
+
+class QtInstance(QGraphicsObject):
+    def __init__(self, x,y, id, markerRadius=4, 
+                 *args, **kwargs):
+        super(QtInstance, self).__init__(*args, **kwargs)
+
+        self.x = x
+        self.y = y
+        self.id = id
+        self.markerRadius = markerRadius
+
+        self.nodes = []
+
+        for x1,y1, id1 in zip(x,y,id):
+            self.nodes.append(QtNode(self, x1,y1, self.markerRadius))
