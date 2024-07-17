@@ -33,6 +33,11 @@ class Project(QObject):
         proj = cls()
         proj.filename = filename
 
+        with open(filename, 'r') as f:
+            projdata = yaml.safe_load(f)
+        
+
+
     @property
     def filename(self):
         return self._filename
@@ -118,7 +123,14 @@ class Project(QObject):
                     val = convert_parameters_to_list(p.children())
                     d1 = {p.name(): val}
                 elif p.hasValue():
-                    d1 = {p.name(): p.value()}
+                    if p.isType('str') or p.isType('float') or p.isType('int'): 
+                        d1 = {p.name(): p.value()}
+                    elif p.isType('list'):
+                        d1 = {p.name(): {'value': p.value(), 'type': 'list', 'limits': p.opts['limits']}}
+                    elif p.isType('file'):
+                        d1 = {p.name(): {'value': p.value(), 'type': 'file'}}
+                    else:
+                        logger.debug(f'Unrecognized parameter type {p}')
                 else:
                     continue
                 d.append(d1)
@@ -135,5 +147,4 @@ class Project(QObject):
                 logger.debug(f'File {self._filename} exists. Not overwriting')
             else:
                 self._points.to_csv(pointsfile)
-
 
