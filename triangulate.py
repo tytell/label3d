@@ -12,6 +12,7 @@ from qtpy.QtCore import (
 )
 
 import logging
+logger = logging.getLogger('label3d.triangulate')
 
 from videofile import Video
 
@@ -49,11 +50,11 @@ class Calibration(QObject):
         self.n_markers_in_dict = n_markers_in_dict
         
         self.outputfile = outputfile
-        logging.debug("In Calibration.__init__")
+        logger.debug("In Calibration.__init__")
 
     @classmethod
     def from_parameters(cls, cameranames, videos, params):
-        logging.debug(f"params['Type'] = {params['Type']}")
+        logger.debug(f"params['Type'] = {params['Type']}")
 
         return cls(cameranames, videos, framestep=params['Frame Step'], type=params['Type'], 
                    nx=params['Number of squares horizontally'], ny=params['Number of squares vertically'],
@@ -73,18 +74,18 @@ class Calibration(QObject):
                                                 marker_length=self.marker_size,
                                                 marker_bits=self.marker_bits,
                                                 dict_size=self.n_markers_in_dict)
-            logging.debug("Set up boards")
+            logger.debug("Set up boards")
             self.camgroup = aniposelib.cameras.CameraGroup.from_names(self.cameranames)
 
             nframes_in_vid = self.videos[0].nframes // self.framestep
             n = nframes_in_vid * len(self.videos)
 
-            logging.debug(f"Calibration: using {nframes_in_vid} frames in each video for {len(self.videos)}")
+            logger.debug(f"Calibration: using {nframes_in_vid} frames in each video for {len(self.videos)}")
 
             # from aniposelib.CameraGroup.get_rows_videos
             all_rows = []
             for vnum, (cam, vid) in enumerate(zip(self.camgroup.cameras, self.videos)):
-                logging.debug(f"Detecting board in video #{vnum}: {vid}")
+                logger.debug(f"Detecting board in video #{vnum}: {vid}")
 
                 framenums = range(0, vid.nframes, self.framestep)
                 self.progress.emit(vnum*nframes_in_vid, n)
@@ -106,25 +107,25 @@ class Calibration(QObject):
                     self.progress.emit(vnum*nframes_in_vid + i, n)
 
                 rows_vid = board.fill_points_rows(rows_vid)
-                logging.debug(f"{len(rows_vid)} boards detected")
+                logger.debug(f"{len(rows_vid)} boards detected")
 
                 rows_cam.extend(rows_vid)
 
                 all_rows.append(rows_cam)
 
-            logging.debug("Setting video sizes")
+            logger.debug("Setting video sizes")
 
             # from aniposelib.CameraGroup.calibrate_videos
             for cam, vid in zip(self.camgroup.cameras, self.videos):
                 cam.set_size(vid.frame_size)
             
-            logging.debug("Running calibration!")
+            logger.debug("Running calibration!")
 
             # f = io.StringIO()            
             # with redirect_stdout(f):
             #     error = self.camgroup.calibrate_rows(all_rows, board, init_intrinsics=True, init_extrinsics=True)
             # output = f.getvalue()
-            # logging.debug(output)
+            # logger.debug(output)
 
             self.progress.emit(-1, n)
             self.board = board
@@ -133,10 +134,10 @@ class Calibration(QObject):
             error = self.camgroup.calibrate_rows(all_rows, board, init_intrinsics=True, init_extrinsics=True)
 
         except Exception as ex:
-            logging.error(ex)
+            logger.error(ex)
 
         finally:
-            logging.debug("Thread done!")
+            logger.debug("Thread done!")
             self.finished.emit(all_rows)
 
 

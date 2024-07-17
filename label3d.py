@@ -1,6 +1,5 @@
 import os, sys
 import platform
-import logging
 from typing import Callable, List, Optional, Tuple
 from functools import partial
 import yaml
@@ -20,11 +19,15 @@ from qtpy.QtGui import (
     QKeySequence
 )
 
+import logging
+logger = logging.getLogger('label3d')
+
 from widgets.panels import VideoControlPanel, VideoFramePanel
 from widgets.videowindow import VideoWindow
 from videofile import Video
 from triangulate import Calibration
 from points import Points
+from project import Project
 
 from settings import SETTINGS_FILE, DEBUG_CALIBRATION
 
@@ -57,7 +60,7 @@ class MainWindow(QMainWindow):
 
         # self._mdi_area.subWindowActivated.connect(self.update_menus)
 
-        self.project_name = None
+        self.project = Project()
 
         self._create_actions()
         self._create_menus()
@@ -70,14 +73,16 @@ class MainWindow(QMainWindow):
         self.readSettings()
 
     @property
-    def cameraParams(self):
-        return self.videoControlPanel.cameraParams
+    def parameters(self):
+        return self.project.parameters
     
     def _create_actions(self):
         self._newProject_act = QAction("&New Project", self)
         self._openProject_act = QAction("&Open Project...", self)
         self._saveProject_act = QAction("&Save Project...", self,
                                         triggered=self.saveProject)
+        self._saveProjectAs_act = QAction("Save Project &As...", self,
+                                        triggered=self.saveProjectAs)
 
         self._quit_act = QAction("&Quit", self, triggered=self.close)
 
@@ -111,9 +116,13 @@ class MainWindow(QMainWindow):
         self._separator_act = QAction(self)
         self._separator_act.setSeparator(True)
 
+        self._param_act = QAction("Add parameter", self,
+                                  triggered=self.add_parameter)
+
     def _create_toolbars(self):
         vidtoolbar = QToolBar("Video")
         vidtoolbar.addAction(self._zoom_act)
+        vidtoolbar.addAction(self._param_act)
         vidtoolbar.setObjectName("VideoToolBar")
 
         self.addToolBar(vidtoolbar)
@@ -126,7 +135,8 @@ class MainWindow(QMainWindow):
         fileMenu.addAction(self._newProject_act)
         fileMenu.addAction(self._openProject_act)
         fileMenu.addAction(self._saveProject_act)
-        
+        fileMenu.addAction(self._saveProjectAs_act)
+
         fileMenu.addSeparator()
         self.addAction(self._quit_act)
 
@@ -141,6 +151,11 @@ class MainWindow(QMainWindow):
         self.update_window_menu()
         self._window_menu.aboutToShow.connect(self.update_window_menu)
 
+    @Slot()
+    def add_parameter(self):
+        self.parameters.child("Videos").addChild({'name': 'thing', 'type': 'int', 'value': 40},
+                                 autoIncrementName=True)
+
     @Slot(list)
     def setVideos(self, videofiles):
         for vw in self.videowindows:
@@ -151,10 +166,12 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(None, "File not found", "Could not find some videos")
             return
 
+        self.project.set_videos(videofiles)
+
         self.videowindows = []
         self.videos = []
         nfr = []
-        for i, f in enumerate(videofiles):
+        for i, (f, cn) in enumerate(zip(videofiles, self.project.camera_names)):
             vid = Video.from_media(f)
             nfr1 = vid.nframes
             nfr.append(nfr1)
@@ -170,42 +187,46 @@ class MainWindow(QMainWindow):
             self._mdi_area.addSubWindow(vw)
             vw.show()
 
-            logging.debug(f"{f}: nframes = {nfr1}")
-            self.videoControlPanel.addVideoInfo(i, [{'name': 'Number of frames', 'type': 'int', 'value': nfr1, 'readonly': True}])
+            self.videos.append(vid)
+
+            logger.debug(f"{f}: nframes = {nfr1}")
+            self.project.add_video_info(cn, [{'name': 'Number of frames', 'type': 'int', 'value': nfr1, 'readonly': True}])
             
             info = vid.get_info_as_parameters()
             if len(info) > 0:
-                self.videoControlPanel.addVideoInfo(i, info)
+                self.project.add_video_info(cn, info)
             
-            self.videos.append(vid)
-
         maxframes = max(nfr)
         
         self.activeVideo = 0
 
         self.videoFramePanel.setNumFrames(maxframes)
 
-        camnames, videonames = self.videoControlPanel.get_camera_names()
-        for camnm1, vw1 in zip(camnames, self.videowindows):
+        for camnm1, vw1 in zip(self.project.camera_names, self.videowindows):
             vw1.set_camera_name(camnm1)
 
         # handle audio
         isaudio = [vid.is_audio for vid in self.videos]
         if all(isaudio):
             self.videoFramePanel.addAudio(self.videos)
+
+        self.project.parameters.child('Calibration', 'Calibrate...').sigActivated.connect(self.do_calibrate)
+        self.project.parameters.child('Synchronization', 'Synchronize...').sigActivated.connect(self.sync_videos)
             
     def sync_videos(self):
-        logging.debug('Syncing')
-        if self.cameraParams['Synchronization', 'Method'] == 'Timecode':
-            logging.debug('Syncing by timecode!')
+        logger.debug('Syncing')
+        if self.parameters['Synchronization', 'Method'] == 'Timecode':
+            logger.debug('Syncing by timecode!')
 
     def do_calibrate(self):
-        camnames, videonames = self.videoControlPanel.get_camera_names()
+        logger.debug('MainWindow.do_calibrate')
+
+        camnames = self.project.camera_names
         sz = self.videos[0].frame_size
-        logging.debug(f"{sz=}")
+        logger.debug(f"{sz=}")
         
         self.calibration = Calibration.from_parameters(cameranames=camnames, videos=self.videos, 
-                                            params=self.cameraParams.child('Calibration'))
+                                            params=self.parameters.child('Calibration'))
 
         if DEBUG_CALIBRATION:
             self._calibration_worker = self.calibration
@@ -233,30 +254,42 @@ class MainWindow(QMainWindow):
 
             self._calibration_thread.start()
 
-    @Slot()
+    @Slot(list)
     def finish_calibration(self, rows):
-        logging.debug('finish_calibration')
-        self.points = Points.from_calibration_rows(rows, self.calibration)
+        logger.debug('finish_calibration')
+        self.project.add_points(Points.from_calibration_rows(rows, self.calibration))
 
-        if len(self.cameraParams['Calibration', 'Output file']) == 0:
+        if len(self.parameters['Calibration', 'Output file']) == 0:
             filename, ok = QFileDialog.getSaveFileName(self, "Calibration output file", filter="TOML files (*.toml)")
-            self.cameraParams['Calibration', 'Output file'] = filename
-        else:
-            filename = self.cameraParams['Calibration', 'Output file']
-        
-        self.calibration.save_calibration(filename)
+            if ok:
+                self.parameters['Calibration', 'Output file'] = filename
 
-        for vw1 in self.videowindows:
-            vw1.set_points(self.points)
+                bn, _ = os.path.splitext(filename)
+                pointsfile = bn + '-points.csv'
+
+                self.parameters['Calibration', 'Points file'] = pointsfile
+            else:
+                filename = ''
+        else:
+            filename = self.parameters['Calibration', 'Output file']
+        
+        if len(filename) > 0:
+            self.calibration.save_calibration(filename)
+
+        # for vw1 in self.videowindows:
+        #     vw1.set_points(self.points)
         
     def _create_panels(self):
         # self.parameterdock = ParameterDock("Parameters", self, parameterDefinitions)
         # self.params = self.parameterdock.parameters
         # self.calibrationDock = CalibrationDock(self)
-        self.videoControlPanel = VideoControlPanel(self)
+        self.videoControlPanel = VideoControlPanel(self, self.project)
         self.videoControlPanel.addedVideos.connect(self.setVideos)
         self.videoControlPanel.syncVideos.connect(self.sync_videos)
         self.videoControlPanel.doCalibrate.connect(self.do_calibrate)
+
+        self.project.parametersSet.connect(self.videoControlPanel.setParameters)
+        self.project.parametersUpdated.connect(self.videoControlPanel.updateParameters)
 
         self.videoFramePanel = VideoFramePanel(self)
 
@@ -297,34 +330,18 @@ class MainWindow(QMainWindow):
         pass
 
     def saveProject(self):
-        if self.project_name is None:
-            filename, ok = QFileDialog.getSaveFileName(self, "Project file", filter="YAML files (*.yml)")
-            if not ok:
-                return
-            self.project_name = filename
-        
-        self.writeProject(self.project_name, overwrite=True)
+        if self.project.filename is None:
+            self.saveProjectAs()
+        else:        
+            self.project.save(overwrite=True)
 
-    def writeProject(self, filename, overwrite=False):
-        if not overwrite and os.path.exists(filename):
-            logging.debug(f'File {filename} exists. Not overwriting')
+    def saveProjectAs(self):
+        filename, ok = QFileDialog.getSaveFileName(self, "Project file", filter="YAML files (*.yml)")
+        if not ok:
             return
+        self.project.filename = filename
         
-        def convert_parameters_to_list(params):
-            d = []
-            for p in params:
-                if p.hasChildren():
-                    val = convert_parameters_to_list(p.children())
-                    d1 = {p.name(): val}
-                elif p.hasValue():
-                    d1 = {p.name(): p.value()}
-                d.append(d1)
-            return d
-
-        projdata = convert_parameters_to_list(self.cameraParams)
-
-        with open(filename, mode='wt', encoding='utf-8') as file:
-            yaml.dump(projdata, file)            
+        self.project.save(overwrite=True)
 
     def readSettings(self):
         settings = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
@@ -337,7 +354,7 @@ class MainWindow(QMainWindow):
     def writeSettings(self):
         settings = QtCore.QSettings(SETTINGS_FILE, QtCore.QSettings.IniFormat)
 
-        logging.debug('Writing settings!')
+        logger.debug('Writing settings!')
 
         settings.beginGroup("MainWindow")
         settings.setValue("geometry", self.saveGeometry())
@@ -375,10 +392,11 @@ def main(args: Optional[list] = None):
     # parser = create_sleap_label_parser()
     # args = parser.parse_args(args)
 
-    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-    logging.debug("Started!")
-    logging.debug("qtpy API: {}".format(qtpy.API_NAME))
-    logging.debug("Qt: v {}".format(QtCore._qt_version))
+    logging.basicConfig(stream=sys.stdout)
+    logger.setLevel(level=logging.DEBUG)
+    logger.debug("Started!")
+    logger.debug("qtpy API: {}".format(qtpy.API_NAME))
+    logger.debug("Qt: v {}".format(QtCore._qt_version))
 
     if platform.system() == "Darwin":
         # TODO: Remove this workaround when we update to qtpy >= 5.15.

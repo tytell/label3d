@@ -1,7 +1,6 @@
 import os
 from typing import Callable, List, Optional, Tuple, Union
 import numpy as np
-import logging
 import qimage2ndarray
 
 import qtpy
@@ -37,9 +36,10 @@ from qtpy.QtGui import (
     QTransform,
 )
 
-from videofile import Video
+import logging
+logger = logging.getLogger('label3d')
 
-logger = logging.getLogger(__name__)
+from videofile import Video
 
 def get_package_file(filename: str) -> str:
     """Returns full path to specified file within sleap package."""
@@ -363,13 +363,13 @@ class VideoWindow(QWidget):
         try:
             img = self.video.get_frame(fr)
             self.view.setImage(img)
-            logging.debug(f"Get frame {fr} from {self.video}")
+            logger.debug(f"Get frame {fr} from {self.video}")
             self.frame = fr
 
             self.show_points_in_frame()
 
         except Exception:
-            logging.error("Couldn't read video {} frame {}".format(self.video, fr))
+            logger.error("Couldn't read video {} frame {}".format(self.video, fr))
 
     @Slot()
     def next_frame(self):
@@ -381,7 +381,7 @@ class VideoWindow(QWidget):
             self.show_points_in_frame()
 
         except Exception:
-            logging.error("Couldn't get next frame from video {}".format(self.video))
+            logger.error("Couldn't get next frame from video {}".format(self.video))
 
     def __init__(self, filename: str,
                  video: Video,

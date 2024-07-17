@@ -8,6 +8,7 @@ import re
 import ffmpegio
 
 import logging
+logger = logging.getLogger('label3d')
 
 if not ffmpegio.is_ready():
     raise(OSError("Could not find ffprobe or ffmpeg"))
@@ -94,7 +95,7 @@ class MediaVideo:
         else:
             dec = [int(dec)]
 
-        logging.debug(f"Decimate audio by {dec}")
+        logger.debug(f"Decimate audio by {dec}")
 
         alo = np.abs(a[:,0])
         for d1 in dec:

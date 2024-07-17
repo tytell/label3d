@@ -13,6 +13,7 @@ from qtpy.QtWidgets import (
 from widgets.videowindow import VideoWindow, GraphicsView
 
 import logging
+logger = logging.getLogger('label3d')
 
 class Points:
     def __init__(self): 
@@ -51,6 +52,34 @@ class Points:
 
         return(pts)
             
+    @classmethod
+    def from_csv(cls, csvname):
+        pts = cls()
+
+        pts_flat = pd.read_csv(csvname)
+        col_tup = [a.split('_') for a in pts_flat.columns.names()]
+        col_ind = pd.MultiIndex.from_tuples(col_tup)
+
+        row_ind = pd.MultiIndex.from_frame(pts_flat[['set', 'frame', 'id']])
+
+        pts._points = pd.DataFrame(index=row_ind, columns=col_ind, data=pts_flat.drop(['set', 'frame', 'id'], axis=1))
+
+        return pts
+
+    def to_csv(self, csvname):
+        pts_flat = self.to_flat_dataframe()
+        pts_flat.to_csv(csvname)
+        
+    def to_flat_dataframe(self):
+        if self._points is None:
+            col_ind = pd.Index(['set', 'frame', 'id'])
+            return pd.DataFrame(columns=col_ind)
+        
+        pts_flat = self._points.reset_index()
+        pts_flat.columns = ["_".join(a) for a in pts_flat.columns.to_flat_index()]
+
+        return pts_flat
+
     def get_camera_points(self, camname, setnum=0):
         if self._points is None:
             return([])
@@ -58,24 +87,11 @@ class Points:
         try:
             pts_fr = self._points.loc[(setnum, slice(None), slice(None)), (camname, slice(None), slice(None))]
             pts_fr = pts_fr.reset_index(col_level='axis')
+            return pts_fr
 
-            videowindow.show_points(pts_fr.loc[:, (camname, 'auto', 'x')].to_numpy(),
-                                    pts_fr.loc[:, (camname, 'auto', 'y')].to_numpy(),
-                                    pts_fr.loc[:, (camname, 'auto', 'id')].to_numpy())
         except KeyError:
-            logging.debug(f"No points for {camname} in frame {frame} (set {setnum})")
+            logger.debug(f"No points for {camname} in frame {frame} (set {setnum})")
 
-    def show_points_in_frame(self, videowindow, camname, frame, setnum=0):
-        if self._points is None:
-            return
-        
-        try:
-            pts_fr = self._points.loc[(setnum, frame, slice(None)), (camname, slice(None), slice(None))]
-            pts_fr = pts_fr.reset_index(col_level='axis')
+        return []
 
-            videowindow.show_points(pts_fr.loc[:, (camname, 'auto', 'x')].to_numpy(),
-                                    pts_fr.loc[:, (camname, 'auto', 'y')].to_numpy(),
-                                    pts_fr.loc[:, (camname, 'auto', 'id')].to_numpy())
-        except KeyError:
-            logging.debug(f"No points for {camname} in frame {frame} (set {setnum})")
 

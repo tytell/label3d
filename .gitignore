@@ -165,3 +165,5 @@ label3d.ini
 *.MP4
 *.toml
 *.json
+*.csv
+*.yml

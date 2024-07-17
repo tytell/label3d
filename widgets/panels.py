@@ -1,5 +1,4 @@
 from typing import Callable, Dict, Iterable, List, Optional, Type, Union
-import logging
 import itertools
 
 from qtpy import QtGui, QtCore
@@ -31,6 +30,11 @@ import pyqtgraph as pg
 import numpy as np
 from string import ascii_uppercase
 
+import logging
+logger = logging.getLogger('label3d')
+
+from project import Project
+
 pg.setConfigOption('background', 'w')
 pg.setConfigOption('foreground', 'k')
 
@@ -39,10 +43,12 @@ class VideoControlPanel(QDockWidget):
     syncVideos = QtCore.Signal()
     doCalibrate = QtCore.Signal()
 
-    def __init__(self, main_window: QMainWindow):
+    def __init__(self, main_window: QMainWindow, project: Project):
         super().__init__("Video Control")
         self.name = "Video Control"
         self.main_window = main_window
+        self.project = project
+        self.parameters = None
 
         self.setObjectName(self.name + "Panel")
         self.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
@@ -63,84 +69,59 @@ class VideoControlPanel(QDockWidget):
                                          dir="", filter="Videos (*.mp4)")
         
         if vids is not None:
-            cams = []
-            camletter = ascii_uppercase
-            for i, fn in enumerate(vids):
-                cams1 = {'name': f"cam{camletter[i]}", 'type': 'group', 'children': [
-                    {'name': 'File', 'type': 'str', 'value': fn}
-                ]}
-                cams.append(cams1)
-
-            p = [{'name': 'Videos', 'type': 'group', 'children': cams}]
-
-            p.append({'name': 'Synchronization', 'type': 'group', 'children': [
-                {'name': 'Method', 'type': 'list', 'limits': ['None', 'Timecode', 'Audio', 'Timecode+Audio'],
-                 'value': 'Timecode'},
-                {'name': 'Synchronize...', 'type': 'action'},
-                ]})
-                                                
-            p.append({'name': 'Calibration', 'type': 'group', 'children': [
-                {'name': 'Type', 'type': 'list', 'limits': ['Charuco', 'Checkboard'],
-                 'value': 'Charuco'},
-                {'name': 'Frame Step', 'type': 'int', 'value': 40,  
-                 'tip': "Calibrate on every nth frame"},
-                {'name': 'Number of squares horizontally', 'type': 'int', 'value': 6},
-                {'name': 'Number of squares vertically', 'type': 'int', 'value': 6},
-                {'name': 'Size of square', 'type': 'float', 'value':24.33, 'suffix': 'mm'},
-                {'name': 'Size of marker', 'type': 'float', 'value':17, 'suffix': 'mm'},
-                {'name': 'Marker bits', 'type': 'int', 'value':5, 'tip':'Information bits in the markers'},
-                {'name': 'Number of markers', 'type': 'int', 'value':50, 'tip':'Number of markers in the dictionary'},
-                {'name': 'Output file', 'type': 'file', 'value': '', 'acceptMode':'AcceptSave'},
-                {'name': 'Calibrate...', 'type': 'action'}
-                ]})
-            
-            self.cameraParams = Parameter.create(name='cameras', type='group', children=p)
-
-            self.parameterTreeWidget.setParameters(self.cameraParams, showTop=False)
-            self.cameraParams.child('Synchronization', 'Synchronize...').sigActivated.connect(self.syncVideos)
-            
-            self.cameraParams.child('Calibration', 'Calibrate...').sigActivated.connect(self.doCalibrate)
+            self.project.set_videos(vids)
 
             self.addedVideos.emit(vids)
 
-    def addVideoInfo(self, i, info):
-        self.cameraParams.child('Videos').children()[i].addChildren(info)
+    @Slot(Parameter)
+    def setParameters(self, params):
+        self.parameterTreeWidget.setParameters(params, showTop=True)
+        self.parameters = params
 
-    def get_camera_names(self):
-        camnames = []
-        videonames = []
-        for p1 in self.cameraParams.child('Videos'):
-            camnames.append(p1.name())
-            videonames.append(p1['File'])
+    @Slot()
+    def updateParameters(self):
+        logger.debug("Parameters should have updated...")
 
-        return camnames, videonames
-    
     @Slot(int, int)
     def show_calibration_progress(self, i,n):
         try:
-            progress = self.cameraParams.child('Calibration', 'Progress')
+            progress = self.parameters.child('Calibration', 'Progress')
         except KeyError:
             progress = parameterTypes.ProgressBarParameter(name="Progress")
-            self.cameraParams.child('Calibration').addChild(progress)
+            self.parameters.child('Calibration').addChild(progress)
 
-            calibrate_button = self.cameraParams.child('Calibration', 'Calibrate...')
+            calibrate_button = self.parameters.child('Calibration', 'Calibrate...')
             calibrate_button.hide()
         
         if i < 0:
-            progress.setName('Working...')
-            progress.setValue(-1)
+            try:
+                logger.debug('Trying to replace parameter')
+                new_progress = Parameter.create(name='Progress', type='str', value='Working...')
+                logger.debug(f'New progress {new_progress}')
+
+                progress.remove()
+
+                self.parameters.child('Calibration').addChild(new_progress)
+                logger.debug('Added new progress')
+
+            except Exception as err:
+                logger.debug(f'Error: {err}')
+
         elif i < n:
             pct = int((i*100) / n)
             progress.setValue(pct)
 
-    @Slot()
+    @Slot(list)
     def calibration_finished(self, rows):
         try:
-            progress = self.cameraParams.child('Calibration', 'Progress')
+            logger.debug('VideoControlPanel.calibration_finished')
+
+            progress = self.parameters.child('Calibration', 'Progress')
             progress.remove()
-            calibrate_button = self.cameraParams.child('Calibration', 'Calibrate...')
+            calibrate_button = self.parameters.child('Calibration', 'Calibrate...')
             calibrate_button.show()
-        except KeyError:
+        except KeyError as err:
+            logger.debug(f'KeyError! {err}')
             pass
 
     def _create_widgets(self, parent):
@@ -160,8 +141,9 @@ class VideoControlPanel(QDockWidget):
 
         self.parameterTreeWidget = ParameterTree(parent)
         self.parameterTreeWidget.setObjectName("ParameterTree")
-        self.cameraParams = Parameter.create(name='cameras', type='group', children=[])
-        self.parameterTreeWidget.setParameters(self.cameraParams, showTop=False)
+
+        # self.parameters = Parameter.create(name='Root', type='group', children=[])
+        # self.parameterTreeWidget.setParameters(self.parameters, showTop=False)
 
         vbox.addWidget(self.parameterTreeWidget)
         gp.setLayout(vbox)
