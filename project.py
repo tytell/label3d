@@ -18,7 +18,7 @@ from qtpy.QtCore import (
 
 from points import Points
 
-from ruamel.yaml import YAML
+from ruamel.yaml import YAML, CommentedMap, CommentedSeq
 yaml = YAML(typ='safe')
 
 def dataframe_to_yaml(representer, node):
@@ -151,8 +151,9 @@ class Project(QObject):
                 d.append(d1)
             return d
 
-        projdata = {'parameters': convert_parameters_to_list(self._params),
-                    'points': self._points.dataframe}
+        projdata = [{'parameters': convert_parameters_to_list(self._params)},
+                    {'points': self._points.dataframe},
+                    {'calibration': self.calibration.to_dict()}]
 
         with open(self._filename, mode='wt', encoding='utf-8') as file:
             yaml.dump(projdata, file)

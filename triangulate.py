@@ -63,6 +63,9 @@ class Calibration(QObject):
     def save_calibration(self, outputfile):
         self.camgroup.dump(outputfile)
         
+    def to_dict(self):
+        return self.camgroup.get_dicts()
+
     @Slot()
     def run(self):
         try:
