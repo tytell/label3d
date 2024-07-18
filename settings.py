@@ -1,3 +1,4 @@
 SETTINGS_FILE = 'label3d.ini'
 DEBUG_CALIBRATION = False
+VERSION = '0.0.1'
 

@@ -6,6 +6,7 @@ from pyqtgraph.parametertree import Parameter, ParameterTree, parameterTypes
 import pyqtgraph as pg
 import numpy as np
 from string import ascii_uppercase
+from datetime import datetime
 
 import logging
 logger = logging.getLogger('label3d')
@@ -17,9 +18,11 @@ from qtpy.QtCore import (
 )
 
 from points import Points
+from settings import VERSION
 
 from ruamel.yaml import YAML, CommentedMap, CommentedSeq
-yaml = YAML(typ='safe')
+yaml = YAML()
+yaml.default_flow_style = True
 
 def dataframe_to_yaml(representer, node):
     return representer.represent_mapping(u'!pandas.DataFrame', node.to_dict(orient='tight'))    
@@ -29,6 +32,12 @@ def yaml_to_dataframe(constructor, node):
 
 yaml.representer.add_representer(pd.DataFrame, dataframe_to_yaml)
 yaml.constructor.add_constructor(u'!pandas.DataFrame', yaml_to_dataframe)
+
+STARTINFO = """\
+Label3D project
+
+developed by Eric Tytell, Tufts University
+"""
 
 class Project(QObject):
     parametersSet = QtCore.Signal(Parameter)
@@ -138,22 +147,28 @@ class Project(QObject):
                     val = convert_parameters_to_list(p.children())
                     d1 = {p.name(): val}
                 elif p.hasValue():
-                    if p.isType('str') or p.isType('float') or p.isType('int'): 
+                    if p.writable() and (p.isType('str') or p.isType('float') or p.isType('int')): 
                         d1 = {p.name(): p.value()}
                     elif p.isType('list'):
                         d1 = {p.name(): {'value': p.value(), 'type': 'list', 'limits': p.opts['limits']}}
                     elif p.isType('file'):
                         d1 = {p.name(): {'value': p.value(), 'type': 'file'}}
                     else:
-                        logger.debug(f'Unrecognized parameter type {p}')
+                        d1 = {p.name(): {'value': p.value(), 'type': p.type(), 'readonly': p.readonly()}}                    
                 else:
                     continue
                 d.append(d1)
             return d
 
-        projdata = [{'parameters': convert_parameters_to_list(self._params)},
-                    {'points': self._points.dataframe},
-                    {'calibration': self.calibration.to_dict()}]
+        projdata = CommentedMap(
+            {'parameters': convert_parameters_to_list(self._params),
+                    'calibration': self.calibration.to_dict(),
+                    'points': self._points.dataframe,
+                    'metadata': {'save-date': datetime.now(),
+                                 'label3d-version': VERSION}})
+        
+        projdata.yaml_set_start_comment(STARTINFO)
+        projdata.yaml_set_comment_before_after_key('calibration', 'CALIBRATION RESULTS')
 
         with open(self._filename, mode='wt', encoding='utf-8') as file:
             yaml.dump(projdata, file)
