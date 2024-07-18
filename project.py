@@ -1,5 +1,4 @@
 import os, sys
-import yaml
 
 import pandas as pd
 
@@ -17,6 +16,20 @@ from qtpy.QtCore import (
     Slot,
 )
 
+from points import Points
+
+from ruamel.yaml import YAML
+yaml = YAML(typ='safe')
+
+def dataframe_to_yaml(representer, node):
+    return representer.represent_mapping(u'!pandas.DataFrame', node.to_dict(orient='tight'))    
+
+def yaml_to_dataframe(constructor, node):
+    return pd.DataFrame.from_dict(constructor.construct_mapping(node, deep=True), orient='tight')
+
+yaml.representer.add_representer(pd.DataFrame, dataframe_to_yaml)
+yaml.constructor.add_constructor(u'!pandas.DataFrame', yaml_to_dataframe)
+
 class Project(QObject):
     parametersSet = QtCore.Signal(Parameter)
     parametersUpdated = QtCore.Signal()
@@ -28,6 +41,8 @@ class Project(QObject):
         self._params = []
         self._points = None
 
+        self.calibration = None
+
     @classmethod
     def from_file(cls, filename):
         proj = cls()
@@ -36,8 +51,6 @@ class Project(QObject):
         with open(filename, 'r') as f:
             projdata = yaml.safe_load(f)
         
-
-
     @property
     def filename(self):
         return self._filename
@@ -93,9 +106,8 @@ class Project(QObject):
                 {'name': 'Size of marker', 'type': 'float', 'value':17, 'suffix': 'mm'},
                 {'name': 'Marker bits', 'type': 'int', 'value':5, 'tip':'Information bits in the markers'},
                 {'name': 'Number of markers', 'type': 'int', 'value':50, 'tip':'Number of markers in the dictionary'},
-                {'name': 'Output file', 'type': 'file', 'value': '', 'acceptMode':'AcceptSave'},
-                {'name': 'Points file', 'type': 'file', 'value': '', 'acceptMode':'AcceptSave'},
-                {'name': 'Calibrate...', 'type': 'action'}
+                {'name': 'Calibrate...', 'type': 'action'},
+                {'name': 'Refine calibration...', 'type': 'action'}
                 ]})
         
         self._params = Parameter.create(name='Parameters', type='group', children=p)
@@ -108,7 +120,10 @@ class Project(QObject):
         self._params.child('Videos', cameraname).addChildren(info)
         self.parametersUpdated.emit()
 
-    def add_points(self, points: pd.DataFrame):
+    def add_calibration(self, cal):
+        self.calibration = cal
+
+    def add_points(self, points: Points):
         self._points = points
 
     def save(self, overwrite=False):
@@ -136,15 +151,9 @@ class Project(QObject):
                 d.append(d1)
             return d
 
-        projdata = convert_parameters_to_list(self._params)
+        projdata = {'parameters': convert_parameters_to_list(self._params),
+                    'points': self._points.dataframe}
 
         with open(self._filename, mode='wt', encoding='utf-8') as file:
             yaml.dump(projdata, file)
-
-        if len(self._params['Calibration', 'Points file']) > 0:
-            pointsfile = self._params['Calibration', 'Points file']
-            if not overwrite and os.path.exists(pointsfile):
-                logger.debug(f'File {self._filename} exists. Not overwriting')
-            else:
-                self._points.to_csv(pointsfile)
 

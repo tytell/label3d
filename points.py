@@ -66,6 +66,10 @@ class Points:
 
         return pts
 
+    @property
+    def dataframe(self):
+        return self._points
+    
     def to_csv(self, csvname):
         pts_flat = self.to_flat_dataframe()
         pts_flat.to_csv(csvname)

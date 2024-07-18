@@ -34,7 +34,7 @@ class Calibration(QObject):
     progress = QtCore.Signal(int, int)
 
     def __init__(self, cameranames, videos, framestep, type,
-                 nx, ny, square_size, marker_size, marker_bits, n_markers_in_dict, outputfile):
+                 nx, ny, square_size, marker_size, marker_bits, n_markers_in_dict):
         super(Calibration, self).__init__()
 
         self.cameranames = cameranames
@@ -49,7 +49,6 @@ class Calibration(QObject):
         self.marker_bits = marker_bits
         self.n_markers_in_dict = n_markers_in_dict
         
-        self.outputfile = outputfile
         logger.debug("In Calibration.__init__")
 
     @classmethod
@@ -59,8 +58,7 @@ class Calibration(QObject):
         return cls(cameranames, videos, framestep=params['Frame Step'], type=params['Type'], 
                    nx=params['Number of squares horizontally'], ny=params['Number of squares vertically'],
                    square_size=params['Size of square'], marker_size=params['Size of marker'],
-                   marker_bits=params['Marker bits'], n_markers_in_dict=params['Number of markers'],
-                   outputfile=params['Output file'])
+                   marker_bits=params['Marker bits'], n_markers_in_dict=params['Number of markers'])
 
     def save_calibration(self, outputfile):
         self.camgroup.dump(outputfile)

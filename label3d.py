@@ -227,6 +227,7 @@ class MainWindow(QMainWindow):
         
         self.calibration = Calibration.from_parameters(cameranames=camnames, videos=self.videos, 
                                             params=self.parameters.child('Calibration'))
+        self.project.add_calibration(self.calibration)
 
         if DEBUG_CALIBRATION:
             self._calibration_worker = self.calibration
@@ -258,23 +259,6 @@ class MainWindow(QMainWindow):
     def finish_calibration(self, rows):
         logger.debug('finish_calibration')
         self.project.add_points(Points.from_calibration_rows(rows, self.calibration))
-
-        if len(self.parameters['Calibration', 'Output file']) == 0:
-            filename, ok = QFileDialog.getSaveFileName(self, "Calibration output file", filter="TOML files (*.toml)")
-            if ok:
-                self.parameters['Calibration', 'Output file'] = filename
-
-                bn, _ = os.path.splitext(filename)
-                pointsfile = bn + '-points.csv'
-
-                self.parameters['Calibration', 'Points file'] = pointsfile
-            else:
-                filename = ''
-        else:
-            filename = self.parameters['Calibration', 'Output file']
-        
-        if len(filename) > 0:
-            self.calibration.save_calibration(filename)
 
         # for vw1 in self.videowindows:
         #     vw1.set_points(self.points)
