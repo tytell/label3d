@@ -320,7 +320,7 @@ class MainWindow(QMainWindow):
             self.project.save(overwrite=True)
 
     def saveProjectAs(self):
-        filename, ok = QFileDialog.getSaveFileName(self, "Project file", filter="YAML files (*.yml)")
+        filename, ok = QFileDialog.getSaveFileName(self, "Project file", filter="TOML files (*.toml)")
         if not ok:
             return
         self.project.filename = filename

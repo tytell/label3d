@@ -7,6 +7,8 @@ import pyqtgraph as pg
 import numpy as np
 from string import ascii_uppercase
 from datetime import datetime
+import tomlkit
+from collections.abc import Iterable
 
 import logging
 logger = logging.getLogger('label3d')
@@ -20,24 +22,82 @@ from qtpy.QtCore import (
 from points import Points
 from settings import VERSION
 
-from ruamel.yaml import YAML, CommentedMap, CommentedSeq
-yaml = YAML()
-yaml.default_flow_style = True
+def dict_to_toml(d, tab):
+    
+    for k, v in d.items():
+        if isinstance(v, dict):
+            sub = tomlkit.table()
+            dict_to_toml(sub, v)
+            v = sub
+        elif isinstance(v, list) and (len(v) == 1) and (v[0] is None):
+            v = ["None"]
+        elif isinstance(v, list):
+            vlist = []
+            multiline = False
+            for v1 in v:
+                if isinstance(v1, str):
+                    pass
+                elif isinstance(v1, Iterable):
+                    v1 = list(v1)
+                    multiline = True
+                vlist.append(v1)
 
-def dataframe_to_yaml(representer, node):
-    return representer.represent_mapping(u'!pandas.DataFrame', node.to_dict(orient='tight'))    
+            v = tomlkit.array(vlist).multiline(multiline)
 
-def yaml_to_dataframe(constructor, node):
-    return pd.DataFrame.from_dict(constructor.construct_mapping(node, deep=True), orient='tight')
+        elif v is None:
+            v = "None"
+        tab.add(k, v)
 
-yaml.representer.add_representer(pd.DataFrame, dataframe_to_yaml)
-yaml.constructor.add_constructor(u'!pandas.DataFrame', yaml_to_dataframe)
+def dataframe_to_toml(df, tab):
+    d = df.to_dict(orient='tight')
+    ind = tomlkit.array(d['index']).multiline(True)
+    tab.add("index", ind)
 
-STARTINFO = """\
-Label3D project
+    cols = tomlkit.array(d['columns']).multiline(True)
+    tab.add("columns", cols)
 
-developed by Eric Tytell, Tufts University
-"""
+    dat = tomlkit.array(d['data']).multiline(True)
+    tab.add("data", dat)
+
+    if 'index_names' in d:
+        tab.add("index_names", d['index_names'])
+    if 'column_names' in d:
+        tab.add("column_names", d['column_names'])
+
+def parameters_to_toml(params, tab):
+    for p in params:
+        if p.hasChildren():
+            sub = tomlkit.table()
+            parameters_to_toml(p.children(), sub)
+
+            tab.add(p.name(), sub)
+
+        elif p.hasValue():
+            if p.writable() and (p.isType('str') or p.isType('float') or p.isType('int')): 
+                tab.add(p.name(), p.value())
+            elif p.isType('list'):
+                sub = tomlkit.inline_table()
+                sub.add('value', p.value())
+                sub.add('type', 'list')
+                sub.add('limits', p.opts['limits'])
+
+                tab.add(p.name(), sub)
+
+            elif p.isType('file'):
+                sub = tomlkit.inline_table()
+                sub.add('value', p.value())
+                sub.add('type', 'file')
+
+                tab.add(p.name(), sub)
+            else:
+                sub = tomlkit.inline_table()
+                sub.add('value', p.value())
+                sub.add('type', p.type())
+                sub.add('readonly', p.readonly())
+
+                tab.add(p.name(), sub)
+        else:
+            continue
 
 class Project(QObject):
     parametersSet = QtCore.Signal(Parameter)
@@ -57,8 +117,8 @@ class Project(QObject):
         proj = cls()
         proj.filename = filename
 
-        with open(filename, 'r') as f:
-            projdata = yaml.safe_load(f)
+        # with open(filename, 'r') as f:
+        #     projdata = yaml.safe_load(f)
         
     @property
     def filename(self):
@@ -88,6 +148,7 @@ class Project(QObject):
             for i in range(len(videos)):
                 cameranames.append(f"cam{camletter[i]}")
         
+
         cams = []
         for i, (fn1, camname1) in enumerate(zip(videos, cameranames)):
             cams1 = {'name': camname1, 'type': 'group', 'children': [
@@ -139,37 +200,43 @@ class Project(QObject):
         if not overwrite and os.path.exists(self._filename):
             logger.debug(f'File {self._filename} exists. Not overwriting')
             return
-        
-        def convert_parameters_to_list(params):
-            d = []
-            for p in params:
-                if p.hasChildren():
-                    val = convert_parameters_to_list(p.children())
-                    d1 = {p.name(): val}
-                elif p.hasValue():
-                    if p.writable() and (p.isType('str') or p.isType('float') or p.isType('int')): 
-                        d1 = {p.name(): p.value()}
-                    elif p.isType('list'):
-                        d1 = {p.name(): {'value': p.value(), 'type': 'list', 'limits': p.opts['limits']}}
-                    elif p.isType('file'):
-                        d1 = {p.name(): {'value': p.value(), 'type': 'file'}}
-                    else:
-                        d1 = {p.name(): {'value': p.value(), 'type': p.type(), 'readonly': p.readonly()}}                    
-                else:
-                    continue
-                d.append(d1)
-            return d
 
-        projdata = CommentedMap(
-            {'parameters': convert_parameters_to_list(self._params),
-                    'calibration': self.calibration.to_dict(),
-                    'points': self._points.dataframe,
-                    'metadata': {'save-date': datetime.now(),
-                                 'label3d-version': VERSION}})
-        
-        projdata.yaml_set_start_comment(STARTINFO)
-        projdata.yaml_set_comment_before_after_key('calibration', 'CALIBRATION RESULTS')
+        doc = tomlkit.document()
+        doc.add(tomlkit.comment(tomlkit.string("Label3D project", multiline=True)))
 
+        doc.add(tomlkit.nl())
+        doc.add('save_date', datetime.now())
+        
+        try:
+            doc.add(tomlkit.nl())
+            doc_params = tomlkit.table(True)
+            parameters_to_toml(self.parameters, doc_params)
+            doc.add("Parameters", doc_params)
+
+            if self.calibration is not None:
+                doc_calibration = tomlkit.table(True)
+
+                calib = self.calibration.to_dict()
+                for i, calib1 in enumerate(calib):
+                    sub = tomlkit.table()
+                    dict_to_toml(calib1, sub)
+                    doc_calibration.add(f"cam_{i+1}", sub)
+
+                doc.add(tomlkit.nl())
+                doc.add("Calibration", doc_calibration)
+
+            if self._points is not None:
+                pts = self._points.dataframe
+                
+                doc_points = tomlkit.table(True)
+                dict_to_toml(pts.to_dict(orient="tight"), doc_points)
+
+                doc.add(tomlkit.nl())
+                doc.add("Points", doc_points)
+        except Exception as err:
+            logging.error(f"Caught exception {err}. Trying to save project anyway")
+            doc.add(tomlkit.comment(f"Caught exception {err}. Saving incomplete project file"))
+        
         with open(self._filename, mode='wt', encoding='utf-8') as file:
-            yaml.dump(projdata, file)
+            tomlkit.dump(doc, file)
 
