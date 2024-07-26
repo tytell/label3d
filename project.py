@@ -99,9 +99,31 @@ def parameters_to_toml(params, tab):
         else:
             continue
 
+def toml_to_parameters(tab):
+    params = []
+    for k, v in tab.items():
+        if isinstance(v, dict):
+            if 'type' in v:
+                p = Parameter.create(name=k, **v)
+            else:
+                sub = toml_to_parameters(v)
+                p = Parameter.create(name=k, type='group', children=sub)
+        elif isinstance(v, str):
+            p = Parameter.create(name=k, type='str', value=v)
+        elif isinstance(v, int):
+            p = Parameter.create(name=k, type='int', value=v)
+        elif isinstance(v, float):
+            p = Parameter.create(name=k, type='float', value=v)
+
+        params.append(p)
+    
+    return params
+
 class Project(QObject):
     parametersSet = QtCore.Signal(Parameter)
     parametersUpdated = QtCore.Signal()
+    pointsUpdated = QtCore.Signal()
+    calibrationSet = QtCore.Signal()
 
     def __init__(self):
         super(Project, self).__init__()
@@ -112,22 +134,10 @@ class Project(QObject):
 
         self.calibration = None
 
-    @classmethod
-    def from_file(cls, filename):
-        proj = cls()
-        proj.filename = filename
-
-        # with open(filename, 'r') as f:
-        #     projdata = yaml.safe_load(f)
-        
     @property
     def filename(self):
         return self._filename
     
-    @filename.setter
-    def filename(self, fn):
-        self._filename = fn
-
     @property
     def parameters(self):
         return self._params
@@ -140,6 +150,15 @@ class Project(QObject):
             cn = []
         
         return cn
+
+    @property
+    def video_files(self):
+        try:
+            vn = [v['File'] for v in self._params.child("Videos").children()]
+        except (KeyError, AttributeError):
+            vn = []
+        
+        return vn
 
     def set_videos(self, videos, cameranames=None):
         if cameranames is None:
@@ -183,6 +202,11 @@ class Project(QObject):
         self._params = Parameter.create(name='Parameters', type='group', children=p)
         self.parametersSet.emit(self._params)
 
+    def add_action_parameters(self):
+        self.parameters.child('Calibration').addChild({'name': 'Calibrate...', 'type': 'action'}, existOk=True)
+        self.parameters.child('Calibration').addChild({'name': 'Refine calibration...', 'type': 'action'}, existOk=True)
+        self.parameters.child('Synchronization').addChild({'name': 'Synchronize...', 'type': 'action'}, existOk=True)
+
     def add_videos(self, videos, cameranames=None):
         raise NotImplementedError("Can't add videos to the project yet")
 
@@ -195,6 +219,20 @@ class Project(QObject):
 
     def add_points(self, points: Points):
         self._points = points
+        self.pointsUpdated.emit()
+
+    def load(self, filename):
+        self._filename = filename
+
+        with open(self.filename, 'r') as f:
+            doc = tomlkit.load(f)
+        
+        p = doc['Parameters']
+        params = toml_to_parameters(p)
+
+        self._params = Parameter.create(name='Parameters', type='group', children=params)
+        self.add_action_parameters()
+        self.parametersSet.emit(self._params)
 
     def save(self, overwrite=False):
         if not overwrite and os.path.exists(self._filename):

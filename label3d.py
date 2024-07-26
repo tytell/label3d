@@ -78,7 +78,8 @@ class MainWindow(QMainWindow):
     
     def _create_actions(self):
         self._newProject_act = QAction("&New Project", self)
-        self._openProject_act = QAction("&Open Project...", self)
+        self._openProject_act = QAction("&Open Project...", self,
+                                        triggered=self.openProject)
         self._saveProject_act = QAction("&Save Project...", self,
                                         triggered=self.saveProject)
         self._saveProjectAs_act = QAction("Save Project &As...", self,
@@ -158,6 +159,21 @@ class MainWindow(QMainWindow):
 
     @Slot(list)
     def setVideos(self, videofiles):
+        self.showVideos(videofiles)
+
+        self.project.set_videos(videofiles)
+
+        for i, (vid1, cn) in enumerate(zip(self.videos, self.project.camera_names)):
+            nfr1 = vid1.nframes
+
+            logger.debug(f"{f}: nframes = {nfr1}")
+            self.project.add_video_info(cn, [{'name': 'Number of frames', 'type': 'int', 'value': nfr1, 'readonly': True}])
+            
+            info = vid1.get_info_as_parameters()
+            if len(info) > 0:
+                self.project.add_video_info(cn, info)
+                
+    def showVideos(self, videofiles):
         for vw in self.videowindows:
             vw.close()
 
@@ -165,8 +181,6 @@ class MainWindow(QMainWindow):
         if not all(exists):
             QMessageBox.critical(None, "File not found", "Could not find some videos")
             return
-
-        self.project.set_videos(videofiles)
 
         self.videowindows = []
         self.videos = []
@@ -189,13 +203,6 @@ class MainWindow(QMainWindow):
 
             self.videos.append(vid)
 
-            logger.debug(f"{f}: nframes = {nfr1}")
-            self.project.add_video_info(cn, [{'name': 'Number of frames', 'type': 'int', 'value': nfr1, 'readonly': True}])
-            
-            info = vid.get_info_as_parameters()
-            if len(info) > 0:
-                self.project.add_video_info(cn, info)
-            
         maxframes = max(nfr)
         
         self.activeVideo = 0
@@ -210,9 +217,13 @@ class MainWindow(QMainWindow):
         if all(isaudio):
             self.videoFramePanel.addAudio(self.videos)
 
-        self.project.parameters.child('Calibration', 'Calibrate...').sigActivated.connect(self.do_calibrate)
-        self.project.parameters.child('Synchronization', 'Synchronize...').sigActivated.connect(self.sync_videos)
-            
+    def setParameterCallbacks(self):
+        try:
+            self.project.parameters.child('Calibration', 'Calibrate...').sigActivated.connect(self.do_calibrate)
+            self.project.parameters.child('Synchronization', 'Synchronize...').sigActivated.connect(self.sync_videos)
+        except KeyError as err:
+            logging.debug(f"Error connection parameter slots: {err}")
+
     def sync_videos(self):
         logger.debug('Syncing')
         if self.parameters['Synchronization', 'Method'] == 'Timecode':
@@ -311,7 +322,11 @@ class MainWindow(QMainWindow):
         pass
 
     def openProject(self):
-        pass
+        filename, ok = QFileDialog.getOpenFileName(self, "Project file", filter="TOML files (*.toml)")
+        if ok:
+            self.project.load(filename)
+            self.setParameterCallbacks()
+            self.showVideos(self.project.video_files)
 
     def saveProject(self):
         if self.project.filename is None:
