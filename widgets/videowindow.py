@@ -1,5 +1,6 @@
 import os
 from typing import Callable, List, Optional, Tuple, Union
+from PySide2.QtWidgets import QGraphicsSceneMouseEvent
 import numpy as np
 import qimage2ndarray
 
@@ -7,7 +8,8 @@ import qtpy
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import (
     QEvent, Qt,
-    QRectF, Slot
+    QRectF, Slot,
+    QPointF
 )
 from qtpy.QtWidgets import (
     QApplication, QMainWindow, QWidget, QMessageBox, 
@@ -15,7 +17,9 @@ from qtpy.QtWidgets import (
     QAction, QVBoxLayout,
     QGraphicsObject,
     QGraphicsItem,
+    QGraphicsItemGroup,
     QGraphicsEllipseItem,
+    QGraphicsRectItem,
     QGraphicsLineItem,
     QGraphicsPolygonItem
 )
@@ -40,6 +44,7 @@ import logging
 logger = logging.getLogger('label3d')
 
 from videofile import Video
+from project import Project
 
 def get_package_file(filename: str) -> str:
     """Returns full path to specified file within sleap package."""
@@ -198,7 +203,7 @@ class GraphicsView(QGraphicsView):
     def clearInstances(self):
         scene_items = self.scene.items(Qt.SortOrder.AscendingOrder)
         for item1 in scene_items:
-            if isinstance(item1, QtInstance):
+            if isinstance(item1, PointGroup):
                 self.scene.removeItem(item1)
 
     def resizeEvent(self, event):
@@ -358,6 +363,45 @@ class GraphicsView(QGraphicsView):
     #     event.ignore()  # Kicks the event up to parent
 
 class VideoWindow(QWidget):
+    pointSelected = QtCore.Signal(int, str, int, int)
+
+    def __init__(self, filename: str,
+                 camera_name: str,
+                 video: Video,
+                 main_window: QWidget,
+                 project: Project):
+        super().__init__()
+        self.filename = filename
+        self.name = os.path.basename(filename)
+        self.main_window = main_window
+        self.video = video
+        self.camera_name = camera_name
+        self.project = project
+
+        self.pointgroup = None
+
+        self.setAttribute(Qt.WA_DeleteOnClose)
+
+        self.setObjectName(self.name + "VideoWindow")
+        self.setWindowTitle(f"{self.camera_name}: {self.name}")
+
+        self.view = GraphicsView()
+        self.view.setObjectName(self.name + "VideoView")
+
+        self.setnum = int(0)
+        self.frame = int(0)
+
+        img = video.get_frame(0)
+        self.view.setImage(img)        
+
+        l = QVBoxLayout()
+        l.addWidget(self.view)
+
+        self.setLayout(l)
+    
+    def set_camera_name(self, camera_name):
+        self.camera_name = camera_name
+
     @Slot(int)
     def set_frame(self, fr):
         try:
@@ -368,8 +412,8 @@ class VideoWindow(QWidget):
 
             self.show_points_in_frame()
 
-        except Exception:
-            logger.error("Couldn't read video {} frame {}".format(self.video, fr))
+        except Exception as err:
+            logger.error("Couldn't read video {} frame {}. Error {}".format(self.video, fr, err))
 
     @Slot()
     def next_frame(self):
@@ -383,72 +427,54 @@ class VideoWindow(QWidget):
         except Exception:
             logger.error("Couldn't get next frame from video {}".format(self.video))
 
-    def __init__(self, filename: str,
-                 video: Video,
-                 main_window: QWidget):
-        super().__init__()
-        self.filename = filename
-        self.name = os.path.basename(filename)
-        self.main_window = main_window
-        self.video = video
-
-        self._points = None
-
-        self.setAttribute(Qt.WA_DeleteOnClose)
-
-        self.setObjectName(self.name + "VideoWindow")
-        self.setWindowTitle(self.name)
-
-        self.view = GraphicsView()
-        self.view.setObjectName(self.name + "VideoView")
-
-        self.setnum = 0
-        self.frame = 0
-
-        img = video.get_frame(0)
-        self.view.setImage(img)        
-
-        l = QVBoxLayout()
-        l.addWidget(self.view)
-
-        self.setLayout(l)
-    
-    def set_camera_name(self, camname):
-        self.camname = camname
-
-    def set_points(self, points):
-        self._points = points
-        self.show_points_in_frame()
-
     def show_points_in_frame(self):
-        if self._points is None:
+        if not self.project.has_points():
             return
 
         self.view.clearInstances()
 
-        pts_fr = self._points.loc[(self.setnum, self.frame, slice(None)), 
-                                  (self.camname, slice(None), slice(None))]
-        pts_fr = pts_fr.reset_index(col_level='axis')
+        self.pen_default = QPen(QColor(255,255,0, 127), 2)
+        self.brush = QBrush(QColor(128,128,128, 128))
 
-        inst = QtInstance(pts_fr.loc[:, (self.camname, 'auto', 'x')].to_numpy(),
-                                pts_fr.loc[:, (self.camname, 'auto', 'y')].to_numpy(),
-                                pts_fr.loc[:, (self.camname, 'auto', 'id')].to_numpy())
-        self.view.scene.addItem(inst)
+        pts_fr = self.project.get_points_in_frame(self.setnum, self.camera_name, self.frame)
+        if pts_fr is not None:
+            xall = pts_fr.loc[:, (self.camera_name, 'auto', 'x')].to_numpy()
+            yall = pts_fr.loc[:, (self.camera_name, 'auto', 'y')].to_numpy()
+            idall = pts_fr.loc[:, ('', '', 'id')].to_numpy()
 
-class QtNode(QGraphicsEllipseItem):
-    def __init__(self, parent, x,y,radius, movable=False, *args, **kwargs):
+            self.pointgroup = PointGroup(pts_fr.loc[:, (self.camera_name, 'auto', 'x')].to_numpy()[:4],
+                                    pts_fr.loc[:, (self.camera_name, 'auto', 'y')].to_numpy()[:4],
+                                    pts_fr.loc[:, ('', '', 'id')].to_numpy()[:4])
+            self.view.scene.addItem(self.pointgroup)
+
+            self.pointgroup.pointSelected.connect(self.pointSelected)
+
+
+    @Slot(int)
+    def highlight_point_from_other_camera(self, id: int):
+        self.pointgroup.highlight_point_from_other_camera(id)
+        
+    @Slot(int)
+    def _emitPointSelected(self, id: int):
+        self.pointSelected.emit(self.setnum, self.camera_name, self.frame, id)
+
+class Node(QGraphicsEllipseItem):
+    def __init__(self, parent, x,y,id, radius, movable=False, *args, **kwargs):
         self.x = x
         self.y = y
+        self.id = id
         self.radius = radius
+        self.selected = False
+        self.pointgroup = parent
 
         self.movable = movable
 
-        super(QtNode, self).__init__(-self.radius,-self.radius,
+        super(Node, self).__init__(-self.radius,-self.radius,
                                      2*self.radius, 2*self.radius,
                                      parent=parent,
                                      *args, **kwargs)
         
-        self.pen_default = QPen(QColor(255,255,0, 127), 1)
+        self.pen_default = QPen(QColor(255,255,0, 127), 2)
         self.brush = QBrush(QColor(128,128,128, 128))
 
         self.setFlag(QGraphicsItem.ItemIgnoresTransformations)
@@ -459,12 +485,28 @@ class QtNode(QGraphicsEllipseItem):
 
         self.setPos(self.x, self.y)
 
-        self.show()
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if event.button() == Qt.LeftButton:
+            self.toggleSelected()
 
-class QtInstance(QGraphicsObject):
+    def toggleSelected(self):
+        self.pointgroup.setSelected(self, not self.selected)
+
+    def _setSelected(self, selected):
+        self.selected = selected
+        if selected:
+            self.setPen(QPen(QColor(255,255,255, 200), 3))
+            self.setBrush(QBrush(QColor(128,128,128, 200)))
+        else:
+            self.setPen(self.pen_default)
+            self.setBrush(self.brush)
+
+class PointGroup(QGraphicsObject):
+    pointSelected = QtCore.Signal(int)
+
     def __init__(self, x,y, id, markerRadius=4, 
                  *args, **kwargs):
-        super(QtInstance, self).__init__(*args, **kwargs)
+        super(PointGroup, self).__init__(*args, **kwargs)
 
         self.x = x
         self.y = y
@@ -474,4 +516,47 @@ class QtInstance(QGraphicsObject):
         self.nodes = []
 
         for x1,y1, id1 in zip(x,y,id):
-            self.nodes.append(QtNode(self, x1,y1, self.markerRadius))
+            self.nodes.append(Node(self, x1,y1, id1, self.markerRadius))
+        
+        rect = self.getPointsBoundingRect()
+        if rect is not None:
+            self._bounding_rect = rect
+
+    def getPointsBoundingRect(self) -> QRectF:
+        """Returns a rect which contains all the nodes in the skeleton."""
+        points = [
+            (node.scenePos().x(), node.scenePos().y()) for node in self.nodes
+        ]
+
+        if len(points) == 0:
+            # Check this condition with rect.isValid()
+            top_left, bottom_right = QPointF(np.nan, np.nan), QPointF(np.nan, np.nan)
+        else:
+            top_left = QPointF(
+                min((point[0] for point in points)), min((point[1] for point in points))
+            )
+            bottom_right = QPointF(
+                max((point[0] for point in points)), max((point[1] for point in points))
+            )
+        rect = QRectF(top_left, bottom_right)
+        return rect
+
+    def setSelected(self, n, selected):
+        for n1 in self.nodes:
+            if n1 is not n:
+                n1._setSelected(False)
+            else:
+                n1._setSelected(selected)
+        self.pointSelected.emit(n.id)
+
+    def setHighlighted(self, id):
+        ### CONTINUE HERE
+        pass
+    
+    def boundingRect(self):
+        """Method required Qt to determine bounding rect for item."""
+        return self._bounding_rect
+
+    def paint(self, painter, option, widget=None):
+        """Method required by Qt."""
+        pass

@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
         # self._mdi_area.subWindowActivated.connect(self.update_menus)
 
         self.project = Project()
+        self.project.videosUpdated.connect(self.showVideos)
 
         self._create_actions()
         self._create_menus()
@@ -157,40 +158,18 @@ class MainWindow(QMainWindow):
         self.parameters.child("Videos").addChild({'name': 'thing', 'type': 'int', 'value': 40},
                                  autoIncrementName=True)
 
-    @Slot(list)
-    def setVideos(self, videofiles):
-        self.showVideos(videofiles)
-
-        self.project.set_videos(videofiles)
-
-        for i, (vid1, cn) in enumerate(zip(self.videos, self.project.camera_names)):
-            nfr1 = vid1.nframes
-
-            logger.debug(f"{f}: nframes = {nfr1}")
-            self.project.add_video_info(cn, [{'name': 'Number of frames', 'type': 'int', 'value': nfr1, 'readonly': True}])
-            
-            info = vid1.get_info_as_parameters()
-            if len(info) > 0:
-                self.project.add_video_info(cn, info)
-                
-    def showVideos(self, videofiles):
+    @Slot()
+    def showVideos(self):
         for vw in self.videowindows:
             vw.close()
 
-        exists = [os.path.exists(f) for f in videofiles]
-        if not all(exists):
-            QMessageBox.critical(None, "File not found", "Could not find some videos")
-            return
-
         self.videowindows = []
-        self.videos = []
         nfr = []
-        for i, (f, cn) in enumerate(zip(videofiles, self.project.camera_names)):
-            vid = Video.from_media(f)
+        for i, (vid, cn) in enumerate(zip(self.project.videos, self.project.camera_names)):
             nfr1 = vid.nframes
             nfr.append(nfr1)
 
-            vw = VideoWindow(filename=f, video=vid, main_window=self)
+            vw = VideoWindow(filename=vid.filename, camera_name=cn, video=vid, main_window=self, project=self.project)
 
             self._zoom_act.toggled.connect(vw.view.set_zoom)
             vw.view.zoomModeChanged.connect(self._zoom_act.setChecked)
@@ -200,8 +179,6 @@ class MainWindow(QMainWindow):
             self.videowindows.append(vw)
             self._mdi_area.addSubWindow(vw)
             vw.show()
-
-            self.videos.append(vid)
 
         maxframes = max(nfr)
         
@@ -213,10 +190,15 @@ class MainWindow(QMainWindow):
             vw1.set_camera_name(camnm1)
 
         # handle audio
-        isaudio = [vid.is_audio for vid in self.videos]
+        isaudio = [vid.is_audio for vid in self.project.videos]
         if all(isaudio):
             self.videoFramePanel.addAudio(self.videos)
 
+    @Slot(int, str, int, int)
+    def selectPoint(self, setnum, camname, frame, id):
+        for camnm1, vw1 in zip(self.project.camera_names, self.videowindows):
+            if camnm1 != camname:
+                
     def setParameterCallbacks(self):
         try:
             self.project.parameters.child('Calibration', 'Calibrate...').sigActivated.connect(self.do_calibrate)
@@ -279,7 +261,7 @@ class MainWindow(QMainWindow):
         # self.params = self.parameterdock.parameters
         # self.calibrationDock = CalibrationDock(self)
         self.videoControlPanel = VideoControlPanel(self, self.project)
-        self.videoControlPanel.addedVideos.connect(self.setVideos)
+        self.videoControlPanel.addedVideos.connect(self.project.set_videos)
         self.videoControlPanel.syncVideos.connect(self.sync_videos)
         self.videoControlPanel.doCalibrate.connect(self.do_calibrate)
 
@@ -326,7 +308,6 @@ class MainWindow(QMainWindow):
         if ok:
             self.project.load(filename)
             self.setParameterCallbacks()
-            self.showVideos(self.project.video_files)
 
     def saveProject(self):
         if self.project.filename is None:

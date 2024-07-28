@@ -10,8 +10,6 @@ from qtpy.QtWidgets import (
     QGraphicsRectItem,
 )
 
-from widgets.videowindow import VideoWindow, GraphicsView
-
 import logging
 logger = logging.getLogger('label3d')
 

@@ -69,8 +69,6 @@ class VideoControlPanel(QDockWidget):
                                          dir="", filter="Videos (*.mp4)")
         
         if vids is not None:
-            self.project.set_videos(vids)
-
             self.addedVideos.emit(vids)
 
     @Slot(Parameter)
@@ -282,4 +280,8 @@ class VideoFramePanel(QDockWidget):
         self.frameSlider.valueChanged.connect(self.frameNumberBox.setValue)
         self.frameNumberBox.valueChanged.connect(self.frameSlider.setValue)
 
-        self.frameSlider.valueChanged.connect(self.set_frame)
+        self.frameSlider.valueChanged.connect(self._emit_frame_minus_one)
+
+    @Slot(int)
+    def _emit_frame_minus_one(self, fr: int):
+        self.set_frame.emit(fr-1)

@@ -62,7 +62,7 @@ class MediaVideo:
     
     @property
     def frame(self):
-        self._frame = self.__reader.get(cv2.CAP_PROP_POS_FRAMES)
+        self._frame = self.__reader.get(cv2.CAP_PROP_POS_FRAMES) - 1
 
     @frame.setter
     def frame(self, fr):
@@ -149,8 +149,8 @@ class MediaVideo:
         """See :class:`Video`."""
 
         # with self.__lock:
-        if self.__reader.get(cv2.CAP_PROP_POS_FRAMES) != idx:
-            self.__reader.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        if self.frame != idx:
+            self.__reader.set(cv2.CAP_PROP_POS_FRAMES, idx+1)
 
         success, frame = self.__reader.read()
 

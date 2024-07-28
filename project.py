@@ -19,6 +19,7 @@ from qtpy.QtCore import (
     Slot,
 )
 
+from videofile import Video
 from points import Points
 from settings import VERSION
 
@@ -124,11 +125,13 @@ class Project(QObject):
     parametersUpdated = QtCore.Signal()
     pointsUpdated = QtCore.Signal()
     calibrationSet = QtCore.Signal()
+    videosUpdated = QtCore.Signal()
 
     def __init__(self):
         super(Project, self).__init__()
 
         self._filename = None
+        self.videofiles = None
         self._params = []
         self._points = None
 
@@ -141,6 +144,10 @@ class Project(QObject):
     @property
     def parameters(self):
         return self._params
+    
+    @property
+    def points(self):
+        return self._points
     
     @property
     def camera_names(self):
@@ -160,16 +167,28 @@ class Project(QObject):
         
         return vn
 
-    def set_videos(self, videos, cameranames=None):
-        if cameranames is None:
-            cameranames = []
-            camletter = ascii_uppercase
-            for i in range(len(videos)):
-                cameranames.append(f"cam{camletter[i]}")
+    def _set_videos_only(self, videofiles, cameranames):
+        self.videofiles = videofiles
+        self.videos = []
+        nfr = []
+        for i, (f, cn) in enumerate(zip(videofiles, cameranames)):
+            vid = Video.from_media(f)
+            nfr1 = vid.nframes
+            nfr.append(nfr1)
+
+            self.videos.append(vid)
+
+    @Slot(list)
+    def set_videos(self, videofiles):
+        cameranames = []
+        camletter = ascii_uppercase
+        for i in range(len(videofiles)):
+            cameranames.append(f"cam{camletter[i]}")
         
+        self._set_videos_only(videofiles, cameranames)
 
         cams = []
-        for i, (fn1, camname1) in enumerate(zip(videos, cameranames)):
+        for i, (fn1, camname1) in enumerate(zip(videofiles, cameranames)):
             cams1 = {'name': camname1, 'type': 'group', 'children': [
                 {'name': 'File', 'type': 'str', 'value': fn1}
             ]}
@@ -177,7 +196,7 @@ class Project(QObject):
 
         p = [{'name': 'Videos', 'type': 'group', 'children': cams}]
 
-        if len(videos) > 1:
+        if len(videofiles) > 1:
             p.append({'name': 'Synchronization', 'type': 'group', 'children': [
                 {'name': 'Method', 'type': 'list', 'limits': ['None', 'Timecode', 'Audio', 'Timecode+Audio'],
                     'value': 'Timecode'},
@@ -200,15 +219,27 @@ class Project(QObject):
                 ]})
         
         self._params = Parameter.create(name='Parameters', type='group', children=p)
+
+        for i, (vid1, cn) in enumerate(zip(self.videos, cameranames)):
+            nfr1 = vid1.nframes
+
+            logger.debug(f"{vid1.filename}: nframes = {nfr1}")
+            self.add_video_info(cn, [{'name': 'Number of frames', 'type': 'int', 'value': nfr1, 'readonly': True}])
+            
+            info = vid1.get_info_as_parameters()
+            if len(info) > 0:
+                self.add_video_info(cn, info)
+
         self.parametersSet.emit(self._params)
+        self.videosUpdated.emit()
 
     def add_action_parameters(self):
         self.parameters.child('Calibration').addChild({'name': 'Calibrate...', 'type': 'action'}, existOk=True)
         self.parameters.child('Calibration').addChild({'name': 'Refine calibration...', 'type': 'action'}, existOk=True)
         self.parameters.child('Synchronization').addChild({'name': 'Synchronize...', 'type': 'action'}, existOk=True)
 
-    def add_videos(self, videos, cameranames=None):
-        raise NotImplementedError("Can't add videos to the project yet")
+    def add_videos(self, videofiles, cameranames=None):
+        raise NotImplementedError("Can't add videofiles to the project yet")
 
     def add_video_info(self, cameraname, info):
         self._params.child('Videos', cameraname).addChildren(info)
@@ -220,6 +251,21 @@ class Project(QObject):
     def add_points(self, points: Points):
         self._points = points
         self.pointsUpdated.emit()
+
+    def has_points(self):
+        return self._points is not None
+
+    def get_points_in_frame(self, setnum, camname, frame):
+        try:
+            pts_fr = self._points.loc[(setnum, frame, slice(None)), 
+                                    (camname, slice(None), slice(None))]
+        except KeyError as err:
+            logger.debug(f"No points in {setnum=}, {camname=}, {frame=}")
+            return None
+        
+        pts_fr = pts_fr.reset_index(col_level='axis')
+
+        return pts_fr
 
     def load(self, filename):
         self._filename = filename
@@ -233,6 +279,14 @@ class Project(QObject):
         self._params = Parameter.create(name='Parameters', type='group', children=params)
         self.add_action_parameters()
         self.parametersSet.emit(self._params)
+
+        self._set_videos_only(self.video_files, self.camera_names)
+
+        pts = doc['Points']
+        self._points = pd.DataFrame.from_dict(pts, orient='tight')
+
+        self.videosUpdated.emit()
+        # self.pointsUpdated.emit()
 
     def save(self, overwrite=False):
         if not overwrite and os.path.exists(self._filename):
