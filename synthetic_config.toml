@@ -16,19 +16,30 @@ up = [0, 0, 1]
 # fov_at_target cm are visible horizontally at the camera-to-target distance.
 # Square pixels (fx = fy).
 
-[cameras.cam0]
+[cameras.cam1]
 position = [0.0, 40.0, 0.0]       # on the +y axis, 40 cm from origin
 target = [0.0, 0.0, 0.0]
+up = [0, 0, 1]                    # camera up reference (world z)
 resolution = [1280, 1024]          # pixels [width, height]
 fov_at_target = 50.0               # cm visible horizontally at the target
 distortion = [0.0, 0.0, 0.0, 0.0, 0.0]   # [k1, k2, p1, p2, k3]
 
-[cameras.cam1]
-position = [-50.0, 40.0, 10.0]    # 50 cm back (-x), same y, 10 cm above cam0
+[cameras.cam2]
+position = [-50.0, 40.0, 10.0]    # 50 cm back (-x), same y, 10 cm above cam1
 target = [0.0, 0.0, 0.0]
+up = [0, 0, 1]                    # camera up reference (world z)
 resolution = [1280, 1024]
 fov_at_target = 50.0
 distortion = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+[cameras.cam3]
+position = [0.0, 0.0, -40.0]    # 40 cm below
+target = [0.0, 0.0, 0.0]
+up = [1, 0, 0]                    # camera up reference (world x, since view is along z)
+resolution = [1280, 1024]
+fov_at_target = 50.0
+distortion = [0.0, 0.0, 0.0, 0.0, 0.0]
+
 
 # ── Skeleton ─────────────────────────────────────────────────────────────────
 # Offsets are relative to center of mass, in world-frame cm.

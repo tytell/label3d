@@ -106,7 +106,8 @@ def build_cameras(config: dict) -> dict:
 
     cameras = {}
     for cam_name, cam_cfg in config["cameras"].items():
-        R, t = look_at(cam_cfg["position"], cam_cfg["target"], world_up)
+        cam_up = np.array(cam_cfg.get("up", world_up), dtype=np.float64)
+        R, t = look_at(cam_cfg["position"], cam_cfg["target"], cam_up)
         K = compute_intrinsics(
             cam_cfg["position"],
             cam_cfg["target"],
