@@ -32,10 +32,14 @@ class CameraGrid(QWidget):
         self._frame_provider: FrameProvider | None = None
         self._solo_camera: str | None = None
         self._cols: int = 0
+        self._last_global_frame: int = 0
 
         # Saved splitter state for restore after single-camera toggle
         self._saved_row_sizes: list[list[int]] | None = None
         self._saved_v_sizes: list[int] | None = None
+
+        # Generation counter: stale deferred callbacks are skipped
+        self._deferred_gen: int = 0
 
     def setup_cameras(self, camera_names: list[str]):
         """Create camera panels arranged in a splitter grid."""
@@ -79,6 +83,8 @@ class CameraGrid(QWidget):
     def set_frame_provider(self, provider: FrameProvider):
         self._frame_provider = provider
 
+    # -- View mode switching -------------------------------------------------
+
     def show_single_camera(self, camera: str | None):
         """Show only one camera, or all if camera is None.
 
@@ -86,6 +92,11 @@ class CameraGrid(QWidget):
         view state and the splitter sizes.  Switching between solo
         cameras does NOT re-save — the grid-mode snapshot is kept
         until we return to all-camera view.
+
+        Frame update + fit are handled in a single deferred callback
+        after Qt has recalculated panel sizes.  A generation counter
+        ensures only the latest request takes effect when clicks
+        arrive faster than the event loop processes them.
         """
         was_solo = self._solo_camera is not None
 
@@ -105,8 +116,7 @@ class CameraGrid(QWidget):
                     for cam in self._panels
                     if self._panels[cam].parent() is sp
                 ))
-            # Let the solo panel fit after layout settles
-            QTimer.singleShot(0, self._fit_visible_panels)
+            self._deferred(self._on_solo_settled)
         else:
             # Solo → all: restore the grid-mode snapshot
             self._solo_camera = None
@@ -114,15 +124,71 @@ class CameraGrid(QWidget):
                 sp.setVisible(True)
             for panel in self._panels.values():
                 panel.setVisible(True)
-            QTimer.singleShot(0, self._restore_after_show_all)
+            self._deferred(self._on_grid_settled)
+
+    def _deferred(self, callback):
+        """Post a callback to run after the current event loop iteration.
+
+        Bumps the generation counter so earlier pending callbacks are
+        skipped when they fire.
+        """
+        self._deferred_gen += 1
+        gen = self._deferred_gen
+        QTimer.singleShot(0, lambda: self._run_if_current(gen, callback))
+
+    def _run_if_current(self, gen: int, callback):
+        if gen == self._deferred_gen:
+            callback()
+
+    def _on_solo_settled(self):
+        """After layout settles for a solo camera: fit view then draw frame."""
+        for panel in self._panels.values():
+            if panel.isVisible():
+                panel.fit_view()
+        self._update_visible_frames()
+
+    def _on_grid_settled(self):
+        """After layout settles for all-cameras: restore splits, views, frames."""
+        self._restore_splitter_sizes()
+        for panel in self._panels.values():
+            if panel.isVisible():
+                panel.restore_view_state()
+        self._update_visible_frames()
+
+    def _update_visible_frames(self):
+        """Decode and display the current frame for all visible panels."""
+        if self._frame_provider is None:
+            return
+        for cam_name, panel in self._panels.items():
+            if not panel.isVisible():
+                continue
+            frame = self._frame_provider.get_frame(
+                cam_name, self._last_global_frame
+            )
+            if frame is not None:
+                panel.set_frame(frame)
+
+    # -- Frame display -------------------------------------------------------
+
+    def update_frame(self, global_frame: int):
+        """Fetch and display the given global frame for all visible cameras."""
+        self._last_global_frame = global_frame
+        if self._frame_provider is None:
+            return
+        for cam_name, panel in self._panels.items():
+            if not panel.isVisible():
+                continue
+            frame = self._frame_provider.get_frame(cam_name, global_frame)
+            if frame is not None:
+                panel.set_frame(frame)
+
+    # -- Splitter state ------------------------------------------------------
 
     def _save_splitter_sizes(self):
-        """Save current splitter proportions."""
         self._saved_v_sizes = self._v_splitter.sizes()
         self._saved_row_sizes = [sp.sizes() for sp in self._row_splitters]
 
     def _restore_splitter_sizes(self):
-        """Restore saved splitter proportions, or reset to equal."""
         if self._saved_v_sizes is not None and self._saved_row_sizes is not None:
             self._v_splitter.setSizes(self._saved_v_sizes)
             for sp, sizes in zip(self._row_splitters, self._saved_row_sizes):
@@ -133,7 +199,6 @@ class CameraGrid(QWidget):
             self._set_equal_sizes()
 
     def _set_equal_sizes(self):
-        """Set all splitters to equal proportions."""
         n_rows = len(self._row_splitters)
         if n_rows > 0:
             total_h = self._v_splitter.height() or 800
@@ -144,35 +209,9 @@ class CameraGrid(QWidget):
                 total_w = sp.width() or 1200
                 sp.setSizes([total_w // n_cols] * n_cols)
 
-    def _fit_visible_panels(self):
-        """Fit-to-view all currently visible panels (used for solo mode)."""
-        for panel in self._panels.values():
-            if panel.isVisible():
-                panel.fit_view()
-
-    def _restore_after_show_all(self):
-        """Restore splitter sizes then panel view states."""
-        self._restore_splitter_sizes()
-        self._restore_visible_panels()
-
-    def _restore_visible_panels(self):
-        for panel in self._panels.values():
-            if panel.isVisible():
-                panel.restore_view_state()
-
-    def update_frame(self, global_frame: int):
-        """Fetch and display the given global frame for all cameras."""
-        if self._frame_provider is None:
-            return
-        for cam_name, panel in self._panels.items():
-            if not panel.isVisible():
-                continue
-            frame = self._frame_provider.get_frame(cam_name, global_frame)
-            if frame is not None:
-                panel.set_frame(frame)
+    # -- Utility -------------------------------------------------------------
 
     def fit_all(self):
-        """Reset zoom on all panels."""
         for panel in self._panels.values():
             panel.fit_view()
 

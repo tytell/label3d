@@ -138,8 +138,6 @@ class MainWindow(QMainWindow):
         else:
             cam = self._project.cameras[index - 1]
             self._camera_grid.show_single_camera(cam)
-        # Refresh current frame in the new layout
-        self._camera_grid.update_frame(self._state.current_frame)
 
     def _on_trial_changed(self, trial_name: str):
         if trial_name:
