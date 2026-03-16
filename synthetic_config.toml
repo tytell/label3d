@@ -1,0 +1,69 @@
+# Synthetic test data configuration for label3d
+# Units: centimeters for all positions/lengths, degrees for angles
+
+[project]
+name = "synthetic_test"
+output_dir = "test_project"
+trial_name = "trial1"
+num_frames = 10
+
+[world]
+# World coordinate system: x forward, y right, z up
+up = [0, 0, 1]
+
+# ── Cameras ──────────────────────────────────────────────────────────────────
+# Each camera is aimed at its target. Focal length is computed so that
+# fov_at_target cm are visible horizontally at the camera-to-target distance.
+# Square pixels (fx = fy).
+
+[cameras.cam0]
+position = [0.0, 40.0, 0.0]       # on the +y axis, 40 cm from origin
+target = [0.0, 0.0, 0.0]
+resolution = [1280, 1024]          # pixels [width, height]
+fov_at_target = 50.0               # cm visible horizontally at the target
+distortion = [0.0, 0.0, 0.0, 0.0, 0.0]   # [k1, k2, p1, p2, k3]
+
+[cameras.cam1]
+position = [-50.0, 40.0, 10.0]    # 50 cm back (-x), same y, 10 cm above cam0
+target = [0.0, 0.0, 0.0]
+resolution = [1280, 1024]
+fov_at_target = 50.0
+distortion = [0.0, 0.0, 0.0, 0.0, 0.0]
+
+# ── Skeleton ─────────────────────────────────────────────────────────────────
+# Offsets are relative to center of mass, in world-frame cm.
+# Colors are RGB [0-255].
+
+[skeleton]
+edges = [["snout", "left_eye"], ["snout", "dorsal"], ["left_eye", "dorsal"]]
+
+[skeleton.nodes.snout]
+offset = [1.5, 0.0, -0.3]
+color = [255, 50, 50]
+
+[skeleton.nodes.left_eye]
+offset = [0.8, 0.7, 1.0]
+color = [50, 255, 50]
+
+[skeleton.nodes.dorsal]
+offset = [0.2, 0.0, 2.2]
+color = [50, 128, 255]
+
+# ── Motion ───────────────────────────────────────────────────────────────────
+# Linear interpolation from frame 0 to frame N-1.
+# Rotation is applied about the body's center of mass.
+
+[motion]
+start_position = [0.0, 0.0, 0.0]        # center of mass at frame 0
+total_translation = [10.0, 0.0, 2.0]    # displacement over all frames (cm)
+total_rotation_deg = [0.0, 20.0, 0.0]   # rotation about [x, y, z] axes (degrees)
+
+# ── Rendering ────────────────────────────────────────────────────────────────
+
+[rendering]
+point_radius = 8            # pixels
+background_color = [40, 40, 40]   # RGB
+codec = "mp4v"
+fps = 30
+draw_axes = true             # draw world-frame XYZ axes at origin
+axes_length = 5.0            # cm
