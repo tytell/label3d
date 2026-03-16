@@ -62,7 +62,13 @@ def look_at(
     z_cam /= np.linalg.norm(z_cam)
 
     x_cam = np.cross(z_cam, up)  # right
-    x_cam /= np.linalg.norm(x_cam)
+    norm = np.linalg.norm(x_cam)
+    if norm < 1e-8:
+        # z_cam is parallel to world_up — use world +x as fallback up
+        fallback_up = np.array([1.0, 0.0, 0.0])
+        x_cam = np.cross(z_cam, fallback_up)
+        norm = np.linalg.norm(x_cam)
+    x_cam /= norm
 
     y_cam = np.cross(z_cam, x_cam)  # down (Z × X = Y in right-handed)
 
