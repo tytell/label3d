@@ -38,7 +38,7 @@ distortion = [0.0, 0.0, 0.0, 0.0, 0.0]
 edges = [["snout", "left_eye"], ["snout", "dorsal"], ["left_eye", "dorsal"]]
 
 [skeleton.nodes.snout]
-offset = [1.5, 0.0, -0.3]
+offset = [2.5, 0.0, -0.3]
 color = [255, 50, 50]
 
 [skeleton.nodes.left_eye]
