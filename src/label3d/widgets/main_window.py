@@ -1,0 +1,132 @@
+"""Main application window with tab bar and label view."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QStatusBar,
+    QTabBar,
+    QVBoxLayout,
+    QWidget,
+)
+
+from label3d.project import Project
+from label3d.state import ProjectState
+from label3d.video import FrameProvider
+from label3d.widgets.camera_grid import CameraGrid
+from label3d.widgets.frame_controls import FrameControls
+
+
+class MainWindow(QMainWindow):
+    """Main application window."""
+
+    def __init__(self, project: Project, state: ProjectState, parent=None):
+        super().__init__(parent)
+        self._project = project
+        self._state = state
+        self._frame_provider = FrameProvider()
+
+        self.setWindowTitle(f"label3d — {project.root.name}")
+        self.resize(1200, 800)
+
+        # Central widget
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Top bar: tabs + trial selector
+        top_bar = QWidget()
+        top_layout = QHBoxLayout(top_bar)
+        top_layout.setContentsMargins(4, 2, 4, 2)
+
+        # Tab bar
+        self._tabs = QTabBar()
+        self._tabs.addTab("Calibrate")
+        self._tabs.addTab("Label")
+        self._tabs.addTab("Export")
+        self._tabs.setCurrentIndex(1)  # Start on Label tab
+        top_layout.addWidget(self._tabs)
+
+        top_layout.addStretch()
+
+        # Trial selector
+        top_layout.addWidget(QLabel("Trial:"))
+        self._trial_combo = QComboBox()
+        for name in project.trial_names():
+            self._trial_combo.addItem(name)
+        self._trial_combo.currentTextChanged.connect(self._on_trial_changed)
+        top_layout.addWidget(self._trial_combo)
+
+        main_layout.addWidget(top_bar)
+
+        # Camera grid (main area)
+        self._camera_grid = CameraGrid()
+        self._camera_grid.setup_cameras(project.cameras)
+        self._camera_grid.set_frame_provider(self._frame_provider)
+        main_layout.addWidget(self._camera_grid, stretch=1)
+
+        # Frame controls (bottom)
+        self._frame_controls = FrameControls(state)
+        main_layout.addWidget(self._frame_controls)
+
+        # Status bar
+        self._status_bar = QStatusBar()
+        self.setStatusBar(self._status_bar)
+        self._status_bar.showMessage("Ready")
+
+        # Connect state signals
+        state.frame_changed.connect(self._on_frame_changed)
+
+        # Load first trial
+        if project.trial_names():
+            self._load_trial(project.trial_names()[0])
+
+    def _load_trial(self, trial_name: str):
+        """Open video readers for a trial and set up frame range."""
+        trial = self._project.get_trial(trial_name)
+
+        # Build camera paths and offsets
+        camera_paths = {}
+        offsets = {}
+        for cam in self._project.cameras:
+            camera_paths[cam] = self._project.video_path(trial_name, cam)
+            offsets[cam] = self._project.video_start_frame(trial_name, cam)
+
+        self._frame_provider.open_trial(camera_paths, offsets)
+
+        # Set frame range
+        length = trial.length or 0
+        max_frame = max(0, length - 1)
+        self._state.max_frame = max_frame
+        self._frame_controls.set_range(max_frame)
+
+        # Set state (this triggers frame_changed -> display)
+        self._state._current_trial = trial_name
+        self._state.current_frame = 0
+
+        # Force first frame display
+        self._camera_grid.update_frame(0)
+
+        self._status_bar.showMessage(
+            f"Trial: {trial_name} — {length} frames, "
+            f"{len(self._project.cameras)} cameras"
+        )
+
+    def _on_trial_changed(self, trial_name: str):
+        if trial_name:
+            self._load_trial(trial_name)
+
+    def _on_frame_changed(self, frame: int):
+        self._camera_grid.update_frame(frame)
+
+    def closeEvent(self, event):
+        self._frame_provider.close()
+        super().closeEvent(event)
