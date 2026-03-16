@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 import math
 
 from PySide6.QtCore import Qt
@@ -11,11 +12,18 @@ from label3d.video import FrameProvider
 from label3d.widgets.camera_panel import CameraPanel
 
 
+class LayoutMode(enum.Enum):
+    GRID = "grid"
+    HORIZONTAL = "horizontal"
+    VERTICAL = "vertical"
+
+
 class CameraGrid(QWidget):
     """Arranges CameraPanels in a splitter grid with draggable dividers.
 
-    Layout is a vertical QSplitter of horizontal QSplitters (one per row).
-    User-adjusted splitter sizes are preserved across view-mode toggles.
+    Supports three layout modes: grid (rows × cols), horizontal (single row),
+    and vertical (single column).  User-adjusted splitter sizes are preserved
+    across view-mode toggles.
     """
 
     def __init__(self, parent=None):
@@ -28,54 +36,105 @@ class CameraGrid(QWidget):
         layout.addWidget(self._v_splitter)
 
         self._panels: dict[str, CameraPanel] = {}
+        self._camera_order: list[str] = []
         self._row_splitters: list[QSplitter] = []
         self._frame_provider: FrameProvider | None = None
         self._solo_camera: str | None = None
-        self._cols: int = 0
+        self._layout_mode: LayoutMode = LayoutMode.GRID
         self._last_global_frame: int = 0
 
         # Saved splitter state for restore after single-camera toggle
         self._saved_row_sizes: list[list[int]] | None = None
         self._saved_v_sizes: list[int] | None = None
 
+    @property
+    def layout_mode(self) -> LayoutMode:
+        return self._layout_mode
+
+    def set_layout_mode(self, mode: LayoutMode):
+        """Rearrange panels into the given layout mode."""
+        if mode == self._layout_mode and self._panels:
+            return
+        self._layout_mode = mode
+        # Splitter structure changes, so saved sizes are no longer valid
+        self._saved_row_sizes = None
+        self._saved_v_sizes = None
+        if self._camera_order:
+            self._rebuild_splitters()
+            self._set_equal_sizes()
+            QApplication.processEvents()
+            for panel in self._panels.values():
+                if panel.isVisible():
+                    panel.fit_view()
+            self._update_visible_frames()
+
     def setup_cameras(self, camera_names: list[str]):
-        """Create camera panels arranged in a splitter grid."""
+        """Create camera panels arranged according to the current layout mode."""
         # Tear down existing
         for panel in self._panels.values():
             panel.setParent(None)
             panel.deleteLater()
         self._panels.clear()
+        self._clear_splitters()
+
+        self._camera_order = list(camera_names)
+        n = len(camera_names)
+        if n == 0:
+            return
+
+        # Create panels
+        for cam_name in camera_names:
+            self._panels[cam_name] = CameraPanel(cam_name)
+
+        self._rebuild_splitters()
+        self._set_equal_sizes()
+
+    def _clear_splitters(self):
         for sp in self._row_splitters:
             sp.setParent(None)
             sp.deleteLater()
         self._row_splitters.clear()
 
-        n = len(camera_names)
+    def _rebuild_splitters(self):
+        """Reparent existing panels into splitters for the current layout mode."""
+        # Detach panels from old splitters (without deleting panels)
+        for panel in self._panels.values():
+            panel.setParent(None)
+        self._clear_splitters()
+
+        names = self._camera_order
+        n = len(names)
         if n == 0:
             return
 
-        # Compute grid dimensions
-        self._cols = math.ceil(math.sqrt(n))
-        rows = math.ceil(n / self._cols)
-
-        for r in range(rows):
+        if self._layout_mode == LayoutMode.HORIZONTAL:
             row_splitter = QSplitter(Qt.Orientation.Horizontal)
-            start = r * self._cols
-            end = min(start + self._cols, n)
-            for i in range(start, end):
-                cam_name = camera_names[i]
-                panel = CameraPanel(cam_name)
-                row_splitter.addWidget(panel)
-                self._panels[cam_name] = panel
+            for cam_name in names:
+                row_splitter.addWidget(self._panels[cam_name])
             self._row_splitters.append(row_splitter)
             self._v_splitter.addWidget(row_splitter)
-
-        # Start with equal sizes
-        self._set_equal_sizes()
+        elif self._layout_mode == LayoutMode.VERTICAL:
+            for cam_name in names:
+                row_splitter = QSplitter(Qt.Orientation.Horizontal)
+                row_splitter.addWidget(self._panels[cam_name])
+                self._row_splitters.append(row_splitter)
+                self._v_splitter.addWidget(row_splitter)
+        else:
+            # Grid
+            cols = math.ceil(math.sqrt(n))
+            rows = math.ceil(n / cols)
+            for r in range(rows):
+                row_splitter = QSplitter(Qt.Orientation.Horizontal)
+                start = r * cols
+                end = min(start + cols, n)
+                for i in range(start, end):
+                    row_splitter.addWidget(self._panels[names[i]])
+                self._row_splitters.append(row_splitter)
+                self._v_splitter.addWidget(row_splitter)
 
     @property
     def camera_names(self) -> list[str]:
-        return list(self._panels.keys())
+        return list(self._camera_order)
 
     def set_frame_provider(self, provider: FrameProvider):
         self._frame_provider = provider

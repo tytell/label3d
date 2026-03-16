@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -19,7 +18,7 @@ from PySide6.QtWidgets import (
 from label3d.project import Project
 from label3d.state import ProjectState
 from label3d.video import FrameProvider
-from label3d.widgets.camera_grid import CameraGrid
+from label3d.widgets.camera_grid import CameraGrid, LayoutMode
 from label3d.widgets.frame_controls import FrameControls
 
 
@@ -93,12 +92,91 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("Ready")
 
+        # Menus
+        self._setup_menus()
+
         # Connect state signals
         state.frame_changed.connect(self._on_frame_changed)
 
         # Load first trial
         if project.trial_names():
             self._load_trial(project.trial_names()[0])
+
+    # -- Menus ---------------------------------------------------------------
+
+    def _setup_menus(self):
+        menu_bar = self.menuBar()
+
+        # Label3D menu
+        app_menu = menu_bar.addMenu("Label3D")
+        quit_action = app_menu.addAction("Quit")
+        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        quit_action.triggered.connect(self.close)
+
+        # File menu
+        file_menu = menu_bar.addMenu("File")
+        new_action = file_menu.addAction("New project...")
+        new_action.setEnabled(False)
+        open_action = file_menu.addAction("Open project...")
+        open_action.setEnabled(False)
+        file_menu.addSeparator()
+        export_action = file_menu.addAction("Export points...")
+        export_action.setEnabled(False)
+
+        # View menu
+        view_menu = menu_bar.addMenu("View")
+
+        # View > Cameras
+        cameras_menu = view_menu.addMenu("Cameras")
+        cam_group = QActionGroup(self)
+        cam_group.setExclusive(True)
+
+        all_cam_action = cameras_menu.addAction("All cameras")
+        all_cam_action.setCheckable(True)
+        all_cam_action.setChecked(True)
+        cam_group.addAction(all_cam_action)
+        all_cam_action.triggered.connect(lambda: self._set_camera_view(0))
+
+        cameras_menu.addSeparator()
+
+        self._camera_actions: list[QAction] = [all_cam_action]
+        for i, cam in enumerate(self._project.cameras):
+            action = cameras_menu.addAction(cam)
+            action.setCheckable(True)
+            cam_group.addAction(action)
+            action.triggered.connect(lambda checked, idx=i + 1: self._set_camera_view(idx))
+            self._camera_actions.append(action)
+
+        # View > Layout
+        layout_menu = view_menu.addMenu("Layout")
+        layout_group = QActionGroup(self)
+        layout_group.setExclusive(True)
+
+        self._layout_actions: dict[LayoutMode, QAction] = {}
+        for mode, label in [
+            (LayoutMode.GRID, "Grid"),
+            (LayoutMode.HORIZONTAL, "Horizontal"),
+            (LayoutMode.VERTICAL, "Vertical"),
+        ]:
+            action = layout_menu.addAction(label)
+            action.setCheckable(True)
+            layout_group.addAction(action)
+            action.triggered.connect(
+                lambda checked, m=mode: self._set_layout_mode(m)
+            )
+            self._layout_actions[mode] = action
+
+        self._layout_actions[LayoutMode.GRID].setChecked(True)
+
+    def _set_camera_view(self, index: int):
+        """Switch camera from menu — keeps combo box in sync."""
+        self._view_combo.setCurrentIndex(index)
+
+    def _set_layout_mode(self, mode: LayoutMode):
+        """Switch layout from menu."""
+        self._camera_grid.set_layout_mode(mode)
+
+    # -- Trial loading -------------------------------------------------------
 
     def _load_trial(self, trial_name: str):
         """Open video readers for a trial and set up frame range."""
@@ -133,6 +211,10 @@ class MainWindow(QMainWindow):
 
     def _on_view_changed(self, index: int):
         """Switch between all-camera grid and single-camera view."""
+        # Keep menu checkmarks in sync
+        if 0 <= index < len(self._camera_actions):
+            self._camera_actions[index].setChecked(True)
+
         if index == 0:
             self._camera_grid.show_single_camera(None)
         else:
