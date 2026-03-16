@@ -82,17 +82,20 @@ class CameraGrid(QWidget):
     def show_single_camera(self, camera: str | None):
         """Show only one camera, or all if camera is None.
 
-        Saves panel view states and splitter sizes before hiding,
-        restores them when returning to all-camera view.
+        On the first transition from all→solo: saves every panel's
+        view state and the splitter sizes.  Switching between solo
+        cameras does NOT re-save — the grid-mode snapshot is kept
+        until we return to all-camera view.
         """
-        # Save view state for all currently visible panels
-        for panel in self._panels.values():
-            if panel.isVisible():
-                panel.save_view_state()
+        was_solo = self._solo_camera is not None
 
         if camera is not None:
-            # Switching to single-camera mode — save splitter sizes
-            self._save_splitter_sizes()
+            if not was_solo:
+                # All → solo: snapshot the grid-mode state
+                for panel in self._panels.values():
+                    panel.save_view_state()
+                self._save_splitter_sizes()
+
             self._solo_camera = camera
             for cam_name, panel in self._panels.items():
                 panel.setVisible(cam_name == camera)
@@ -102,23 +105,15 @@ class CameraGrid(QWidget):
                     for cam in self._panels
                     if self._panels[cam].parent() is sp
                 ))
-            # Defer view-state restore until after layout recalculation
-            QTimer.singleShot(0, self._restore_visible_panels)
+            # Let the solo panel fit after layout settles
+            QTimer.singleShot(0, self._fit_visible_panels)
         else:
-            # Returning to all-camera view — the previously solo panel
-            # changes size drastically, so discard its saved state and
-            # re-fit instead.
-            prev_solo = self._solo_camera
+            # Solo → all: restore the grid-mode snapshot
             self._solo_camera = None
-            if prev_solo is not None:
-                panel = self._panels.get(prev_solo)
-                if panel is not None:
-                    panel._saved_scene_rect = None
             for sp in self._row_splitters:
                 sp.setVisible(True)
             for panel in self._panels.values():
                 panel.setVisible(True)
-            # Restore splitter sizes, then view states
             QTimer.singleShot(0, self._restore_after_show_all)
 
     def _save_splitter_sizes(self):
@@ -148,6 +143,12 @@ class CameraGrid(QWidget):
             if n_cols > 0:
                 total_w = sp.width() or 1200
                 sp.setSizes([total_w // n_cols] * n_cols)
+
+    def _fit_visible_panels(self):
+        """Fit-to-view all currently visible panels (used for solo mode)."""
+        for panel in self._panels.values():
+            if panel.isVisible():
+                panel.fit_view()
 
     def _restore_after_show_all(self):
         """Restore splitter sizes then panel view states."""
