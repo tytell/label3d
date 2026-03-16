@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QSplitter, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QSplitter, QVBoxLayout, QWidget
 
 from label3d.video import FrameProvider
 from label3d.widgets.camera_panel import CameraPanel
@@ -37,9 +37,6 @@ class CameraGrid(QWidget):
         # Saved splitter state for restore after single-camera toggle
         self._saved_row_sizes: list[list[int]] | None = None
         self._saved_v_sizes: list[int] | None = None
-
-        # Generation counter: stale deferred callbacks are skipped
-        self._deferred_gen: int = 0
 
     def setup_cameras(self, camera_names: list[str]):
         """Create camera panels arranged in a splitter grid."""
@@ -93,10 +90,8 @@ class CameraGrid(QWidget):
         cameras does NOT re-save — the grid-mode snapshot is kept
         until we return to all-camera view.
 
-        Frame update + fit are handled in a single deferred callback
-        after Qt has recalculated panel sizes.  A generation counter
-        ensures only the latest request takes effect when clicks
-        arrive faster than the event loop processes them.
+        After changing visibility, processEvents() flushes the layout
+        so that fit/restore and frame updates operate on correct sizes.
         """
         was_solo = self._solo_camera is not None
 
@@ -116,7 +111,15 @@ class CameraGrid(QWidget):
                     for cam in self._panels
                     if self._panels[cam].parent() is sp
                 ))
-            self._deferred(self._on_solo_settled)
+
+            # Flush layout so the visible panel has its final size
+            QApplication.processEvents()
+
+            # Fit view and draw frame
+            for panel in self._panels.values():
+                if panel.isVisible():
+                    panel.fit_view()
+            self._update_visible_frames()
         else:
             # Solo → all: restore the grid-mode snapshot
             self._solo_camera = None
@@ -124,36 +127,15 @@ class CameraGrid(QWidget):
                 sp.setVisible(True)
             for panel in self._panels.values():
                 panel.setVisible(True)
-            self._deferred(self._on_grid_settled)
 
-    def _deferred(self, callback):
-        """Post a callback to run after the current event loop iteration.
+            # Flush layout so splitter sizes can be restored correctly
+            QApplication.processEvents()
 
-        Bumps the generation counter so earlier pending callbacks are
-        skipped when they fire.
-        """
-        self._deferred_gen += 1
-        gen = self._deferred_gen
-        QTimer.singleShot(0, lambda: self._run_if_current(gen, callback))
-
-    def _run_if_current(self, gen: int, callback):
-        if gen == self._deferred_gen:
-            callback()
-
-    def _on_solo_settled(self):
-        """After layout settles for a solo camera: fit view then draw frame."""
-        for panel in self._panels.values():
-            if panel.isVisible():
-                panel.fit_view()
-        self._update_visible_frames()
-
-    def _on_grid_settled(self):
-        """After layout settles for all-cameras: restore splits, views, frames."""
-        self._restore_splitter_sizes()
-        for panel in self._panels.values():
-            if panel.isVisible():
-                panel.restore_view_state()
-        self._update_visible_frames()
+            self._restore_splitter_sizes()
+            for panel in self._panels.values():
+                if panel.isVisible():
+                    panel.restore_view_state()
+            self._update_visible_frames()
 
     def _update_visible_frames(self):
         """Decode and display the current frame for all visible panels."""
