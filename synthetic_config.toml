@@ -35,7 +35,7 @@ distortion = [0.0, 0.0, 0.0, 0.0, 0.0]
 [cameras.cam3]
 position = [0.0, 0.0, -40.0]    # 40 cm below
 target = [0.0, 0.0, 0.0]
-up = [1, 0, 0]                    # camera up reference (world x, since view is along z)
+up = [0, 1, 0]                    # camera up reference (world y, since view is along z)
 resolution = [1280, 1024]
 fov_at_target = 50.0
 distortion = [0.0, 0.0, 0.0, 0.0, 0.0]

@@ -372,6 +372,28 @@ The **3D panel** (rightmost, toggleable) shows:
 
 Implemented as a `pyqtgraph.opengl.GLViewWidget`. Camera frustums derived from `camera.matrix`, `camera.rvec`, `camera.tvec`, and `camera.size`.
 
+### Menus
+
+> Label3D
+  - Quit
+
+> File
+  - New project...   # set up a new project directory
+  - Open project...  # open an existing project directory
+  - Export points...  # export all points to the file
+  
+> View
+  - Cameras
+    + All cameras
+    ---
+    + Cam1
+    + Cam2
+    etc
+  - Layout
+    + Square  # arrange the camera views in a square pattern, as closely as possible
+    + Horizontal  # arrange the camera views in a horizontal row
+    + Vertial # arrange the camera views in a vertical column
+
 ### Skeleton overlay
 
 The **full skeleton is always drawn** on every camera panel for every frame, regardless of which bodypart is active:
