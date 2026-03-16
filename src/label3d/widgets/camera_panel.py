@@ -1,6 +1,6 @@
 """QGraphicsView for one camera view — displays video frame with zoom/pan."""
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QImage, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
@@ -53,10 +53,25 @@ class CameraPanel(QGraphicsView):
         self.setBackgroundBrush(Qt.GlobalColor.black)
 
         self._fitted = False
+        self._saved_scene_rect: QRectF | None = None
 
     @property
     def camera_name(self) -> str:
         return self._camera_name
+
+    def save_view_state(self):
+        """Save the visible scene rect so it can be restored after re-show."""
+        self._saved_scene_rect = QRectF(
+            self.mapToScene(self.viewport().rect()).boundingRect()
+        )
+
+    def restore_view_state(self):
+        """Restore previously saved visible scene rect, or fit if none saved."""
+        if self._saved_scene_rect is not None:
+            self.fitInView(self._saved_scene_rect, Qt.AspectRatioMode.KeepAspectRatio)
+            self._saved_scene_rect = None
+        else:
+            self.fit_view()
 
     def set_frame(self, frame: np.ndarray):
         """Update the displayed frame from a BGR numpy array."""
@@ -93,8 +108,4 @@ class CameraPanel(QGraphicsView):
         event.accept()
 
     def resizeEvent(self, event):
-        """Re-fit on resize if we haven't zoomed manually."""
         super().resizeEvent(event)
-        if self._fitted:
-            # Only re-fit if the user hasn't zoomed (check if transform is identity-ish)
-            pass

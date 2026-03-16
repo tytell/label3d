@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QGridLayout, QWidget
 
 from label3d.video import FrameProvider
@@ -51,14 +52,27 @@ class CameraGrid(QWidget):
         self._frame_provider = provider
 
     def show_single_camera(self, camera: str | None):
-        """Show only one camera, or all if camera is None."""
+        """Show only one camera, or all if camera is None.
+
+        Each panel's zoom/pan state is saved before hiding and restored
+        when it becomes visible again.
+        """
+        # Save state for panels that are about to be hidden
+        for cam_name, panel in self._panels.items():
+            if panel.isVisible():
+                panel.save_view_state()
+
         self._solo_camera = camera
         for cam_name, panel in self._panels.items():
             panel.setVisible(camera is None or cam_name == camera)
-        # Re-fit the visible panel(s) after visibility change
+
+        # Defer restore until after Qt has recalculated layout sizes
+        QTimer.singleShot(0, self._restore_visible_panels)
+
+    def _restore_visible_panels(self):
         for panel in self._panels.values():
             if panel.isVisible():
-                panel.fit_view()
+                panel.restore_view_state()
 
     def update_frame(self, global_frame: int):
         """Fetch and display the given global frame for all cameras."""
