@@ -57,6 +57,17 @@ class MainWindow(QMainWindow):
 
         top_layout.addStretch()
 
+        # Camera view selector
+        top_layout.addWidget(QLabel("View:"))
+        self._view_combo = QComboBox()
+        self._view_combo.addItem("All cameras")
+        for cam in project.cameras:
+            self._view_combo.addItem(cam)
+        self._view_combo.currentIndexChanged.connect(self._on_view_changed)
+        top_layout.addWidget(self._view_combo)
+
+        top_layout.addSpacing(12)
+
         # Trial selector
         top_layout.addWidget(QLabel("Trial:"))
         self._trial_combo = QComboBox()
@@ -119,6 +130,16 @@ class MainWindow(QMainWindow):
             f"Trial: {trial_name} — {length} frames, "
             f"{len(self._project.cameras)} cameras"
         )
+
+    def _on_view_changed(self, index: int):
+        """Switch between all-camera grid and single-camera view."""
+        if index == 0:
+            self._camera_grid.show_single_camera(None)
+        else:
+            cam = self._project.cameras[index - 1]
+            self._camera_grid.show_single_camera(cam)
+        # Refresh current frame in the new layout
+        self._camera_grid.update_frame(self._state.current_frame)
 
     def _on_trial_changed(self, trial_name: str):
         if trial_name:
