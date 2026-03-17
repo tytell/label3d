@@ -20,6 +20,7 @@ from label3d.state import ProjectState
 from label3d.video import FrameProvider
 from label3d.widgets.camera_grid import CameraGrid, LayoutMode
 from label3d.widgets.frame_controls import FrameControls
+from label3d.widgets.label_view import LabelView
 
 
 class MainWindow(QMainWindow):
@@ -81,7 +82,14 @@ class MainWindow(QMainWindow):
         self._camera_grid = CameraGrid()
         self._camera_grid.setup_cameras(project.cameras)
         self._camera_grid.set_frame_provider(self._frame_provider)
-        main_layout.addWidget(self._camera_grid, stretch=1)
+
+        # Wire skeleton and points into state (before LabelView so sidebar populates)
+        state.skeleton = project.skeleton
+        state.points_store = project.points
+
+        # Label view wraps the camera grid with overlays + sidebar
+        self._label_view = LabelView(project, state, self._camera_grid)
+        main_layout.addWidget(self._label_view, stretch=1)
 
         # Frame controls (bottom)
         self._frame_controls = FrameControls(state)
@@ -228,6 +236,15 @@ class MainWindow(QMainWindow):
     def _on_frame_changed(self, frame: int):
         self._camera_grid.update_frame(frame)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Force first frame display now that widgets have their final sizes
+        if not event.spontaneous():
+            self._camera_grid.update_frame(self._state.current_frame)
+
     def closeEvent(self, event):
+        # Save points if dirty
+        if self._state.points_store is not None:
+            self._state.points_store.save_if_dirty()
         self._frame_provider.close()
         super().closeEvent(event)

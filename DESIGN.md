@@ -50,6 +50,7 @@ Project
 ├── videos/                  # trial videos, one subfolder or flat with trials.csv
 │   └── trials.csv           # maps trial names → per-camera video filenames + frame ranges
 ├── calibration.toml         # written by the Calibrate step (aniposelib CameraGroup.dump)
+├── skeleton.json            # node names, edges, symmetries (from SLEAP or manual definition)
 └── points.csv               # 2D + 3D labels (MultiIndex CSV, see below)
 ```
 
@@ -226,7 +227,7 @@ Loaded via `CameraGroup.load(fname)`, which reads all sections except `metadata`
 The app has three sequential top-level modes, accessible from a persistent toolbar or tab bar:
 
 ```
-[ 1. Calibrate ]  [ 2. Label ]  [ 3. Triangulate / Export ]
+[ 1. Calibrate ]  [ 2. Label ]  [ 3. Export ]
 ```
 
 ---
@@ -390,9 +391,9 @@ Implemented as a `pyqtgraph.opengl.GLViewWidget`. Camera frustums derived from `
     + Cam2
     etc
   - Layout
-    + Square  # arrange the camera views in a square pattern, as closely as possible
+    + Grid  # arrange the camera views in a square pattern, as closely as possible
     + Horizontal  # arrange the camera views in a horizontal row
-    + Vertial # arrange the camera views in a vertical column
+    + Vertical  # arrange the camera views in a vertical column
 
 ### Skeleton overlay
 
@@ -610,6 +611,9 @@ Export again with more user labels -> retrain
 - Points colored by **reprojection error** (same color scale as 2D panels)
 - Skeleton edges drawn as lines; camera frustums toggled independently
 - Selected bodypart highlighted in 3D as well
+
+---
+
 ## Architecture
 
 ### Pattern
@@ -618,111 +622,118 @@ The app follows a **Model–Signal–View** pattern: a central `ProjectState` ob
 
 ### Package layout
 
+Files marked ✓ exist; unmarked are planned for later phases.
+
 ```
 label3d/
-├── __init__.py
-├── __main__.py                  # CLI entry: `label3d [project_dir]`
-├── app.py                       # QApplication, argument parsing, launch
-├── state.py                     # ProjectState, SelectionState (signals)
-├── project.py                   # Project folder I/O: trials.csv, calibration, paths
-├── points.py                    # PointsStore: DataFrame wrapper, CRUD, save/load
-├── skeleton.py                  # Skeleton: nodes, edges, symmetry pairs
-├── geometry.py                  # Fundamental matrix, epipolar lines, triangulation
-├── video.py                     # VideoReader: cv2.VideoCapture wrapper, frame cache
+├── __init__.py                  # ✓
+├── __main__.py                  # ✓ CLI entry: `label3d [project_dir]`
+├── app.py                       # ✓ QApplication, argument parsing, launch
+├── state.py                     # ✓ ProjectState: all mutable state + Qt signals
+├── project.py                   # ✓ Project folder I/O: trials.csv, calibration, paths
+├── points.py                    # Phase 2: PointsStore: DataFrame wrapper, CRUD, save/load
+├── skeleton.py                  # Phase 2: Skeleton: nodes, edges, symmetry pairs
+├── geometry.py                  # Phase 3/5: Fundamental matrix, epipolar lines, triangulation
+├── video.py                     # ✓ VideoReader: cv2.VideoCapture wrapper, frame cache
 ├── widgets/
-│   ├── __init__.py
-│   ├── main_window.py           # QMainWindow, tab bar, top toolbar
-│   ├── camera_panel.py          # QGraphicsView/Scene for one camera view
-│   ├── camera_grid.py           # QSplitter grid of CameraPanels
-│   ├── frame_controls.py        # Bottom bar: navigation, seekbar, frame counter
-│   ├── point_item.py            # QGraphicsEllipseItem subclass: one labeled point
-│   ├── skeleton_overlay.py      # Manages all point_items + edges for one camera
-│   ├── epipolar_overlay.py      # Epipolar line items for one camera
-│   ├── view_3d.py               # pyqtgraph GLViewWidget wrapper
-│   ├── bodypart_list.py         # Sidebar: bodypart names, click to select
-│   ├── calibration_view.py      # Calibration mode: settings panel + camera grid
-│   ├── label_view.py            # Labeling mode: grid + controls + sidebar
-│   └── export_view.py           # Export mode: form + summary
+│   ├── __init__.py              # ✓
+│   ├── main_window.py           # ✓ QMainWindow, tab bar, menus, top toolbar
+│   ├── camera_panel.py          # ✓ QGraphicsView/Scene for one camera view
+│   ├── camera_grid.py           # ✓ Nested QSplitter grid of CameraPanels
+│   ├── frame_controls.py        # ✓ Bottom bar: navigation, seekbar, frame counter
+│   ├── point_item.py            # Phase 3: QGraphicsEllipseItem subclass: one labeled point
+│   ├── skeleton_overlay.py      # Phase 3: Manages all point_items + edges for one camera
+│   ├── epipolar_overlay.py      # Phase 3: Epipolar line items for one camera
+│   ├── view_3d.py               # Phase 5: pyqtgraph GLViewWidget wrapper
+│   ├── bodypart_list.py         # Phase 3: Sidebar: bodypart names, click to select
+│   ├── calibration_view.py      # Phase 4: Calibration mode: settings panel + camera grid
+│   ├── label_view.py            # Phase 3: Labeling mode: grid + controls + sidebar
+│   └── export_view.py           # Phase 6: Export mode: form + summary
 ├── adapters/
-│   ├── __init__.py              # Registry: discover PoseAdapter subclasses
-│   ├── base.py                  # PoseAdapter ABC
-│   └── sleap_adapter.py         # SleapAdapter
+│   ├── __init__.py              # Phase 2: Registry: discover PoseAdapter subclasses
+│   ├── base.py                  # Phase 2: PoseAdapter ABC
+│   └── sleap_adapter.py         # Phase 2: SleapAdapter
 └── workers/
     ├── __init__.py
-    ├── calibration_worker.py    # QThread: detect + calibrate + dump
-    └── triangulation_worker.py  # QThread: batch triangulate all frames
+    ├── calibration_worker.py    # Phase 4: QThread: detect + calibrate + dump
+    └── triangulation_worker.py  # Phase 5: QThread: batch triangulate all frames
 ```
 
 ---
 
 ## Implementation Plan
 
-### Phase 1 — Package scaffold and video display
+### Phase 1 — Package scaffold and video display ✓
 
 **Goal**: `uv run label3d /path/to/project` opens a window showing synchronized video frames in a grid, navigable with arrow keys.
 
 #### 1.1 Package setup
-- [ ] `pyproject.toml` with dependencies: `PySide6`, `opencv-python-headless`, `numpy`, `pandas`, `aniposelib`, `sleap-io`, `pyqtgraph`, `pyopengl`
-- [ ] `__main__.py`: parse CLI args (project dir), call `app.run()`
-- [ ] `app.py`: create `QApplication`, instantiate `MainWindow`, enter event loop
-- [ ] Verify: `uv run label3d` launches an empty window
+- [x] `pyproject.toml` with dependencies: `PySide6`, `opencv-python-headless`, `numpy`, `pandas`, `sleap-io`, `toml`
+- [x] `__main__.py`: parse CLI args (project dir), call `app.run()`
+- [x] `app.py`: create `QApplication`, instantiate `MainWindow`, enter event loop
+- [x] Verify: `uv run label3d test_project` launches and displays video
 
 #### 1.2 Project model (`project.py`)
-- [ ] `Project` dataclass: `root: Path`, `cameras: list[str]`, `trials: pd.DataFrame`, `calibration: CameraGroup | None`
-- [ ] `Project.load(path)`:
-  - Read `trials.csv` → validate column pattern `(trial, cam*_name, cam*_start, cam*_end)`
-  - Extract camera list from column names (strip `_start`/`_end` suffixes)
+- [x] `Project` dataclass: `root: Path`, `cameras: list[str]`, `trials: list[TrialInfo]`, `camera_info: dict[str, CameraInfo]`, `has_calibration: bool`
+- [x] `Project.load(path)`:
+  - Read `trials.csv` → extract camera list from column names (strip `_start`/`_end` suffixes)
   - Compute trial lengths: `min(_end - _start + 1)` across cameras, resolving blank `_end` via `cv2.CAP_PROP_FRAME_COUNT`
-  - Load `calibration.toml` if present → `CameraGroup.load()`
-  - Load `points.csv` if present → `PointsStore`
-- [ ] `Project.video_path(trial, camera)` → resolved absolute path
-- [ ] Validate camera names match between `trials.csv` and `calibration.toml`
+  - Load `calibration.toml` if present → extract `CameraInfo` (name, size) per camera
+  - Loading `points.csv` and full `CameraGroup` deferred to Phase 2
+- [x] `Project.video_path(trial, camera)` → resolved absolute path
+- [x] `Project.video_start_frame(trial, camera)` → start frame offset
 
 #### 1.3 Video reader (`video.py`)
-- [ ] `VideoReader` class wrapping `cv2.VideoCapture`:
+- [x] `VideoReader` class wrapping `cv2.VideoCapture`:
   - `__init__(path: Path)` — opens the file, reads total frame count
-  - `read_frame(n: int) -> np.ndarray` — seeks to frame n, returns BGR array
-  - LRU cache of last ~8 frames per reader (handles ±1 stepping efficiently without re-seeking)
+  - `read_frame(n: int) -> np.ndarray | None` — seeks to frame n, returns BGR array
+  - LRU cache of last 8 frames per reader (handles ±1 stepping efficiently without re-seeking)
   - `close()` — releases the capture
-- [ ] `FrameProvider` holds a `dict[str, VideoReader]` (one per camera for current trial):
-  - `get_frame(camera, global_frame) -> np.ndarray` — maps global frame → video frame via `_start` offset
-  - On trial change: closes old readers, opens new ones
+- [x] `FrameProvider` holds a `dict[str, VideoReader]` (one per camera for current trial):
+  - `get_frame(camera, global_frame) -> np.ndarray | None` — maps global frame → video frame via `_start` offset
+  - `open_trial(camera_paths, offsets)` — closes old readers, opens new ones
 
 #### 1.4 Camera panel (`widgets/camera_panel.py`)
-- [ ] `CameraPanel(QGraphicsView)`:
+- [x] `CameraPanel(QGraphicsView)`:
   - Creates its own `QGraphicsScene`
   - `QGraphicsPixmapItem` as background (the video frame)
-  - `set_frame(pixmap: QPixmap)` — updates the background
-  - Zoom via `wheelEvent` (`self.scale()`); pan via middle-mouse-drag or scroll gesture
+  - `set_frame(frame: np.ndarray)` — takes BGR numpy array, converts to QPixmap internally
+  - Zoom via `wheelEvent` (`self.scale()`); pan via `ScrollHandDrag`
   - `fitInView()` on initial load / double-click to reset
-  - Camera name label in top-left corner
+  - Camera name label in top-left corner (`ItemIgnoresTransformations`)
+  - `save_view_state()` / `restore_view_state()` — preserve zoom/pan across view toggling
 
 #### 1.5 Camera grid (`widgets/camera_grid.py`)
-- [ ] `CameraGrid(QWidget)`:
-  - Creates N `CameraPanel` widgets arranged in a `QGridLayout`
-  - Grid arrangement: auto-compute rows × cols (e.g., 2 cams → 1×2, 3–4 → 2×2, 5–6 → 2×3)
-  - `update_frame(global_frame: int)` — for each camera, get frame from `FrameProvider`, convert BGR→RGB→QPixmap, pass to panel
+- [x] `CameraGrid(QWidget)`:
+  - Creates N `CameraPanel` widgets arranged in **nested `QSplitter`s** (draggable dividers)
+  - Three layout modes: `LayoutMode.GRID` / `HORIZONTAL` / `VERTICAL`
+  - Single-camera solo view toggle: `show_single_camera(cam | None)` with state save/restore
+  - `update_frame(global_frame: int)` — for each camera, get frame from `FrameProvider`, pass to panel
+  - Splitter proportions preserved when switching layout modes
 
 #### 1.6 Main window and frame controls (`widgets/main_window.py`, `widgets/frame_controls.py`)
-- [ ] `MainWindow(QMainWindow)`:
-  - Tab bar at top: Calibrate / Label / Export
-  - Central widget is a `QStackedWidget` holding the three mode views
-  - For now, only the Label view is populated (CameraGrid + FrameControls)
+- [x] `MainWindow(QMainWindow)`:
+  - `QTabBar` at top: Calibrate / Label / Export (Label selected by default)
+  - Central `QVBoxLayout`: top bar (tabs + view/trial combos) → camera grid → frame controls
+  - Menu bar: Label3D (Quit), File (New/Open/Export — disabled stubs), View (Cameras, Layout)
+  - View > Cameras: `QActionGroup` radio buttons synced with combo box
+  - View > Layout: Grid / Horizontal / Vertical radio buttons
   - Status bar at bottom
-- [ ] `FrameControls(QWidget)`:
-  - Current frame display, total frames display
-  - Prev/next buttons
+- [x] `FrameControls(QWidget)`:
+  - Buttons: start, -4, -1, +1, +4, end
   - `QSlider` seekbar
+  - Frame counter label (current / max)
   - Keyboard shortcuts: `←`/`→`, `Ctrl+←`/`→`, `Ctrl+Alt+←`/`→`, `Home`/`End`
 
 #### 1.7 Application state (`state.py`)
-- [ ] `ProjectState(QObject)`:
-  - Properties with signals: `current_trial`, `current_frame`, `selected_instance`, `selected_bodypart`, `auto_triangulate`
+- [x] `ProjectState(QObject)`:
+  - Properties with signals: `current_trial`, `current_frame`, `max_frame`, `selected_instance`, `selected_bodypart`, `auto_triangulate`
   - `frame_changed = Signal(int)` — emitted on any frame navigation
   - `trial_changed = Signal(str)` — emitted on trial switch
   - `selection_changed = Signal(int, str)` — (instance, bodypart) or (-1, "") for deselect
   - `points_changed = Signal(str, int, int, str)` — (trial, frame, instance, bodypart) when a point is edited
-- [ ] All widgets connect to these signals; state object is passed to every widget that needs it
+  - Frame navigation helpers: `step_frame(delta)`, `go_to_start()`, `go_to_end()`
+- [x] All widgets connect to these signals; state object is passed to every widget that needs it
 
 **Milestone**: Can open a project, see video frames in a grid, step through frames with keyboard. No overlays, no editing.
 
@@ -732,13 +743,15 @@ label3d/
 
 **Goal**: Solid data model that can be created, queried, mutated, and persisted. SLEAP import works.
 
+**Integration with Phase 1**: `Project.load()` gains `skeleton` and `points` attributes loaded from `skeleton.json` and `points.csv` when present. `ProjectState` gains a `points_store: PointsStore` reference. The existing `MainWindow` and `CameraPanel` are not modified — Phase 2 is pure data layer.
+
 #### 2.1 Skeleton (`skeleton.py`)
 - [ ] `Skeleton` dataclass:
-  - `nodes: list[str]` — ordered bodypart names (defines cycling order)
+  - `nodes: list[str]` — ordered bodypart names (defines cycling order for `↑`/`↓` in Phase 3)
   - `edges: list[tuple[str, str]]` — (source, target) pairs
   - `symmetries: list[tuple[str, str]]` — left/right pairs (stored, not yet used)
 - [ ] `Skeleton.from_sleap(slp_path: Path) -> Skeleton` — load from `.slp` file via `sleap_io`
-- [ ] `Skeleton.to_dict() / from_dict()` — for project metadata persistence
+- [ ] `Skeleton.from_json(path: Path) -> Skeleton` / `to_json(path: Path)` — load/save `skeleton.json`
 - [ ] Stored as `skeleton.json` in the project folder
 
 #### 2.2 Points store (`points.py`)
@@ -790,6 +803,8 @@ label3d/
 ### Phase 3 — Labeling: overlays, interaction, selection
 
 **Goal**: Full labeling UI — see skeleton, click to place/move points, select bodyparts, see epipolar lines.
+
+**Integration with Phase 1**: `CameraPanel.set_frame()` continues to set the background; skeleton overlays are added to the same `QGraphicsScene`. Mouse events in `CameraPanel` are extended — the existing `ScrollHandDrag` mode is used when no bodypart is selected; point interaction takes priority otherwise. The `CameraGrid.update_frame()` call chain is extended to also update overlays. `ProjectState.selection_changed` and `points_changed` signals (already defined) now drive overlay updates.
 
 #### 3.1 Point item (`widgets/point_item.py`)
 - [ ] `PointItem(QGraphicsEllipseItem)`:
@@ -1027,6 +1042,46 @@ label3d/
 | Data I/O | pandas, sleap_io, tomllib / tomli-w, numpy |
 | 3D view | pyqtgraph GL |
 | Package / deps | uv (`pyproject.toml` + `uv.lock`) |
+| Testing | pytest (dev dependency) |
+
+---
+
+## Testing
+
+### Framework
+
+Tests use **pytest** (`tests/` directory, run with `uv run pytest`). `pytest` is a dev dependency declared under `[dependency-groups] dev` in `pyproject.toml`.
+
+A session-scoped `QApplication` fixture in `tests/conftest.py` is required before any `QObject`, `Signal`, or `QTimer` can be instantiated (i.e. before any `PointsStore`). All test modules that use `PointsStore` must accept the `qapp` fixture to ensure this is set up.
+
+### Test modules
+
+| Module | What it covers |
+|---|---|
+| `tests/test_skeleton.py` | `Skeleton` load/save, node navigation, special-char node names |
+| `tests/test_points.py` | `PointsStore` construction, full CRUD API, cache, dirty tracking, signals |
+| `tests/test_points_paths.py` | OS-level path robustness: spaces, unicode, separators, missing paths |
+| `tests/test_adapters.py` | Adapter registry, `SleapAdapter` load/save, basename matching edge cases |
+| `tests/test_project_loading.py` | `Project.load()` integration: skeleton/points wiring, missing files, error messages |
+
+### Key testing conventions
+
+- **`tmp_path` fixture** for all file I/O — tests never write outside their temp directory
+- **Path robustness** is tested explicitly: spaces in directory names, spaces in file names, unicode characters in paths, Windows-style `\` vs POSIX `/` separators in video filenames stored in `trials.csv`
+- **Special characters in names** (spaces, colons, parens, commas in bodypart/node/trial names) are round-tripped through JSON and CSV to verify they survive serialization
+- **Error paths**: `FileNotFoundError` is expected for missing files/directories; error messages must contain enough context for the user to diagnose the problem (path or filename in message). `ValueError` is expected when `to_csv()` is called with no path set
+- **sleap_io dependency**: `SleapAdapter` tests use `pytest.importorskip("sleap_io")` — they are skipped if `sleap_io` is not installed rather than failing
+- **Cache invalidation**: frame cache state is inspected directly via `_cache_key` to verify that mutations correctly invalidate it
+- **Signal emission**: `changed` signal callbacks are counted via a list-append lambda to confirm mutations emit exactly one signal
+
+### Running tests
+
+```
+uv run pytest               # all tests
+uv run pytest -v            # verbose
+uv run pytest tests/test_skeleton.py   # single module
+uv run pytest -k "spaces"  # tests whose name contains "spaces"
+```
 
 ---
 

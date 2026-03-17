@@ -4,7 +4,12 @@ All mutable state lives here. Views subscribe to signals and update themselves.
 No view reads from another view directly.
 """
 
+from __future__ import annotations
+
 from PySide6.QtCore import QObject, Signal
+
+from label3d.points import PointsStore
+from label3d.skeleton import Skeleton
 
 
 class ProjectState(QObject):
@@ -24,6 +29,26 @@ class ProjectState(QObject):
         self._selected_instance: int = -1
         self._selected_bodypart: str = ""
         self._auto_triangulate: bool = True
+        self._points_store: PointsStore | None = None
+        self._skeleton: Skeleton | None = None
+
+    # -- Points and skeleton --
+
+    @property
+    def points_store(self) -> PointsStore | None:
+        return self._points_store
+
+    @points_store.setter
+    def points_store(self, value: PointsStore | None):
+        self._points_store = value
+
+    @property
+    def skeleton(self) -> Skeleton | None:
+        return self._skeleton
+
+    @skeleton.setter
+    def skeleton(self, value: Skeleton | None):
+        self._skeleton = value
 
     # -- Trial --
 
@@ -90,6 +115,62 @@ class ProjectState(QObject):
     @auto_triangulate.setter
     def auto_triangulate(self, value: bool):
         self._auto_triangulate = value
+
+    # -- Selection helpers --
+
+    def select_next_bodypart(self):
+        """Cycle to the next bodypart in skeleton order (wraps)."""
+        if self._skeleton is None or not self._skeleton.nodes:
+            return
+        inst = self._selected_instance if self._selected_instance >= 0 else 0
+        if not self._selected_bodypart:
+            self.select(inst, self._skeleton.nodes[0])
+        else:
+            self.select(inst, self._skeleton.next_node(self._selected_bodypart))
+
+    def select_prev_bodypart(self):
+        """Cycle to the previous bodypart in skeleton order (wraps)."""
+        if self._skeleton is None or not self._skeleton.nodes:
+            return
+        inst = self._selected_instance if self._selected_instance >= 0 else 0
+        if not self._selected_bodypart:
+            self.select(inst, self._skeleton.nodes[-1])
+        else:
+            self.select(inst, self._skeleton.prev_node(self._selected_bodypart))
+
+    def select_next_instance(self):
+        """Cycle to the next instance (same bodypart)."""
+        if self._points_store is None:
+            return
+        instances = self._points_store.get_instances(
+            self._current_trial, self._current_frame
+        )
+        if not instances:
+            return
+        bp = self._selected_bodypart or (
+            self._skeleton.nodes[0] if self._skeleton and self._skeleton.nodes else ""
+        )
+        if self._selected_instance in instances:
+            idx = instances.index(self._selected_instance)
+            next_inst = instances[(idx + 1) % len(instances)]
+        else:
+            next_inst = instances[0]
+        self.select(next_inst, bp)
+
+    def select_instance_by_index(self, index: int):
+        """Select instance by 0-based index."""
+        if self._points_store is None:
+            return
+        instances = self._points_store.get_instances(
+            self._current_trial, self._current_frame
+        )
+        if 0 <= index < len(instances):
+            bp = self._selected_bodypart or (
+                self._skeleton.nodes[0]
+                if self._skeleton and self._skeleton.nodes
+                else ""
+            )
+            self.select(instances[index], bp)
 
     # -- Frame navigation helpers --
 
