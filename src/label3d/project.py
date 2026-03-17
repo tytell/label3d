@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
 import pandas as pd
 import toml
+
+from label3d.points import PointsStore
+from label3d.skeleton import Skeleton
 
 
 @dataclass
@@ -39,6 +41,9 @@ class Project:
     trials: list[TrialInfo] = field(default_factory=list)
     camera_info: dict[str, CameraInfo] = field(default_factory=dict)
     has_calibration: bool = False
+    skeleton: Skeleton | None = None
+    points: PointsStore | None = None
+    trials_df: pd.DataFrame | None = None  # raw trials.csv for adapter use
 
     @classmethod
     def load(cls, path: Path) -> Project:
@@ -75,12 +80,27 @@ class Project:
                 size = tuple(section.get("size", [0, 0]))
                 camera_info[name] = CameraInfo(name=name, size=size)
 
+        # --- skeleton.json (optional) ---
+        skeleton: Skeleton | None = None
+        skel_path = root / "skeleton.json"
+        if skel_path.exists():
+            skeleton = Skeleton.from_json(skel_path)
+
+        # --- points.csv (optional) ---
+        points: PointsStore | None = None
+        points_path = root / "points.csv"
+        if points_path.exists():
+            points = PointsStore.from_csv(points_path)
+
         proj = cls(
             root=root,
             cameras=cameras,
             trials=trials,
             camera_info=camera_info,
             has_calibration=has_calibration,
+            skeleton=skeleton,
+            points=points,
+            trials_df=trials_df,
         )
         return proj
 
