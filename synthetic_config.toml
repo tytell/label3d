@@ -22,7 +22,7 @@ target = [0.0, 0.0, 0.0]
 up = [0, 0, 1]                    # camera up reference (world z)
 resolution = [1280, 1024]          # pixels [width, height]
 fov_at_target = 50.0               # cm visible horizontally at the target
-distortion = [0.0, 0.0, 0.0, 0.0, 0.0]   # [k1, k2, p1, p2, k3]
+distortion = [-0.20, 0.05, 0.0, 0.0, 0.0]  # [k1, k2, p1, p2, k3]
 
 [cameras.cam2]
 position = [-50.0, 40.0, 10.0]    # 50 cm back (-x), same y, 10 cm above cam1
@@ -30,7 +30,7 @@ target = [0.0, 0.0, 0.0]
 up = [0, 0, 1]                    # camera up reference (world z)
 resolution = [1280, 1024]
 fov_at_target = 50.0
-distortion = [0.0, 0.0, 0.0, 0.0, 0.0]
+distortion = [-0.18, 0.04, 0.0, 0.0, 0.0]  # [k1, k2, p1, p2, k3]
 
 [cameras.cam3]
 position = [0.0, 0.0, -40.0]    # 40 cm below
@@ -38,7 +38,7 @@ target = [0.0, 0.0, 0.0]
 up = [0, 1, 0]                    # camera up reference (world y, since view is along z)
 resolution = [1280, 1024]
 fov_at_target = 50.0
-distortion = [0.0, 0.0, 0.0, 0.0, 0.0]
+distortion = [-0.22, 0.06, 0.0, 0.0, 0.0]  # [k1, k2, p1, p2, k3]
 
 
 # ── Skeleton ─────────────────────────────────────────────────────────────────
@@ -78,3 +78,26 @@ codec = "mp4v"
 fps = 30
 draw_axes = true             # draw world-frame XYZ axes at origin
 axes_length = 5.0            # cm
+
+# ── Charuco calibration board ───────────────────────────────────────────────
+# Board parameters match aniposelib's CharucoBoard constructor.
+# square_length and marker_length are in mm (passed directly to aniposelib;
+# converted to cm for 3D placement since the project uses cm throughout).
+
+[charuco]
+squares_x = 6               # board squares along X
+squares_y = 6               # board squares along Y
+square_length = 24.33        # mm — side length of each chessboard square
+marker_length = 17.0         # mm — side length of ArUco markers within squares
+marker_bits = 5              # ArUco marker bit depth (4, 5, 6, or 7)
+dict_size = 50               # ArUco dictionary size (50, 100, 250, 1000)
+num_images = 12              # number of board poses to render per camera
+board_image_resolution = 2000 # px — resolution of the generated flat board image
+background_color = [40, 40, 40]  # RGB background for calibration images
+
+# Board placement region: the board is placed at random poses within this volume
+[charuco.placement]
+center = [0.0, 0.0, 0.0]    # center of the placement volume (world coords, cm)
+extent = [15.0, 15.0, 10.0] # half-extents of the placement volume (cm)
+tilt_range_deg = 30.0        # max tilt from facing-camera in any axis (degrees)
+seed = 348294                # RNG seed for reproducible board poses

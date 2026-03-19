@@ -1083,6 +1083,100 @@ uv run pytest tests/test_skeleton.py   # single module
 uv run pytest -k "spaces"  # tests whose name contains "spaces"
 ```
 
+### Synthetic data generator
+
+The synthetic data generator (`generate_synthetic.py`) creates a complete test project with known ground truth: cameras, videos with rendered skeleton keypoints, `calibration.toml`, `points.csv`, `skeleton.json`, and `.slp` files. Configuration lives in `synthetic_config.toml`.
+
+#### Module structure
+
+As the generator grows, its functions are organized into a `synthetic/` package:
+
+```
+synthetic/
+├── __init__.py              # re-exports main entry point
+├── cameras.py               # look_at(), compute_intrinsics(), build_cameras()
+├── motion.py                # rotation matrices, compute_body_poses(), compute_world_points()
+├── projection.py            # project_points(), project_all_frames()
+├── rendering.py             # render_frame(), write_videos()
+├── writers.py               # write_calibration_toml(), write_trials_csv(), write_points_csv(),
+│                            #   write_skeleton_json(), write_slp_files()
+├── checks.py                # _dlt_triangulate(), _epipolar_error(), run_sanity_checks()
+└── charuco.py               # generate_charuco_images() — synthetic calibration board images
+```
+
+`generate_synthetic.py` becomes a thin wrapper that imports from `synthetic` and calls `main()`.
+
+#### Synthetic calibration images
+
+The generator can produce Charuco board images for each camera, enabling end-to-end testing of the calibration pipeline (detect corners → bundle adjustment → `calibration.toml`).
+
+**Config additions** (`synthetic_config.toml`):
+
+```toml
+[charuco]
+squares_x = 6               # board squares along X
+squares_y = 6               # board squares along Y
+square_length = 24.33          # mm — side length of each chessboard square
+marker_length = 17.0          # mm — side length of ArUco markers within squares
+marker_bits = 5              # ArUco marker bit depth (4, 5, 6, or 7)
+dict_size = 50               # ArUco dictionary size (50, 100, 250, 1000)
+num_images = 12              # number of board poses to render per camera
+board_image_resolution = 800 # px — resolution of the generated flat board image
+background_color = [40, 40, 40]  # RGB background for calibration images
+
+# Board placement region: the board is placed at random poses within this volume
+[charuco.placement]
+center = [0.0, 0.0, 0.0]    # center of the placement volume (world coords, cm)
+extent = [15.0, 15.0, 10.0] # half-extents of the placement volume (cm)
+tilt_range_deg = 30.0        # max tilt from facing-camera in any axis (degrees)
+seed = 348294                    # RNG seed for reproducible board poses
+```
+
+**How it works**:
+
+1. **Generate flat board image** — `cv2.aruco.CharucoBoard.generateImage()` produces a high-resolution image of the board
+2. **Compute board poses** — For each of `num_images` poses: pick a random position within the placement volume and a random orientation (tilted up to `tilt_range_deg` from the mean camera viewing direction). Uses a seeded RNG for reproducibility
+3. **Render into each camera** — For each (pose, camera) pair:
+   - For every pixel in the output image, undistort to get the ideal ray direction, then intersect with the board plane (ray-plane intersection). This reverse-mapping approach correctly renders barrel distortion — board edges appear curved as they would in a real distorted image
+   - Board texture lookup uses `cv2.remap` with bilinear interpolation for clean marker edges
+   - **Horizontal flip**: the board image from `generateImage()` is drawn from the viewer's perspective, but the board's local X axis points opposite to the camera's view direction. The U coordinate is mirrored (`1 - u`) during texture mapping so that ArUco markers read correctly when viewed by the camera
+   - Composite onto the background
+4. **Write output** — Save images as `calibration/{cam_name}/board_{NN:03d}.png`
+
+**Output structure**:
+
+```
+test_project/
+├── calibration/
+│   ├── cam1/
+│   │   ├── board_000.png
+│   │   ├── board_001.png
+│   │   └── ...
+│   ├── cam2/
+│   │   └── ...
+│   └── cam3/
+│       └── ...
+├── calibration.toml          # ground-truth (existing, from camera params)
+└── ...                       # other existing outputs
+```
+
+**Verification** — After generating images, an optional sanity check runs the full aniposelib calibration pipeline on the generated images and compares the recovered camera parameters against the known ground truth:
+
+1. Construct `CharucoBoard` with the same config params
+2. `board.detect_image()` on each generated image per camera
+3. Build `CameraGroup`, call `calibrate_rows()` with detected corners
+4. Compare recovered K, R, t against ground-truth — report max parameter error
+5. This validates both the image generator and the calibration pipeline
+
+**Usage**:
+
+```
+uv run python generate_synthetic.py synthetic_config.toml            # all outputs (including charuco if [charuco] section present)
+uv run python generate_synthetic.py synthetic_config.toml --no-charuco  # skip calibration image generation
+```
+
+The `[charuco]` section is optional — if absent, calibration images are not generated (backwards compatible with existing configs).
+
 ---
 
 ## Decisions
