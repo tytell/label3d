@@ -140,6 +140,50 @@ class EpipolarOverlay:
             self._line_items.append(line)
         return self._line_items[index]
 
+    def update_direct(
+        self,
+        epipolar_cache: "EpipolarCache | None",
+        source_cam: str,
+        x: float,
+        y: float,
+        source_cam_index: int,
+    ):
+        """Draw a single epipolar line from a raw (x, y) point in source_cam.
+
+        Used in calibration mode where points come directly from detection
+        rows rather than from a PointsStore.
+        """
+        self._active_lines.clear()
+
+        if epipolar_cache is None or source_cam == self._camera_name:
+            self._hide_lines()
+            return
+
+        endpoints = epipolar_cache.get_epipolar_line(
+            source_cam, self._camera_name, (x, y)
+        )
+        if endpoints is None:
+            self._hide_lines()
+            return
+
+        (x1, y1), (x2, y2) = endpoints
+        line = self._get_or_create_line(0)
+        color = camera_color(source_cam_index)
+        line_color = QColor(color)
+        line_color.setAlpha(180)
+        pen = QPen(line_color, 1.5)
+        pen.setCosmetic(True)
+        line.setPen(pen)
+        line.setLine(x1, y1, x2, y2)
+        line.setVisible(True)
+
+        self._active_lines.append(
+            EpipolarLineInfo(source_cam, source_cam_index, x1, y1, x2, y2)
+        )
+
+        for j in range(1, len(self._line_items)):
+            self._line_items[j].setVisible(False)
+
     def _hide_lines(self):
         self._active_lines.clear()
         for item in self._line_items:

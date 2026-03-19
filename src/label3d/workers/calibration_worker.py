@@ -4,7 +4,7 @@ Two-phase workflow:
   1. DetectionWorker: scans calibration/{cam}/ folders, detects Charuco corners
      per camera using images or video, emits per-camera progress.
   2. CalibrationWorker: given detected rows, runs aniposelib bundle adjustment,
-     emits the calibrated CameraGroup and mean reprojection error.
+     computes per-corner reprojection errors, emits results.
 """
 
 from __future__ import annotations
@@ -53,15 +53,18 @@ class DetectionWorker(QThread):
     """Scans calibration/{cam}/ subfolders and detects Charuco corners.
 
     Emits:
-        progress(str)                  — log message
-        camera_done(cam, n, img)       — camera name, detection count, sample BGR image
-        finished(all_rows, cam_sizes)  — detection rows per camera, image sizes
-        error_occurred(str)            — if a fatal error happens
+        progress(str)                         — log message
+        camera_done(cam, n, img)              — camera name, detection count, sample BGR image
+        finished(all_rows, cam_sizes, cam_media)
+            all_rows:  dict[cam_name, list[row]]  — raw detection rows per camera
+            cam_sizes: dict[cam_name, (w, h)]     — image size per camera
+            cam_media: dict[cam_name, list[Path]] — calibration media files per camera
+        error_occurred(str)                   — if a fatal error happens
     """
 
     progress = Signal(str)
-    camera_done = Signal(str, int, object)  # cam_name, n_dets, sample_image
-    finished = Signal(dict, dict)           # all_rows, cam_sizes
+    camera_done = Signal(str, int, object)      # cam_name, n_dets, sample_image
+    finished = Signal(dict, dict, dict)         # all_rows, cam_sizes, cam_media
     error_occurred = Signal(str)
 
     def __init__(
@@ -94,15 +97,16 @@ class DetectionWorker(QThread):
 
             all_rows: dict[str, list] = {}
             cam_sizes: dict[str, tuple[int, int]] = {}
+            cam_media: dict[str, list[Path]] = {}
 
             for cam_name in self._cam_names:
                 cam_dir = self._root / "calibration" / cam_name
                 if not cam_dir.is_dir():
                     self.progress.emit(f"  {cam_name}: no calibration folder, skipping")
                     all_rows[cam_name] = []
+                    cam_media[cam_name] = []
                     continue
 
-                # Separate images and videos
                 files = sorted(cam_dir.iterdir())
                 image_files = [f for f in files if f.suffix.lower() in IMAGE_EXTENSIONS]
                 video_files = [f for f in files if f.suffix.lower() in VIDEO_EXTENSIONS]
@@ -110,9 +114,10 @@ class DetectionWorker(QThread):
                 if not image_files and not video_files:
                     self.progress.emit(f"  {cam_name}: no media files found, skipping")
                     all_rows[cam_name] = []
+                    cam_media[cam_name] = []
                     continue
 
-                # Determine size from first available file
+                # Record size from the first file
                 first_file = (image_files or video_files)[0]
                 size = _read_media_size(first_file)
                 if size is not None:
@@ -122,6 +127,7 @@ class DetectionWorker(QThread):
                 sample_img: np.ndarray | None = None
 
                 if image_files:
+                    cam_media[cam_name] = image_files
                     self.progress.emit(
                         f"  {cam_name}: detecting corners in {len(image_files)} images..."
                     )
@@ -133,7 +139,7 @@ class DetectionWorker(QThread):
                     best_count = 0
                     for row in rows:
                         pts = row.get("filled", np.array([]))
-                        valid = np.sum(~np.any(np.isnan(pts.reshape(-1, 2)), axis=1))
+                        valid = int(np.sum(~np.any(np.isnan(pts.reshape(-1, 2)), axis=1)))
                         if valid > best_count:
                             best_count = valid
                             best_row = row
@@ -149,11 +155,16 @@ class DetectionWorker(QThread):
                             sample_img = img
 
                 elif video_files:
+                    cam_media[cam_name] = video_files
                     self.progress.emit(
                         f"  {cam_name}: detecting corners in {len(video_files)} video(s)..."
                     )
-                    for vpath in video_files:
-                        v_rows = board.detect_video(str(vpath), skip=self._skip)
+                    # Use prefix=vi so framenum = (video_idx, frame_in_video),
+                    # enabling correct video lookup in CalibFrameProvider.
+                    for vi, vpath in enumerate(video_files):
+                        v_rows = board.detect_video(
+                            str(vpath), prefix=vi, skip=self._skip
+                        )
                         rows.extend(v_rows)
 
                     # Sample: first frame of first video
@@ -166,28 +177,29 @@ class DetectionWorker(QThread):
                         sample_img = img
 
                 all_rows[cam_name] = rows
-                self.progress.emit(
-                    f"  {cam_name}: {len(rows)} detections"
-                )
+                self.progress.emit(f"  {cam_name}: {len(rows)} detections")
                 self.camera_done.emit(cam_name, len(rows), sample_img)
 
-            self.finished.emit(all_rows, cam_sizes)
+            self.finished.emit(all_rows, cam_sizes, cam_media)
 
         except Exception as exc:
             self.error_occurred.emit(str(exc))
 
 
 class CalibrationWorker(QThread):
-    """Runs aniposelib bundle adjustment given pre-detected Charuco rows.
+    """Runs aniposelib bundle adjustment and computes per-corner errors.
 
     Emits:
-        progress(str)                      — log message
-        finished(CameraGroup, float)       — calibrated group, mean reprojection error (px)
-        error_occurred(str)                — on failure
+        progress(str)                        — log message
+        finished(CameraGroup, float, dict)   — calibrated group, mean reprojection
+                                               error (px), frame_errors dict
+            frame_errors: dict[int, dict[str, ndarray]]
+                merged_frame_idx → cam_name → per-corner error array (NaN = undetected)
+        error_occurred(str)                  — on failure
     """
 
     progress = Signal(str)
-    finished = Signal(object, float)   # CameraGroup, mean_error_px
+    finished = Signal(object, float, dict)  # CameraGroup, mean_error_px, frame_errors
     error_occurred = Signal(str)
 
     def __init__(
@@ -206,7 +218,7 @@ class CalibrationWorker(QThread):
 
     def run(self):
         try:
-            from aniposelib.boards import CharucoBoard
+            from aniposelib.boards import CharucoBoard, merge_rows
             from aniposelib.cameras import Camera, CameraGroup
 
             bp = self._board_params
@@ -231,9 +243,96 @@ class CalibrationWorker(QThread):
 
             self.progress.emit("Running bundle adjustment...")
             error = cgroup.calibrate_rows(rows_list, board, verbose=False)
-
             self.progress.emit(f"Calibration complete — mean error: {error:.3f} px")
-            self.finished.emit(cgroup, float(error))
+
+            # ── Per-corner reprojection errors ─────────────────────────────
+            self.progress.emit("Computing per-corner reprojection errors...")
+            frame_errors = self._compute_frame_errors(
+                cgroup, board, rows_list, self._cam_names
+            )
+
+            self.finished.emit(cgroup, float(error), frame_errors)
 
         except Exception as exc:
             self.error_occurred.emit(str(exc))
+
+    @staticmethod
+    def _compute_frame_errors(
+        cgroup,
+        board,
+        rows_list: list[list],
+        cam_names: list[str],
+    ) -> dict:
+        """Compute per-corner reprojection errors for each merged detection frame.
+
+        For each camera in each merged frame:
+          1. Collect detected 2D corners and matching 3D board positions.
+          2. SolvePnP to get board pose in that camera.
+          3. Project all board corners back.
+          4. Error = distance between projected and detected positions.
+
+        Returns:
+            dict[merged_frame_idx, dict[cam_name, ndarray(N_corners)]]
+            Values are NaN where the corner was not detected.
+        """
+        from aniposelib.boards import merge_rows as _merge_rows
+
+        try:
+            merged = _merge_rows(rows_list, cam_names=cam_names)
+        except Exception:
+            return {}
+
+        # Get all 3D board corner positions (shape N x 3)
+        try:
+            objp_all = board.get_object_points().reshape(-1, 3).astype(np.float64)
+        except Exception:
+            return {}
+
+        frame_errors: dict[int, dict[str, np.ndarray]] = {}
+        n_corners = len(objp_all)
+
+        for fi, merged_row in enumerate(merged):
+            frame_errors[fi] = {}
+
+            for cam_name, cam in zip(cam_names, cgroup.cameras):
+                errors = np.full(n_corners, np.nan)
+
+                if cam_name not in merged_row:
+                    frame_errors[fi][cam_name] = errors
+                    continue
+
+                row = merged_row[cam_name]
+                filled = row.get("filled")
+                if filled is None:
+                    frame_errors[fi][cam_name] = errors
+                    continue
+
+                pts2d = np.asarray(filled, dtype=np.float64).reshape(-1, 2)
+                mask = ~np.any(np.isnan(pts2d), axis=1)
+                if np.sum(mask) < 4:
+                    frame_errors[fi][cam_name] = errors
+                    continue
+
+                K = np.array(cam.get_camera_matrix(), dtype=np.float64)
+                dist = np.array(cam.get_distortions(), dtype=np.float64)
+
+                objp_det = objp_all[mask]
+                imgp_det = pts2d[mask].reshape(-1, 1, 2)
+
+                ok, rvec, tvec = cv2.solvePnP(objp_det, imgp_det, K, dist)
+                if not ok:
+                    frame_errors[fi][cam_name] = errors
+                    continue
+
+                projected, _ = cv2.projectPoints(objp_all, rvec, tvec, K, dist)
+                projected = projected.reshape(-1, 2)
+
+                for j in range(n_corners):
+                    if not np.isnan(pts2d[j, 0]):
+                        dx = projected[j, 0] - pts2d[j, 0]
+                        dy = projected[j, 1] - pts2d[j, 1]
+                        errors[j] = float(np.sqrt(dx * dx + dy * dy))
+
+                frame_errors[fi][cam_name] = errors
+
+        return frame_errors

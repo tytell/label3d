@@ -161,6 +161,7 @@ class CameraPanel(QGraphicsView):
         self._dragging: tuple[int, str] | None = None  # (instance, bodypart) being dragged
         self._drag_start_pos = None
         self._legend: _CameraLegend | None = None
+        self._charuco_overlay = None  # CharucoOverlay — set externally for calibration mode
 
         # Epipolar line labels (viewport-fixed, rotated)
         self._line_labels: list[_RotatedLabel] = []
@@ -180,6 +181,15 @@ class CameraPanel(QGraphicsView):
     @property
     def epipolar_overlay(self) -> EpipolarOverlay:
         return self._epipolar_overlay
+
+    @property
+    def charuco_overlay(self):
+        """CharucoOverlay for calibration mode, or None in label mode."""
+        return self._charuco_overlay
+
+    @charuco_overlay.setter
+    def charuco_overlay(self, overlay):
+        self._charuco_overlay = overlay
 
     def setup_legend(self, all_cameras: list[str]):
         """Create a viewport-fixed legend identifying this camera's color."""
@@ -388,6 +398,18 @@ class CameraPanel(QGraphicsView):
         scene_pos = self.mapToScene(event.position().toPoint())
 
         if event.button() == Qt.MouseButton.LeftButton:
+            # Calibration mode: charuco corners, no drag
+            if self._charuco_overlay is not None:
+                corner_id = self._charuco_overlay.hit_test(scene_pos)
+                if corner_id is not None:
+                    self.point_clicked.emit(self._camera_name, 0, corner_id)
+                    event.accept()
+                else:
+                    self.deselect_requested.emit()
+                    super().mousePressEvent(event)
+                return
+
+            # Label mode: skeleton points with drag support
             hit = self._skeleton_overlay.hit_test(scene_pos)
             if hit is not None:
                 inst, bp = hit

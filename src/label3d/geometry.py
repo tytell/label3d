@@ -183,6 +183,26 @@ def compute_epipolar_line(
     return (unique[0], unique[1])
 
 
+def cameras_from_cgroup(cgroup) -> dict[str, "CameraParams"]:
+    """Build a CameraParams dict from an aniposelib CameraGroup.
+
+    Enables creating an EpipolarCache directly from a calibrated CameraGroup
+    without writing/reading a TOML file.
+    """
+    result = {}
+    for cam in cgroup.cameras:
+        size = cam.get_size()
+        result[cam.get_name()] = CameraParams(
+            name=cam.get_name(),
+            matrix=np.array(cam.get_camera_matrix(), dtype=np.float64),
+            dist=np.array(cam.get_distortions(), dtype=np.float64),
+            rvec=np.array(cam.get_rotation(), dtype=np.float64),
+            tvec=np.array(cam.get_translation(), dtype=np.float64),
+            size=tuple(size) if size is not None else (0, 0),
+        )
+    return result
+
+
 class EpipolarCache:
     """Caches fundamental matrices between camera pairs."""
 
