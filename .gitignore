@@ -15,6 +15,7 @@ aniposelib/
 
 # Generated test/output data
 test_project/
+test_project_flat_number/
 
 # Scratch/temporary files
 scratch/
