@@ -4,6 +4,8 @@
 Usage:
     python generate_synthetic.py synthetic_config.toml
     python generate_synthetic.py synthetic_config.toml --no-charuco
+    python generate_synthetic.py synthetic_config.toml --flat          # all strategies
+    python generate_synthetic.py synthetic_config.toml --flat number   # one strategy
 
 Generates:
     <output_dir>/
@@ -20,6 +22,14 @@ Generates:
     └── slp/                     (if sleap_io is installed)
         ├── cam0_trial1.slp
         └── cam1_trial1.slp
+
+With --flat, also generates flat folder(s) for testing setup_project:
+    <output_dir>_flat_<strategy>/
+    ├── cam1_trial001.mp4         (number strategy)
+    ├── cam1Y20260116H142107.519576000.mp4  (datestamp strategy)
+    ├── calib_cam1_board_000.png  (calibration files)
+    ├── cam1_trial001.slp
+    └── setup_config.toml         (config for setup_project_cli.py)
 
 Dependencies: numpy, opencv-python, pandas, toml
 Optional:     sleap-io (for .slp file generation)
@@ -39,6 +49,7 @@ from synthetic import (
     project_all_frames,
     run_sanity_checks,
     write_calibration_toml,
+    write_flat_folder,
     write_points_csv,
     write_skeleton_json,
     write_slp_files,
@@ -55,6 +66,14 @@ def main():
     parser.add_argument(
         "--no-charuco", action="store_true",
         help="Skip calibration image generation even if [charuco] section is present",
+    )
+    parser.add_argument(
+        "--flat", nargs="?", const="all", metavar="STRATEGY",
+        help=(
+            "Also generate flat folder(s) for testing setup_project. "
+            "STRATEGY can be: number, datestamp, datestamp_simple, or all (default). "
+            "Output goes to <output_dir>_flat_<strategy>/"
+        ),
     )
     args = parser.parse_args()
 
@@ -155,6 +174,29 @@ def main():
 
     # ── Sanity checks ────────────────────────────────────────────────────
     run_sanity_checks(cameras, all_pts_3d, all_projected, node_names, output_dir)
+
+    # ── Flat folder output ────────────────────────────────────────────────
+    if args.flat:
+        strategies = (
+            ["number", "datestamp", "datestamp_simple"]
+            if args.flat == "all"
+            else [args.flat]
+        )
+        charuco_cfg = config.get("charuco")
+        for strategy in strategies:
+            flat_dir = output_dir.parent / f"{output_dir.name}_flat_{strategy}"
+            print(f"\nGenerating flat folder ({strategy}): {flat_dir}/")
+            write_flat_folder(
+                project_dir=output_dir,
+                flat_dir=flat_dir,
+                cameras=cameras,
+                trial_name=trial_name,
+                strategy=strategy,
+                calib_keyword="calib",
+                charuco_config=charuco_cfg,
+            )
+            file_count = len(list(flat_dir.iterdir()))
+            print(f"  {file_count} files written")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from synthetic.projection import project_all_frames, project_points
 from synthetic.rendering import write_videos
 from synthetic.writers import (
     write_calibration_toml,
+    write_flat_folder,
     write_points_csv,
     write_skeleton_json,
     write_slp_files,
@@ -24,6 +25,7 @@ __all__ = [
     "project_points",
     "run_sanity_checks",
     "write_calibration_toml",
+    "write_flat_folder",
     "write_points_csv",
     "write_skeleton_json",
     "write_slp_files",

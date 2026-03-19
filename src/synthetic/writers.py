@@ -1,6 +1,7 @@
 """Output writers: calibration.toml, trials.csv, points.csv, skeleton.json, .slp files."""
 
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -153,3 +154,162 @@ def write_slp_files(
         slp_path = output_dir / f"{cam_name}_{trial_name}.slp"
         sio.save_file(labels, str(slp_path))
         print(f"  {slp_path}")
+
+
+# --- Flat folder output for testing setup_project ---
+
+# Naming strategies: how to build filenames for each (camera, trial) pair
+_NAMING_STRATEGIES = {
+    "number": "{cam}_trial{trial_num:03d}.{ext}",
+    "datestamp": "{cam}Y{datestamp}H{timestamp}.{frac}.{ext}",
+    "datestamp_simple": "{cam}_{datestamp}_{timestamp}.{ext}",
+}
+
+
+def _make_flat_filename(
+    cam_name: str,
+    trial_index: int,
+    strategy: str,
+    ext: str,
+    datestamp: str = "20260116",
+    base_time_sec: float = 51667.0,
+    time_offset_per_cam: float = 0.003,
+    cam_index: int = 0,
+) -> str:
+    """Generate a filename for a flat folder using the given naming strategy.
+
+    Args:
+        cam_name: Camera identifier string
+        trial_index: 0-based trial index
+        strategy: "number", "datestamp", or "datestamp_simple"
+        ext: File extension without dot (e.g. "mp4", "slp")
+        datestamp: Date string YYYYMMDD
+        base_time_sec: Base time in seconds since midnight for this trial
+        time_offset_per_cam: Sub-second offset per camera (simulates real hw)
+        cam_index: 0-based camera index (used for per-camera time offset)
+    """
+    if strategy == "number":
+        return f"{cam_name}_trial{trial_index + 1:03d}.{ext}"
+    elif strategy == "datestamp":
+        # Y...H... format like .cine files
+        total_sec = base_time_sec + cam_index * time_offset_per_cam
+        hh = int(total_sec // 3600)
+        mm = int((total_sec % 3600) // 60)
+        ss = int(total_sec % 60)
+        frac = total_sec - int(total_sec)
+        frac_str = f"{frac:.9f}"[2:]  # "000003000" style
+        return f"{cam_name}Y{datestamp}H{hh:02d}{mm:02d}{ss:02d}.{frac_str}.{ext}"
+    elif strategy == "datestamp_simple":
+        # YYYYMMDD_HHMMSS format
+        total_sec = base_time_sec + cam_index * time_offset_per_cam
+        hh = int(total_sec // 3600)
+        mm = int((total_sec % 3600) // 60)
+        ss = int(total_sec % 60)
+        return f"{cam_name}_{datestamp}_{hh:02d}{mm:02d}{ss:02d}.{ext}"
+    else:
+        raise ValueError(f"Unknown naming strategy: {strategy}")
+
+
+def write_flat_folder(
+    project_dir: Path,
+    flat_dir: Path,
+    cameras: dict,
+    trial_name: str,
+    strategy: str,
+    calib_keyword: str = "calib",
+    charuco_config: dict | None = None,
+) -> Path:
+    """Reorganize a generated project into a flat folder for testing setup_project.
+
+    Copies videos, slp files, and calibration media from the structured project
+    into a single flat folder with filenames following the chosen naming strategy.
+    Also writes a setup_config.toml that can be fed to setup_project_cli.py.
+
+    Args:
+        project_dir: Path to the generated structured project
+        flat_dir: Path for the flat output folder
+        cameras: Camera dict from build_cameras()
+        trial_name: Original trial name used in generation
+        strategy: Naming strategy — "number", "datestamp", or "datestamp_simple"
+        calib_keyword: Keyword used to tag calibration files
+        charuco_config: Charuco board config dict (optional, for setup_config.toml)
+
+    Returns:
+        Path to the flat folder
+    """
+    flat_dir.mkdir(parents=True, exist_ok=True)
+    cam_names = list(cameras.keys())
+
+    # Base timestamp for datestamp strategies (14:21:07 = 51667 seconds)
+    base_time = 51667.519576
+    time_offset_per_cam = 0.003  # 3ms offset between cameras
+
+    # --- Copy data videos with new names ---
+    video_dir = project_dir / "videos"
+    for ci, cam_name in enumerate(cam_names):
+        src = video_dir / f"{cam_name}_{trial_name}.mp4"
+        if src.exists():
+            new_name = _make_flat_filename(
+                cam_name, 0, strategy, "mp4",
+                base_time_sec=base_time,
+                time_offset_per_cam=time_offset_per_cam,
+                cam_index=ci,
+            )
+            shutil.copy2(str(src), str(flat_dir / new_name))
+
+    # --- Copy SLP files with matching names ---
+    slp_dir = project_dir / "slp"
+    if slp_dir.exists():
+        for ci, cam_name in enumerate(cam_names):
+            src = slp_dir / f"{cam_name}_{trial_name}.slp"
+            if src.exists():
+                new_name = _make_flat_filename(
+                    cam_name, 0, strategy, "slp",
+                    base_time_sec=base_time,
+                    time_offset_per_cam=time_offset_per_cam,
+                    cam_index=ci,
+                )
+                shutil.copy2(str(src), str(flat_dir / new_name))
+
+    # --- Copy calibration files with calib keyword in name ---
+    calib_dir = project_dir / "calibration"
+    if calib_dir.exists():
+        for cam_name in cam_names:
+            cam_calib = calib_dir / cam_name
+            if cam_calib.is_dir():
+                for img in sorted(cam_calib.iterdir()):
+                    if img.is_file():
+                        # Prefix with calib keyword and camera name
+                        new_name = f"{calib_keyword}_{cam_name}_{img.name}"
+                        shutil.copy2(str(img), str(flat_dir / new_name))
+
+    # --- Write setup_config.toml ---
+    datestamp_window = time_offset_per_cam * len(cam_names) * 2
+    setup_config = {
+        "setup": {
+            "source_dir": str(flat_dir),
+            "output_dir": str(flat_dir.parent / f"{flat_dir.name}_project"),
+            "camera_names": cam_names,
+            "calib_keyword": calib_keyword,
+            "match_strategy": strategy if strategy != "datestamp_simple" else "datestamp",
+            "datestamp_window_sec": datestamp_window if "datestamp" in strategy else 0.0,
+        },
+        "project": {
+            "name": f"synthetic_{strategy}",
+        },
+    }
+    if charuco_config:
+        # Extract just the board params (not placement/rendering)
+        setup_config["charuco"] = {
+            k: charuco_config[k]
+            for k in ("squares_x", "squares_y", "square_length",
+                       "marker_length", "marker_bits", "dict_size")
+            if k in charuco_config
+        }
+
+    config_path = flat_dir / "setup_config.toml"
+    with open(config_path, "w") as f:
+        toml.dump(setup_config, f)
+    print(f"  Setup config: {config_path}")
+
+    return flat_dir
