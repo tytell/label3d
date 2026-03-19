@@ -44,6 +44,7 @@ A `CameraGroup` holds a list of `Camera` objects and is saved/loaded as `calibra
 
 ```
 Project
+├── project.toml             # project config: name, charuco board params (see below)
 ├── calibration/             # calibration images or videos, one subfolder per camera
 │   ├── cam0/
 │   └── cam1/
@@ -51,8 +52,28 @@ Project
 │   └── trials.csv           # maps trial names → per-camera video filenames + frame ranges
 ├── calibration.toml         # written by the Calibrate step (aniposelib CameraGroup.dump)
 ├── skeleton.json            # node names, edges, symmetries (from SLEAP or manual definition)
+├── slp/                     # optional: imported .slp files, one per (trial, camera)
 └── points.csv               # 2D + 3D labels (MultiIndex CSV, see below)
 ```
+
+### Project configuration (`project.toml`)
+
+Optional project-level configuration file. Loaded by `Project.load()` into `project.config: dict`.
+
+```toml
+[project]
+name = "my_experiment"
+
+[charuco]
+squares_x = 6               # board squares along X
+squares_y = 8               # board squares along Y
+square_length = 30.0         # mm — side length of each chessboard square
+marker_length = 22.0         # mm — side length of ArUco markers within squares
+marker_bits = 4              # ArUco marker bit depth (4, 5, 6, or 7)
+dict_size = 50               # ArUco dictionary size (50, 100, 250, 1000)
+```
+
+The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init__` parameters. Written by the project setup utility; read by the calibration UI to pre-populate board settings.
 
 ### Videos and trials
 
@@ -219,6 +240,60 @@ translation = [tx, ty, tz]
 ```
 
 Loaded via `CameraGroup.load(fname)`, which reads all sections except `metadata` in sorted order and reconstructs `Camera` objects. Camera IDs used throughout the app (in `trials.csv`, `points.csv` column headers) are taken from the `name` field, not the section name.
+
+---
+
+## Project Setup Utility
+
+### Overview
+
+Before using label3d, users need to organize their raw video files into the expected project folder structure. The **setup utility** takes a flat folder of videos (data + calibration) and optional `.slp` files and reorganizes them into a proper label3d project.
+
+Available as both a CLI tool and (planned) a GUI dialog via File > New Project.
+
+### CLI usage
+
+```bash
+uv run python setup_project_cli.py                  # interactive mode
+uv run python setup_project_cli.py config.toml      # config file mode
+```
+
+### Input parameters
+
+| Parameter | Description |
+|---|---|
+| `source_dir` | Flat folder containing all videos and .slp files |
+| `output_dir` | Path for the new project folder |
+| `camera_names` | Camera name substrings found in filenames (e.g. `left, right, bottom`) |
+| `calib_keyword` | Keyword identifying calibration files (e.g. `calib`, `charuco`) |
+| `match_strategy` | How to group files into trials: `number`, `datestamp`, or `mtime` |
+| Charuco params | Board parameters written to `project.toml` |
+
+### File classification
+
+1. Scan `source_dir` for video files (`.mp4`, `.avi`, `.mov`, `.mkv`), `.slp` files, and images
+2. Assign each file to a camera by matching `camera_names` as case-insensitive substrings
+3. Files containing `calib_keyword` → calibration; remainder → data videos
+4. Data videos are grouped into trials using the chosen matching strategy
+
+### Trial matching strategies
+
+**Number** — extract numeric substrings from filenames; group by matching number.
+Example: `left_001.mp4` + `right_001.mp4` → `trial_001`
+
+**Datestamp** — extract date/datetime patterns (`YYYYMMDD`, `YYYYMMDD_HHMMSS`, `YYYY-MM-DD`, etc.); group by matching stamp.
+Example: `left_20260315_143000.mp4` + `right_20260315_143000.mp4` → `trial_20260315_143000`
+
+**Modification time** — cluster files by OS modification time within a configurable window (default 60s).
+Example: files modified within 30 seconds of each other → same trial.
+
+### Output
+
+Files are **moved** (not copied) from the source folder into the project structure. The utility writes `trials.csv`, `project.toml`, and creates `calibration/{camera}/` subfolders.
+
+### Core module
+
+`label3d/setup_project.py` — contains `SetupConfig`, `FileAssignment`, `classify_files()`, `preview_assignment()`, `execute_setup()`, `write_project_toml()`. Pure logic, no UI dependency.
 
 ---
 
@@ -630,7 +705,8 @@ label3d/
 ├── __main__.py                  # ✓ CLI entry: `label3d [project_dir]`
 ├── app.py                       # ✓ QApplication, argument parsing, launch
 ├── state.py                     # ✓ ProjectState: all mutable state + Qt signals
-├── project.py                   # ✓ Project folder I/O: trials.csv, calibration, paths
+├── project.py                   # ✓ Project folder I/O: trials.csv, calibration, project.toml, paths
+├── setup_project.py             # ✓ Project setup: classify files, match trials, create structure
 ├── points.py                    # Phase 2: PointsStore: DataFrame wrapper, CRUD, save/load
 ├── skeleton.py                  # Phase 2: Skeleton: nodes, edges, symmetry pairs
 ├── geometry.py                  # Phase 3/5: Fundamental matrix, epipolar lines, triangulation
@@ -1059,6 +1135,7 @@ A session-scoped `QApplication` fixture in `tests/conftest.py` is required befor
 | Module | What it covers |
 |---|---|
 | `tests/test_skeleton.py` | `Skeleton` load/save, node navigation, special-char node names |
+| `tests/test_setup_project.py` | Project setup: file classification, trial matching (number/datestamp/mtime), execute, project.toml |
 | `tests/test_points.py` | `PointsStore` construction, full CRUD API, cache, dirty tracking, signals |
 | `tests/test_points_paths.py` | OS-level path robustness: spaces, unicode, separators, missing paths |
 | `tests/test_adapters.py` | Adapter registry, `SleapAdapter` load/save, basename matching edge cases |

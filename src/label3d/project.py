@@ -44,6 +44,7 @@ class Project:
     skeleton: Skeleton | None = None
     points: PointsStore | None = None
     trials_df: pd.DataFrame | None = None  # raw trials.csv for adapter use
+    config: dict = field(default_factory=dict)  # from project.toml
 
     @classmethod
     def load(cls, path: Path) -> Project:
@@ -92,6 +93,12 @@ class Project:
         if points_path.exists():
             points = PointsStore.from_csv(points_path)
 
+        # --- project.toml (optional) ---
+        config: dict = {}
+        config_path = root / "project.toml"
+        if config_path.exists():
+            config = toml.load(config_path)
+
         proj = cls(
             root=root,
             cameras=cameras,
@@ -101,6 +108,7 @@ class Project:
             skeleton=skeleton,
             points=points,
             trials_df=trials_df,
+            config=config,
         )
         return proj
 

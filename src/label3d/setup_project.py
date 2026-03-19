@@ -1,0 +1,545 @@
+"""Project setup utility: organize a flat folder of videos/slp files into a label3d project."""
+
+from __future__ import annotations
+
+import re
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pandas as pd
+import toml
+
+VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".cine"}
+SLP_EXTENSION = ".slp"
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+
+
+@dataclass
+class SetupConfig:
+    """Configuration for project setup."""
+
+    source_dir: Path
+    output_dir: Path
+    camera_names: list[str]
+    calib_keyword: str
+    match_strategy: str  # "number" | "datestamp" | "mtime"
+    mtime_window_sec: float = 60.0
+    datestamp_window_sec: float = 0.0  # tolerance for datestamp matching (0 = exact)
+    charuco: dict | None = None
+    project_name: str = ""
+
+
+@dataclass
+class FileAssignment:
+    """Result of classifying and matching files."""
+
+    # trial_name -> {camera_name: filepath}
+    trials: dict[str, dict[str, Path]] = field(default_factory=dict)
+    # camera_name -> [calib files]
+    calibration: dict[str, list[Path]] = field(default_factory=dict)
+    # trial_name -> {camera_name: slp_path}
+    slp_files: dict[str, dict[str, Path]] = field(default_factory=dict)
+    # files that couldn't be assigned
+    unmatched: list[Path] = field(default_factory=list)
+    # warnings generated during classification
+    warnings: list[str] = field(default_factory=list)
+
+
+def classify_files(config: SetupConfig) -> FileAssignment:
+    """Scan source_dir, classify files by camera and type, match trials."""
+    assignment = FileAssignment()
+
+    source = config.source_dir
+    if not source.is_dir():
+        raise FileNotFoundError(f"Source directory not found: {source}")
+
+    # Collect all relevant files
+    all_files = sorted(source.iterdir())
+    video_files: list[Path] = []
+    slp_files: list[Path] = []
+    image_files: list[Path] = []
+
+    for f in all_files:
+        if not f.is_file():
+            continue
+        ext = f.suffix.lower()
+        if ext in VIDEO_EXTENSIONS:
+            video_files.append(f)
+        elif ext == SLP_EXTENSION:
+            slp_files.append(f)
+        elif ext in IMAGE_EXTENSIONS:
+            image_files.append(f)
+
+    # Classify each file by camera
+    calib_keyword_lower = config.calib_keyword.lower()
+
+    # Separate calibration vs data files
+    calib_videos: list[tuple[str, Path]] = []  # (camera, path)
+    calib_images: list[tuple[str, Path]] = []
+    data_videos: list[tuple[str, Path]] = []
+    data_slps: list[tuple[str, Path]] = []
+
+    for f in video_files:
+        camera = _identify_camera(f.name, config.camera_names)
+        if camera is None:
+            assignment.unmatched.append(f)
+            assignment.warnings.append(
+                f"Video '{f.name}' does not match any camera name"
+            )
+            continue
+        if calib_keyword_lower and calib_keyword_lower in f.name.lower():
+            calib_videos.append((camera, f))
+        else:
+            data_videos.append((camera, f))
+
+    for f in image_files:
+        camera = _identify_camera(f.name, config.camera_names)
+        if camera is None:
+            assignment.unmatched.append(f)
+            continue
+        if calib_keyword_lower and calib_keyword_lower in f.name.lower():
+            calib_images.append((camera, f))
+        else:
+            assignment.unmatched.append(f)
+
+    for f in slp_files:
+        camera = _identify_camera(f.name, config.camera_names)
+        if camera is None:
+            assignment.unmatched.append(f)
+            assignment.warnings.append(
+                f"SLP file '{f.name}' does not match any camera name"
+            )
+            continue
+        data_slps.append((camera, f))
+
+    # Build calibration dict
+    for camera, f in calib_videos:
+        assignment.calibration.setdefault(camera, []).append(f)
+    for camera, f in calib_images:
+        assignment.calibration.setdefault(camera, []).append(f)
+
+    # Match data videos into trials
+    if config.match_strategy == "number":
+        assignment.trials = _match_by_number(data_videos, config.camera_names)
+    elif config.match_strategy == "datestamp":
+        assignment.trials = _match_by_datestamp(
+            data_videos, config.camera_names, config.datestamp_window_sec
+        )
+    elif config.match_strategy == "mtime":
+        assignment.trials = _match_by_mtime(
+            data_videos, config.camera_names, config.mtime_window_sec
+        )
+    else:
+        raise ValueError(f"Unknown match strategy: {config.match_strategy}")
+
+    # Match SLP files to trials using the same strategy
+    if data_slps:
+        if config.match_strategy == "number":
+            assignment.slp_files = _match_by_number(data_slps, config.camera_names)
+        elif config.match_strategy == "datestamp":
+            assignment.slp_files = _match_by_datestamp(
+                data_slps, config.camera_names, config.datestamp_window_sec
+            )
+        elif config.match_strategy == "mtime":
+            assignment.slp_files = _match_by_mtime(
+                data_slps, config.camera_names, config.mtime_window_sec
+            )
+
+    # Warn about incomplete trials
+    for trial_name, cam_files in assignment.trials.items():
+        missing = set(config.camera_names) - set(cam_files.keys())
+        if missing:
+            assignment.warnings.append(
+                f"Trial '{trial_name}' is missing cameras: {', '.join(sorted(missing))}"
+            )
+
+    return assignment
+
+
+def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
+    """Return a human-readable summary of the file assignment."""
+    lines = []
+    lines.append(f"Project: {config.project_name or config.output_dir.name}")
+    lines.append(f"Output:  {config.output_dir}")
+    lines.append(f"Cameras: {', '.join(config.camera_names)}")
+    lines.append(f"Strategy: {config.match_strategy}")
+    lines.append("")
+
+    # Trials
+    if assignment.trials:
+        lines.append(f"Trials ({len(assignment.trials)}):")
+        for trial_name in sorted(assignment.trials):
+            cam_files = assignment.trials[trial_name]
+            lines.append(f"  {trial_name}:")
+            for cam in config.camera_names:
+                if cam in cam_files:
+                    lines.append(f"    {cam}: {cam_files[cam].name}")
+                else:
+                    lines.append(f"    {cam}: (missing)")
+    else:
+        lines.append("Trials: none found")
+    lines.append("")
+
+    # Calibration
+    if assignment.calibration:
+        total_calib = sum(len(v) for v in assignment.calibration.values())
+        lines.append(f"Calibration files ({total_calib}):")
+        for cam in config.camera_names:
+            files = assignment.calibration.get(cam, [])
+            if files:
+                for f in files:
+                    lines.append(f"  {cam}: {f.name}")
+            else:
+                lines.append(f"  {cam}: (none)")
+    else:
+        lines.append("Calibration files: none found")
+    lines.append("")
+
+    # SLP files
+    if assignment.slp_files:
+        lines.append(f"SLP files ({len(assignment.slp_files)} trials):")
+        for trial_name in sorted(assignment.slp_files):
+            cam_files = assignment.slp_files[trial_name]
+            for cam, f in sorted(cam_files.items()):
+                lines.append(f"  {trial_name}/{cam}: {f.name}")
+    lines.append("")
+
+    # Unmatched
+    if assignment.unmatched:
+        lines.append(f"Unmatched files ({len(assignment.unmatched)}):")
+        for f in assignment.unmatched:
+            lines.append(f"  {f.name}")
+    lines.append("")
+
+    # Warnings
+    if assignment.warnings:
+        lines.append("Warnings:")
+        for w in assignment.warnings:
+            lines.append(f"  ! {w}")
+
+    return "\n".join(lines)
+
+
+def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
+    """Create project folder structure, move files, write trials.csv and project.toml.
+
+    Returns the output directory path.
+    """
+    out = config.output_dir
+    if out.exists():
+        raise FileExistsError(f"Output directory already exists: {out}")
+
+    # Create directory structure
+    videos_dir = out / "videos"
+    videos_dir.mkdir(parents=True)
+
+    # Move calibration files
+    if assignment.calibration:
+        for cam, files in assignment.calibration.items():
+            cam_dir = out / "calibration" / cam
+            cam_dir.mkdir(parents=True, exist_ok=True)
+            for f in files:
+                shutil.move(str(f), str(cam_dir / f.name))
+
+    # Move data videos and build trials.csv rows
+    trials_rows = []
+    for trial_name in sorted(assignment.trials):
+        cam_files = assignment.trials[trial_name]
+        row: dict[str, str | int] = {"trial": trial_name}
+        for cam in config.camera_names:
+            if cam in cam_files:
+                src = cam_files[cam]
+                dst = videos_dir / src.name
+                shutil.move(str(src), str(dst))
+                row[cam] = src.name
+                row[f"{cam}_start"] = 0
+                row[f"{cam}_end"] = ""
+            else:
+                row[cam] = ""
+                row[f"{cam}_start"] = ""
+                row[f"{cam}_end"] = ""
+        trials_rows.append(row)
+
+    # Write trials.csv
+    if trials_rows:
+        # Build column order: trial, cam0, cam0_start, cam0_end, cam1, ...
+        columns = ["trial"]
+        for cam in config.camera_names:
+            columns.extend([cam, f"{cam}_start", f"{cam}_end"])
+        df = pd.DataFrame(trials_rows, columns=columns)
+        df.to_csv(videos_dir / "trials.csv", index=False)
+
+    # Move SLP files
+    if assignment.slp_files:
+        slp_dir = out / "slp"
+        slp_dir.mkdir(parents=True, exist_ok=True)
+        for trial_name, cam_files in assignment.slp_files.items():
+            for cam, f in cam_files.items():
+                shutil.move(str(f), str(slp_dir / f.name))
+
+    # Write project.toml
+    write_project_toml(out, config.project_name or out.name, config.charuco)
+
+    return out
+
+
+def write_project_toml(
+    project_dir: Path,
+    project_name: str,
+    charuco: dict | None = None,
+) -> Path:
+    """Write project.toml to the project directory."""
+    config_data: dict = {
+        "project": {"name": project_name},
+    }
+    if charuco:
+        config_data["charuco"] = charuco
+
+    path = project_dir / "project.toml"
+    with open(path, "w") as f:
+        toml.dump(config_data, f)
+    return path
+
+
+# --- Internal helpers ---
+
+
+def _identify_camera(filename: str, camera_names: list[str]) -> str | None:
+    """Find which camera a filename belongs to by substring match.
+
+    Returns the camera name, or None if no match / ambiguous match.
+    """
+    filename_lower = filename.lower()
+    matches = [cam for cam in camera_names if cam.lower() in filename_lower]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        # Try to disambiguate: prefer longer camera name matches
+        matches.sort(key=len, reverse=True)
+        # If the longest match contains a shorter match as a substring,
+        # both would match — keep only the longest
+        # e.g. camera names "cam1" and "cam10": "cam10_trial1.mp4" matches both
+        # but "cam10" is the better match
+        best = matches[0]
+        # Check if the second match is a substring of the first
+        if matches[1].lower() in best.lower():
+            return best
+        # Truly ambiguous
+        return None
+    return None
+
+
+def _extract_trial_key_number(
+    filename: str, camera_names: list[str]
+) -> str | None:
+    """Extract a numeric trial key from a filename.
+
+    Removes the camera name and extension, then finds the remaining
+    numeric portion(s) to use as a trial key.
+    """
+    stem = Path(filename).stem
+    # Remove camera name (case-insensitive)
+    for cam in camera_names:
+        pattern = re.compile(re.escape(cam), re.IGNORECASE)
+        stem = pattern.sub("", stem)
+
+    # Find all numeric sequences
+    numbers = re.findall(r"\d+", stem)
+    if not numbers:
+        return None
+    # Use the first numeric sequence as the trial key
+    return numbers[0]
+
+
+@dataclass
+class _DatestampResult:
+    """Parsed datestamp from a filename."""
+
+    label: str  # human-readable label for trial naming
+    timestamp: float  # seconds since midnight on the date (for range matching)
+    date_str: str  # YYYYMMDD portion
+
+
+# Each pattern returns (match_func) that extracts a _DatestampResult from regex groups
+_DATESTAMP_PATTERNS: list[tuple[re.Pattern, bool, bool]] = [
+    # YYYYYMMDDHHHMMSSS.fractional — e.g. Y20260116H142107.519576000
+    (re.compile(r"Y(\d{4})(\d{2})(\d{2})H(\d{2})(\d{2})(\d{2})(?:\.(\d+))?"), True, True),
+    # YYYYMMDD_HHMMSS (with optional fractional)
+    (re.compile(r"(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})(?:\.(\d+))?"), True, False),
+    # YYYY-MM-DD_HH-MM-SS (with optional fractional)
+    (re.compile(r"(\d{4})-(\d{2})-(\d{2})[_T](\d{2})-(\d{2})-(\d{2})(?:\.(\d+))?"), True, False),
+    # YYYY-MM-DD_HHMMSS (with optional fractional)
+    (re.compile(r"(\d{4})-(\d{2})-(\d{2})[_T](\d{2})(\d{2})(\d{2})(?:\.(\d+))?"), True, False),
+    # YYYYMMDD only
+    (re.compile(r"(\d{4})(\d{2})(\d{2})"), False, False),
+    # YYYY-MM-DD only
+    (re.compile(r"(\d{4})-(\d{2})-(\d{2})"), False, False),
+]
+
+
+def _extract_trial_key_datestamp(
+    filename: str, camera_names: list[str]
+) -> _DatestampResult | None:
+    """Extract a date/datetime stamp from a filename.
+
+    Returns a _DatestampResult with a label string and a numeric timestamp
+    (seconds since midnight on the date) for range-based matching.
+    """
+    stem = Path(filename).stem
+    # Remove camera name
+    for cam in camera_names:
+        pattern = re.compile(re.escape(cam), re.IGNORECASE)
+        stem = pattern.sub("", stem)
+
+    for regex, has_time, _is_yh_format in _DATESTAMP_PATTERNS:
+        m = regex.search(stem)
+        if m:
+            groups = m.groups()
+            date_str = f"{groups[0]}{groups[1]}{groups[2]}"
+            if has_time:
+                hh, mm, ss = int(groups[3]), int(groups[4]), int(groups[5])
+                frac_str = groups[6] if len(groups) > 6 and groups[6] else "0"
+                frac = float(f"0.{frac_str}")
+                timestamp = hh * 3600 + mm * 60 + ss + frac
+                label = f"{date_str}_{groups[3]}{groups[4]}{groups[5]}"
+                return _DatestampResult(
+                    label=label, timestamp=timestamp, date_str=date_str
+                )
+            else:
+                return _DatestampResult(
+                    label=date_str, timestamp=0.0, date_str=date_str
+                )
+    return None
+
+
+def _match_by_number(
+    files: list[tuple[str, Path]], camera_names: list[str]
+) -> dict[str, dict[str, Path]]:
+    """Match files into trials by numeric substring."""
+    key_groups: dict[str, dict[str, Path]] = {}
+
+    for camera, filepath in files:
+        key = _extract_trial_key_number(filepath.name, camera_names)
+        if key is None:
+            continue
+        trial_name = f"trial_{key}"
+        key_groups.setdefault(trial_name, {})[camera] = filepath
+
+    return key_groups
+
+
+def _match_by_datestamp(
+    files: list[tuple[str, Path]],
+    camera_names: list[str],
+    window_sec: float = 0.0,
+) -> dict[str, dict[str, Path]]:
+    """Match files into trials by date/datetime stamp in filename.
+
+    If window_sec > 0, timestamps within the same date that differ by at most
+    window_sec seconds are grouped into the same trial (useful when cameras
+    embed slightly different sub-second timestamps). When window_sec == 0,
+    only exact label matches are grouped.
+    """
+    if window_sec <= 0:
+        # Exact matching — group by label string
+        key_groups: dict[str, dict[str, Path]] = {}
+        for camera, filepath in files:
+            result = _extract_trial_key_datestamp(filepath.name, camera_names)
+            if result is None:
+                continue
+            trial_name = f"trial_{result.label}"
+            key_groups.setdefault(trial_name, {})[camera] = filepath
+        return key_groups
+
+    # Windowed matching — cluster by (date, timestamp) proximity
+    parsed: list[tuple[str, Path, _DatestampResult]] = []
+    for camera, filepath in files:
+        result = _extract_trial_key_datestamp(filepath.name, camera_names)
+        if result is None:
+            continue
+        parsed.append((camera, filepath, result))
+
+    if not parsed:
+        return {}
+
+    # Sort by (date, timestamp) so clustering works
+    parsed.sort(key=lambda x: (x[2].date_str, x[2].timestamp))
+
+    # Cluster: files on the same date within window_sec of the cluster start
+    clusters: list[list[tuple[str, Path, _DatestampResult]]] = []
+    current: list[tuple[str, Path, _DatestampResult]] = [parsed[0]]
+
+    for i in range(1, len(parsed)):
+        cam, fp, res = parsed[i]
+        cur_res = current[0][2]
+        if (
+            res.date_str == cur_res.date_str
+            and abs(res.timestamp - cur_res.timestamp) <= window_sec
+        ):
+            current.append((cam, fp, res))
+        else:
+            clusters.append(current)
+            current = [(cam, fp, res)]
+    clusters.append(current)
+
+    # Convert clusters to trial dict, using the first file's label
+    result_dict: dict[str, dict[str, Path]] = {}
+    for cluster in clusters:
+        label = cluster[0][2].label
+        trial_name = f"trial_{label}"
+        # Deduplicate trial names
+        base = trial_name
+        suffix = 2
+        while trial_name in result_dict:
+            trial_name = f"{base}_{suffix}"
+            suffix += 1
+        cam_files: dict[str, Path] = {}
+        for camera, filepath, _ in cluster:
+            cam_files[camera] = filepath
+        result_dict[trial_name] = cam_files
+
+    return result_dict
+
+
+def _match_by_mtime(
+    files: list[tuple[str, Path]],
+    camera_names: list[str],
+    window_sec: float,
+) -> dict[str, dict[str, Path]]:
+    """Match files into trials by modification time clustering.
+
+    Files within `window_sec` seconds of each other are grouped together.
+    Within each cluster, at most one file per camera is expected.
+    """
+    if not files:
+        return {}
+
+    # Sort by modification time
+    timed = [(camera, filepath, filepath.stat().st_mtime) for camera, filepath in files]
+    timed.sort(key=lambda x: x[2])
+
+    clusters: list[list[tuple[str, Path, float]]] = []
+    current_cluster: list[tuple[str, Path, float]] = [timed[0]]
+
+    for i in range(1, len(timed)):
+        cam, fp, mtime = timed[i]
+        # Check if within window of any file in the current cluster
+        cluster_min_time = min(t for _, _, t in current_cluster)
+        if mtime - cluster_min_time <= window_sec:
+            current_cluster.append((cam, fp, mtime))
+        else:
+            clusters.append(current_cluster)
+            current_cluster = [(cam, fp, mtime)]
+    clusters.append(current_cluster)
+
+    # Convert clusters to trial dict
+    result: dict[str, dict[str, Path]] = {}
+    for i, cluster in enumerate(clusters):
+        trial_name = f"trial_{i + 1:03d}"
+        cam_files: dict[str, Path] = {}
+        for camera, filepath, _ in cluster:
+            cam_files[camera] = filepath
+        result[trial_name] = cam_files
+
+    return result
