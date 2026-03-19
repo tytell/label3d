@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QStackedWidget,
     QStatusBar,
     QTabBar,
     QVBoxLayout,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
 from label3d.project import Project
 from label3d.state import ProjectState
 from label3d.video import FrameProvider
+from label3d.widgets.calibration_view import CalibrationView
 from label3d.widgets.camera_grid import CameraGrid, LayoutMode
 from label3d.widgets.frame_controls import FrameControls
 from label3d.widgets.label_view import LabelView
@@ -89,11 +91,28 @@ class MainWindow(QMainWindow):
 
         # Label view wraps the camera grid with overlays + sidebar
         self._label_view = LabelView(project, state, self._camera_grid)
-        main_layout.addWidget(self._label_view, stretch=1)
 
-        # Frame controls (bottom)
+        # Calibration view
+        self._calibration_view = CalibrationView(project)
+
+        # Export stub
+        _export_stub = QLabel("Export (coming soon)")
+        _export_stub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Stacked widget: index matches tab index (0=Calibrate, 1=Label, 2=Export)
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._calibration_view)  # 0
+        self._stack.addWidget(self._label_view)        # 1
+        self._stack.addWidget(_export_stub)            # 2
+        self._stack.setCurrentIndex(1)
+        main_layout.addWidget(self._stack, stretch=1)
+
+        # Frame controls (bottom) — only relevant in Label tab
         self._frame_controls = FrameControls(state)
         main_layout.addWidget(self._frame_controls)
+
+        # Connect tab switching
+        self._tabs.currentChanged.connect(self._on_tab_changed)
 
         # Status bar
         self._status_bar = QStatusBar()
@@ -175,6 +194,12 @@ class MainWindow(QMainWindow):
             self._layout_actions[mode] = action
 
         self._layout_actions[LayoutMode.GRID].setChecked(True)
+
+    def _on_tab_changed(self, index: int):
+        """Switch main content area when tab changes."""
+        self._stack.setCurrentIndex(index)
+        # Frame controls are only meaningful in the Label tab (index 1)
+        self._frame_controls.setVisible(index == 1)
 
     def _set_camera_view(self, index: int):
         """Switch camera from menu — keeps combo box in sync."""
