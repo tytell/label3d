@@ -266,14 +266,11 @@ def triangulate_point(
     cgroup = build_camera_group({c: cameras[c] for c in valid})
     cam_order = sorted(valid.keys())
 
-    pts = np.full((len(cam_order), 1, 2), np.nan)
-    for i, cam in enumerate(cam_order):
-        x, y = valid[cam]
-        ud = cameras[cam].undistort_points(np.array([[x, y]]))
-        pts[i, 0] = ud[0]
+    pts = np.array([[valid[c][0], valid[c][1]] for c in cam_order],
+                   dtype=np.float64)[:, np.newaxis, :]  # (n, 1, 2)
 
     try:
-        xyz = cgroup.triangulate(pts, undistort=False)  # (1, 3)
+        xyz = cgroup.triangulate(pts, undistort=True)  # (1, 3)
         if np.any(np.isnan(xyz)):
             return None
         return xyz[0].astype(float)
@@ -486,16 +483,14 @@ def triangulate_frame(
 ) -> dict[str, float]:
     """Triangulate all bodyparts for one instance in one frame.
 
-    Collects 2D points from cameras with state 'set' or 'predicted', undistorts
-    them, triangulates via aniposelib DLT, reprojects to fill xr/yr, and stores
+    Collects 2D points from cameras with state 'set' or 'predicted',
+    triangulates via aniposelib DLT, reprojects to fill xr/yr, and stores
     results in points_store.
 
     Returns dict mapping bodypart name → mean reprojection error (px).
     Bodyparts with fewer than 2 views return NaN error.
     """
-    cgroup = build_camera_group(cameras)
     cam_names_sorted = sorted(cameras.keys())
-    n_cams = len(cam_names_sorted)
 
     # Collect bodyparts for this instance
     try:
@@ -507,32 +502,26 @@ def triangulate_frame(
     errors: dict[str, float] = {}
 
     for bp in bodyparts:
-        # Build (C, 2) array — NaN where point not available
-        pts_2d = np.full((n_cams, 2), np.nan)
-        for ci, cam in enumerate(cam_names_sorted):
-            pd = points_store.get_point(trial, frame, instance, bp, cam)
-            if pd.state in ("set", "predicted") and not np.isnan(pd.x):
-                pts_2d[ci] = [pd.x, pd.y]
+        # Collect observations from cameras that have a valid point
+        valid_cams: list[str] = []
+        valid_pts: list[list[float]] = []
+        for cam in cam_names_sorted:
+            pt = points_store.get_point(trial, frame, instance, bp, cam)
+            if pt.state in ("set", "predicted") and not np.isnan(pt.x):
+                valid_cams.append(cam)
+                valid_pts.append([pt.x, pt.y])
 
-        valid_mask = ~np.any(np.isnan(pts_2d), axis=1)
-        if valid_mask.sum() < 2:
+        if len(valid_cams) < 2:
             errors[bp] = np.nan
             continue
 
-        # Undistort valid points in-place
-        pts_undist = pts_2d.copy()
-        for ci, cam in enumerate(cam_names_sorted):
-            if valid_mask[ci]:
-                ud = cameras[cam].undistort_points(pts_2d[ci:ci+1])
-                pts_undist[ci] = ud[0]
-
-        # Replace invalid cameras with NaN so aniposelib skips them
-        pts_for_tri = pts_undist.copy()
-        pts_for_tri[~valid_mask] = np.nan
-
-        # triangulate expects (C, 1, 2) — one point per camera
-        tri_input = pts_for_tri[:, np.newaxis, :]  # (C, 1, 2)
-        xyz = cgroup.triangulate(tri_input, undistort=False)  # (1, 3)
+        # Build a sub-cgroup with only the cameras that have observations.
+        # Pass raw pixel coordinates and let aniposelib undistort internally
+        # (undistort=True). aniposelib's DLT uses [R|t] extrinsics and expects
+        # normalized (K-divided) coords, which its own undistort produces.
+        sub_cgroup = build_camera_group({c: cameras[c] for c in valid_cams})
+        tri_input = np.array(valid_pts, dtype=np.float64)[:, np.newaxis, :]  # (n, 1, 2)
+        xyz = sub_cgroup.triangulate(tri_input, undistort=True)  # (1, 3)
         x3, y3, z3 = float(xyz[0, 0]), float(xyz[0, 1]), float(xyz[0, 2])
 
         if np.any(np.isnan([x3, y3, z3])):
@@ -549,9 +538,9 @@ def triangulate_frame(
             xr, yr = float(proj[0, 0]), float(proj[0, 1])
             points_store.set_reprojected(trial, frame, instance, bp, cam, xr, yr)
 
-            pd = points_store.get_point(trial, frame, instance, bp, cam)
-            if pd.state in ("set", "predicted") and not np.isnan(pd.x):
-                err = float(np.hypot(pd.x - xr, pd.y - yr))
+            pt = points_store.get_point(trial, frame, instance, bp, cam)
+            if pt.state in ("set", "predicted") and not np.isnan(pt.x):
+                err = float(np.hypot(pt.x - xr, pt.y - yr))
                 reproj_errors.append(err)
 
         errors[bp] = float(np.mean(reproj_errors)) if reproj_errors else np.nan

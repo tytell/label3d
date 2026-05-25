@@ -236,9 +236,11 @@ class LabelView(QWidget):
         instances = store.get_instances(trial, frame)
         for inst in instances:
             triangulate_frame(self._cameras, store, trial, frame, inst)
-        # Invalidate the frame cache after bulk 3D writes
+        # Invalidate the frame cache after bulk 3D writes, then redraw directly.
+        # Do NOT emit points_changed here — that would re-trigger auto-triangulation.
         store._invalidate_cache(trial, frame)
-        self._state.points_changed.emit(trial, frame, -1, "")
+        self._update_all_overlays()
+        self._update_3d_view()
 
     def _triangulate_all_frames(self):
         """Launch batch triangulation of all frames in the current trial (background)."""
