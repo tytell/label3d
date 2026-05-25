@@ -9,15 +9,22 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QSplitter, QWidget
 
-from label3d.geometry import EpipolarCache, load_cameras
+from label3d.geometry import (
+    EpipolarCache,
+    load_cameras,
+    triangulate_all_instances,
+    triangulate_frame,
+)
 from label3d.project import Project
 from label3d.state import ProjectState
 from label3d.widgets.bodypart_list import BodypartList
 from label3d.widgets.camera_grid import CameraGrid
+from label3d.widgets.view_3d import View3D
 
 
 class LabelView(QWidget):
@@ -42,14 +49,17 @@ class LabelView(QWidget):
         self._state = state
         self._camera_grid = camera_grid
         self._epipolar_cache: EpipolarCache | None = None
+        self._cameras: dict = {}
+        self._tri_worker = None  # TriangulationWorker (batch)
 
-        # Load calibration for epipolar geometry
+        # Load calibration for epipolar geometry and triangulation
         calib_path = project.root / "calibration.toml"
         if calib_path.exists():
-            cameras = load_cameras(calib_path)
-            self._epipolar_cache = EpipolarCache(cameras)
+            from label3d.geometry import load_cameras as _load_cams
+            self._cameras = _load_cams(calib_path)
+            self._epipolar_cache = EpipolarCache(self._cameras)
 
-        # Layout: sidebar | camera grid
+        # Layout: sidebar | camera grid | 3D view
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -64,10 +74,15 @@ class LabelView(QWidget):
         # Camera grid (reparented into this splitter)
         splitter.addWidget(camera_grid)
 
-        # Set initial sizes: sidebar ~150px, grid gets the rest
-        splitter.setSizes([150, 1050])
+        # 3D view
+        self._view_3d = View3D(self._cameras if self._cameras else None)
+        splitter.addWidget(self._view_3d)
+
+        # Set initial sizes: sidebar ~150px, grid gets the rest, 3D ~300px
+        splitter.setSizes([150, 800, 300])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 0)
 
         layout.addWidget(splitter)
 
@@ -94,6 +109,7 @@ class LabelView(QWidget):
 
         # Initial overlay update
         self._update_all_overlays()
+        self._update_3d_view()
 
     # -- Overlay updates -------------------------------------------------------
 
@@ -136,17 +152,23 @@ class LabelView(QWidget):
             if panel is not None:
                 panel.set_interaction_mode(has_selection)
         self._update_all_overlays()
+        self._update_3d_view()
 
     def _on_points_changed(self, trial: str, frame: int, instance: int, bodypart: str):
-        """Refresh overlays after a point edit."""
+        """Refresh overlays after a point edit; auto-triangulate if enabled."""
         if trial == self._state.current_trial and frame == self._state.current_frame:
+            if self._state.auto_triangulate and self._cameras:
+                self._triangulate_current_frame()
             self._update_all_overlays()
+            self._update_3d_view()
 
     def _on_frame_changed(self, frame: int):
         self._update_all_overlays()
+        self._update_3d_view()
 
     def _on_trial_changed(self, trial: str):
         self._update_all_overlays()
+        self._update_3d_view()
 
     def _on_point_clicked(self, camera: str, instance: int, bodypart: str):
         """Select the clicked point."""
@@ -191,10 +213,68 @@ class LabelView(QWidget):
 
         self._state.points_changed.emit(trial, frame, instance, bodypart)
 
+    # -- Triangulation ---------------------------------------------------------
+
+    def _update_3d_view(self):
+        """Refresh the 3D view for the current frame."""
+        self._view_3d.update_frame(
+            self._state.points_store,
+            self._state.skeleton,
+            self._state.current_trial,
+            self._state.current_frame,
+            self._state.selected_instance,
+            self._state.selected_bodypart,
+        )
+
+    def _triangulate_current_frame(self):
+        """Triangulate all instances in the current frame."""
+        store = self._state.points_store
+        if store is None or not self._cameras:
+            return
+        trial = self._state.current_trial
+        frame = self._state.current_frame
+        instances = store.get_instances(trial, frame)
+        for inst in instances:
+            triangulate_frame(self._cameras, store, trial, frame, inst)
+        # Invalidate the frame cache after bulk 3D writes
+        store._invalidate_cache(trial, frame)
+        self._state.points_changed.emit(trial, frame, -1, "")
+
+    def _triangulate_all_frames(self):
+        """Launch batch triangulation of all frames in the current trial (background)."""
+        store = self._state.points_store
+        if store is None or not self._cameras:
+            return
+
+        # Cancel any running worker
+        if self._tri_worker is not None and self._tri_worker.isRunning():
+            self._tri_worker.quit()
+            self._tri_worker.wait()
+
+        from label3d.workers.triangulation_worker import TriangulationWorker
+        self._tri_worker = TriangulationWorker(
+            self._cameras, store, self._state.current_trial, parent=self
+        )
+        self._tri_worker.frame_done.connect(self._on_batch_frame_done)
+        self._tri_worker.finished.connect(self._on_batch_done)
+        self._tri_worker.start()
+
+    def _on_batch_frame_done(self, frame: int):
+        if frame == self._state.current_frame:
+            store = self._state.points_store
+            if store is not None:
+                store._invalidate_cache(self._state.current_trial, frame)
+            self._update_all_overlays()
+            self._update_3d_view()
+
+    def _on_batch_done(self):
+        self._update_all_overlays()
+        self._update_3d_view()
+
     # -- Keyboard shortcuts ----------------------------------------------------
 
     def _setup_shortcuts(self):
-        """Register all Phase 3 keyboard shortcuts."""
+        """Register all keyboard shortcuts."""
         shortcuts = [
             # Bodypart cycling
             (Qt.Key.Key_Down, self._state.select_next_bodypart),
@@ -216,6 +296,14 @@ class LabelView(QWidget):
             (QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Backspace), self._delete_instance),
             # Toggle non-selected instance visibility
             (Qt.Key.Key_H, self._toggle_instance_visibility),
+            # Triangulation
+            (Qt.Key.Key_T, self._triangulate_current_frame),
+            (
+                QKeySequence(
+                    Qt.Modifier.CTRL | Qt.Modifier.SHIFT | Qt.Key.Key_T
+                ),
+                self._triangulate_all_frames,
+            ),
         ]
 
         for key, callback in shortcuts:

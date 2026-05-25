@@ -1,4 +1,4 @@
-"""Epipolar geometry: fundamental matrix and epipolar line computation.
+"""Epipolar geometry, triangulation, and reprojection.
 
 Uses calibration data (K, R, t) from aniposelib-format calibration.toml.
 Coordinates are raw pixels; undistortion is applied on the fly when needed.
@@ -6,12 +6,15 @@ Coordinates are raw pixels; undistortion is applied on the fly when needed.
 
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 import toml
+
+if TYPE_CHECKING:
+    from label3d.points import PointsStore
 
 
 class CameraParams:
@@ -238,3 +241,132 @@ class EpipolarCache:
 
         F = self.get_fundamental(source_cam, target_cam)
         return compute_epipolar_line(F, pt, tgt.size)
+
+
+# -- Triangulation ------------------------------------------------------------
+
+def build_camera_group(cameras: dict[str, "CameraParams"]):
+    """Build an aniposelib CameraGroup from a CameraParams dict.
+
+    Returns the CameraGroup with cameras ordered by sorted camera name.
+    """
+    from aniposelib.cameras import Camera as AniCamera, CameraGroup
+
+    ani_cams = []
+    for name in sorted(cameras.keys()):
+        cp = cameras[name]
+        cam = AniCamera(
+            matrix=cp.matrix.copy(),
+            dist=cp.dist.copy(),
+            size=list(cp.size),
+            rvec=cp.rvec.copy(),
+            tvec=cp.tvec.copy(),
+            name=cp.name,
+        )
+        ani_cams.append(cam)
+    return CameraGroup(ani_cams)
+
+
+def triangulate_frame(
+    cameras: dict[str, "CameraParams"],
+    points_store: "PointsStore",
+    trial: str,
+    frame: int,
+    instance: int,
+) -> dict[str, float]:
+    """Triangulate all bodyparts for one instance in one frame.
+
+    Collects 2D points from cameras with state 'set' or 'predicted', undistorts
+    them, triangulates via aniposelib DLT, reprojects to fill xr/yr, and stores
+    results in points_store.
+
+    Returns dict mapping bodypart name → mean reprojection error (px).
+    Bodyparts with fewer than 2 views return NaN error.
+    """
+    cgroup = build_camera_group(cameras)
+    cam_names_sorted = sorted(cameras.keys())
+    n_cams = len(cam_names_sorted)
+
+    # Collect bodyparts for this instance
+    try:
+        inst_df = points_store.df.loc[(trial, frame, instance)]
+        bodyparts = inst_df.index.tolist()
+    except KeyError:
+        return {}
+
+    errors: dict[str, float] = {}
+
+    for bp in bodyparts:
+        # Build (C, 2) array — NaN where point not available
+        pts_2d = np.full((n_cams, 2), np.nan)
+        for ci, cam in enumerate(cam_names_sorted):
+            pd = points_store.get_point(trial, frame, instance, bp, cam)
+            if pd.state in ("set", "predicted") and not np.isnan(pd.x):
+                pts_2d[ci] = [pd.x, pd.y]
+
+        valid_mask = ~np.any(np.isnan(pts_2d), axis=1)
+        if valid_mask.sum() < 2:
+            errors[bp] = np.nan
+            continue
+
+        # Undistort valid points in-place
+        pts_undist = pts_2d.copy()
+        for ci, cam in enumerate(cam_names_sorted):
+            if valid_mask[ci]:
+                ud = cameras[cam].undistort_points(pts_2d[ci:ci+1])
+                pts_undist[ci] = ud[0]
+
+        # Replace invalid cameras with NaN so aniposelib skips them
+        pts_for_tri = pts_undist.copy()
+        pts_for_tri[~valid_mask] = np.nan
+
+        # triangulate expects (C, 1, 2) — one point per camera
+        tri_input = pts_for_tri[:, np.newaxis, :]  # (C, 1, 2)
+        xyz = cgroup.triangulate(tri_input, undistort=False)  # (1, 3)
+        x3, y3, z3 = float(xyz[0, 0]), float(xyz[0, 1]), float(xyz[0, 2])
+
+        if np.any(np.isnan([x3, y3, z3])):
+            errors[bp] = np.nan
+            continue
+
+        points_store.set_3d(trial, frame, instance, bp, x3, y3, z3)
+
+        # Reproject into every camera and store xr/yr
+        pt3d = np.array([[x3, y3, z3]])
+        reproj_errors = []
+        for cam in cam_names_sorted:
+            proj = cameras[cam].project(pt3d)  # (1, 2)
+            xr, yr = float(proj[0, 0]), float(proj[0, 1])
+            points_store.set_reprojected(trial, frame, instance, bp, cam, xr, yr)
+
+            pd = points_store.get_point(trial, frame, instance, bp, cam)
+            if pd.state in ("set", "predicted") and not np.isnan(pd.x):
+                err = float(np.hypot(pd.x - xr, pd.y - yr))
+                reproj_errors.append(err)
+
+        errors[bp] = float(np.mean(reproj_errors)) if reproj_errors else np.nan
+
+    return errors
+
+
+def triangulate_all_instances(
+    cameras: dict[str, "CameraParams"],
+    points_store: "PointsStore",
+    trial: str,
+    frame: int,
+) -> dict[str, float]:
+    """Triangulate all instances in a frame.
+
+    Returns flat dict mapping bodypart → mean error across all instances.
+    """
+    instances = points_store.get_instances(trial, frame)
+    all_errors: dict[str, list[float]] = {}
+    for inst in instances:
+        errs = triangulate_frame(cameras, points_store, trial, frame, inst)
+        for bp, e in errs.items():
+            all_errors.setdefault(bp, []).append(e)
+
+    return {
+        bp: float(np.nanmean(vs)) if vs else np.nan
+        for bp, vs in all_errors.items()
+    }

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+
+import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
@@ -124,6 +127,7 @@ class MainWindow(QMainWindow):
 
         # Connect state signals
         state.frame_changed.connect(self._on_frame_changed)
+        state.points_changed.connect(self._on_points_changed_status)
 
         # Load first trial
         if project.trial_names():
@@ -260,6 +264,31 @@ class MainWindow(QMainWindow):
 
     def _on_frame_changed(self, frame: int):
         self._camera_grid.update_frame(frame)
+
+    def _on_points_changed_status(self, trial: str, frame: int, _instance: int, _bodypart: str):
+        """Update status bar with per-frame mean reprojection error after edits."""
+        store = self._state.points_store
+        if store is None or trial != self._state.current_trial:
+            return
+        if frame != self._state.current_frame:
+            return
+        errors = []
+        for inst in store.get_instances(trial, frame):
+            try:
+                inst_df = store.df.loc[trial].loc[frame].loc[inst]
+            except KeyError:
+                continue
+            for bp in inst_df.index:
+                for cam in store.cameras:
+                    pt = store.get_point(trial, frame, inst, bp, cam)
+                    if pt.state in ("set", "predicted") and not math.isnan(pt.x):
+                        if not math.isnan(pt.xr):
+                            errors.append(math.hypot(pt.x - pt.xr, pt.y - pt.yr))
+        if errors:
+            mean_err = float(np.mean(errors))
+            self._status_bar.showMessage(
+                f"Trial: {trial} — frame {frame} — reprojection error: {mean_err:.2f} px"
+            )
 
     def showEvent(self, event):
         super().showEvent(event)
