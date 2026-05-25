@@ -1074,11 +1074,21 @@ label3d/
 
 **Goal**: Real-time triangulation of current frame, batch triangulation, 3D visualization.
 
+#### Known bugs fixed (2026-05-25)
+
+Two bugs were found and fixed after initial implementation:
+
+1. **RecursionError on point click** — `_triangulate_current_frame()` ended with `self._state.points_changed.emit(...)`, which re-triggered `_on_points_changed` → `_triangulate_current_frame()` → infinite recursion. Fixed by removing the emit and calling `_update_all_overlays()` / `_update_3d_view()` directly inside `_triangulate_current_frame()`.
+
+2. **Wrong coordinate space for DLT** — aniposelib's `triangulate_simple` uses `[R|t]` extrinsics matrices (no K) and therefore expects **normalized camera coordinates** as input. The original code called `cv2.undistortPoints(..., P=self.matrix)` which outputs undistorted **pixel** coordinates (K re-applied), then passed them with `undistort=False`. This produced garbage triangulations (large reprojection errors, 3D points disappeared after any edit).
+   - Fixed by building a sub-cgroup containing only cameras with valid observations, passing **raw pixel coordinates**, and using `undistort=True` so aniposelib normalizes internally.
+   - Same fix applied to `triangulate_point()`.
+
 #### 5.1 Triangulation engine (`geometry.py`)
 - [x] `triangulate_frame(cameras, points_store, trial, frame, instance)`:
   - For each bodypart: collect 2D points from cameras where state ∈ {`set`, `predicted`}
-  - Undistort on the fly via `camera.undistort_points()`
-  - If ≥2 cameras: `camera_group.triangulate()` → 3D point
+  - Build sub-cgroup with only valid cameras; pass raw pixel coords with `undistort=True`
+  - If ≥2 cameras: `sub_cgroup.triangulate()` → 3D point
   - Reproject into all cameras → fill `xr`, `yr`; compute per-camera error
   - Store results via `PointsStore.set_3d()` and `set_reprojected()`
   - Return per-bodypart error dict for status bar display
