@@ -40,10 +40,10 @@ Writes `test_project/` with two synthetic camera views, known-correct ground tru
 ## Development
 
 ```
-uv run label3d          # launches the app (stub for now)
+uv run label3d          # launches the app
 uv run python <script>  # run any script in the project venv
 ```
 
 ## Implementation phases
 
-See `DESIGN.md §Implementation Plan`. Current status: pre-Phase 1 (design complete, synthetic data generator working, package scaffold in place).
+See `DESIGN.md §Implementation Plan`. Current status: Phases 1–4 complete. Next: Phase 5 (triangulation engine, batch worker, 3D view).

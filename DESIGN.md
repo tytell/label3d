@@ -707,9 +707,9 @@ label3d/
 ├── state.py                     # ✓ ProjectState: all mutable state + Qt signals
 ├── project.py                   # ✓ Project folder I/O: trials.csv, calibration, project.toml, paths
 ├── setup_project.py             # ✓ Project setup: classify files, match trials, create structure
-├── points.py                    # Phase 2: PointsStore: DataFrame wrapper, CRUD, save/load
-├── skeleton.py                  # Phase 2: Skeleton: nodes, edges, symmetry pairs
-├── geometry.py                  # Phase 3/5: Fundamental matrix, epipolar lines, triangulation
+├── points.py                    # ✓ PointsStore: DataFrame wrapper, CRUD, save/load
+├── skeleton.py                  # ✓ Skeleton: nodes, edges, symmetry pairs
+├── geometry.py                  # ✓ CameraParams, fundamental matrix, epipolar lines; triangulation Phase 5
 ├── video.py                     # ✓ VideoReader: cv2.VideoCapture wrapper, frame cache
 ├── widgets/
 │   ├── __init__.py              # ✓
@@ -717,21 +717,22 @@ label3d/
 │   ├── camera_panel.py          # ✓ QGraphicsView/Scene for one camera view
 │   ├── camera_grid.py           # ✓ Nested QSplitter grid of CameraPanels
 │   ├── frame_controls.py        # ✓ Bottom bar: navigation, seekbar, frame counter
-│   ├── point_item.py            # Phase 3: QGraphicsEllipseItem subclass: one labeled point
-│   ├── skeleton_overlay.py      # Phase 3: Manages all point_items + edges for one camera
-│   ├── epipolar_overlay.py      # Phase 3: Epipolar line items for one camera
+│   ├── point_item.py            # ✓ QGraphicsEllipseItem subclass: one labeled point
+│   ├── skeleton_overlay.py      # ✓ Manages all point_items + edges for one camera
+│   ├── epipolar_overlay.py      # ✓ Epipolar line items for one camera
+│   ├── charuco_overlay.py       # ✓ Detected / reprojected corner overlays for calibration
 │   ├── view_3d.py               # Phase 5: pyqtgraph GLViewWidget wrapper
-│   ├── bodypart_list.py         # Phase 3: Sidebar: bodypart names, click to select
-│   ├── calibration_view.py      # Phase 4: Calibration mode: settings panel + camera grid
-│   ├── label_view.py            # Phase 3: Labeling mode: grid + controls + sidebar
+│   ├── bodypart_list.py         # ✓ Sidebar: bodypart names, click to select
+│   ├── calibration_view.py      # ✓ Calibration mode: settings panel + camera grid
+│   ├── label_view.py            # ✓ Labeling mode: grid + controls + sidebar
 │   └── export_view.py           # Phase 6: Export mode: form + summary
 ├── adapters/
-│   ├── __init__.py              # Phase 2: Registry: discover PoseAdapter subclasses
-│   ├── base.py                  # Phase 2: PoseAdapter ABC
-│   └── sleap_adapter.py         # Phase 2: SleapAdapter
+│   ├── __init__.py              # ✓ Registry: discover PoseAdapter subclasses
+│   ├── base.py                  # ✓ PoseAdapter ABC
+│   └── sleap_adapter.py         # ✓ SleapAdapter
 └── workers/
     ├── __init__.py
-    ├── calibration_worker.py    # Phase 4: QThread: detect + calibrate + dump
+    ├── calibration_worker.py    # ✓ DetectionWorker + CalibrationWorker QThreads
     └── triangulation_worker.py  # Phase 5: QThread: batch triangulate all frames
 ```
 
@@ -815,49 +816,49 @@ label3d/
 
 ---
 
-### Phase 2 — Data layer: skeleton, points, adapters
+### Phase 2 — Data layer: skeleton, points, adapters ✓
 
 **Goal**: Solid data model that can be created, queried, mutated, and persisted. SLEAP import works.
 
 **Integration with Phase 1**: `Project.load()` gains `skeleton` and `points` attributes loaded from `skeleton.json` and `points.csv` when present. `ProjectState` gains a `points_store: PointsStore` reference. The existing `MainWindow` and `CameraPanel` are not modified — Phase 2 is pure data layer.
 
 #### 2.1 Skeleton (`skeleton.py`)
-- [ ] `Skeleton` dataclass:
+- [x] `Skeleton` dataclass:
   - `nodes: list[str]` — ordered bodypart names (defines cycling order for `↑`/`↓` in Phase 3)
   - `edges: list[tuple[str, str]]` — (source, target) pairs
   - `symmetries: list[tuple[str, str]]` — left/right pairs (stored, not yet used)
-- [ ] `Skeleton.from_sleap(slp_path: Path) -> Skeleton` — load from `.slp` file via `sleap_io`
-- [ ] `Skeleton.from_json(path: Path) -> Skeleton` / `to_json(path: Path)` — load/save `skeleton.json`
-- [ ] Stored as `skeleton.json` in the project folder
+- [x] `Skeleton.from_sleap(slp_path: Path) -> Skeleton` — load from `.slp` file via `sleap_io`
+- [x] `Skeleton.from_json(path: Path) -> Skeleton` / `to_json(path: Path)` — load/save `skeleton.json`
+- [x] Stored as `skeleton.json` in the project folder
 
 #### 2.2 Points store (`points.py`)
-- [ ] `PointsStore` class wrapping `pd.DataFrame`:
+- [x] `PointsStore` class wrapping `pd.DataFrame`:
   - `create_empty(cameras: list[str], bodyparts: list[str]) -> PointsStore`
   - `from_csv(path: Path) -> PointsStore` / `to_csv(path: Path)`
-- [ ] **Point-level API**:
+- [x] **Point-level API**:
   - `get_point(trial, frame, instance, bodypart, camera) -> (x, y, xr, yr, state)`
   - `set_point(trial, frame, instance, bodypart, camera, x, y, state)` — upserts; creates row if needed
-  - `set_occluded(trial, frame, instance, bodypart, camera)` — state→`occluded`, x/y→NaN
+  - `set_not_visible(trial, frame, instance, bodypart, camera)` — state→`not_visible`, x/y→NaN (called `set_occluded` in design; implementation uses `not_visible`)
   - `delete_point(trial, frame, instance, bodypart, camera)` — state→`not_set`, x/y→NaN
-- [ ] **Frame-level API**:
+- [x] **Frame-level API**:
   - `get_frame_data(trial, frame) -> pd.DataFrame` — slice for one frame, all instances
   - `get_instances(trial, frame) -> list[int]` — instance indices present in this frame
-- [ ] **Instance-level API**:
+- [x] **Instance-level API**:
   - `add_instance(trial, frame) -> int` — returns new instance index (`max existing + 1`)
   - `delete_instance(trial, frame, instance)` — drops all rows for that instance
   - `copy_instance(trial, src_frame, src_instance, dst_frame) -> int`
-- [ ] **3D API**:
+- [x] **3D API**:
   - `set_3d(trial, frame, instance, bodypart, x, y, z)`
   - `set_reprojected(trial, frame, instance, bodypart, camera, xr, yr)`
-- [ ] **Dirty tracking**: flag for unsaved changes; auto-save timer (every 30s if dirty)
-- [ ] Emit `QObject` signal on mutations (for UI refresh)
+- [x] **Dirty tracking**: flag for unsaved changes; auto-save timer (every 30s if dirty)
+- [x] Emit `QObject` signal on mutations (for UI refresh)
 
 **Performance note**: The DataFrame is the single source of truth. For frame-level access during labeling, cache the current frame slice as a dict-of-dicts for O(1) lookups. Rebuild cache on frame change. Use `df.at[]` for point-level updates rather than building new DataFrames.
 
 #### 2.3 Adapter framework (`adapters/`)
-- [ ] `base.py`: `PoseAdapter` ABC (with updated `(trial, frame, instance, bodypart)` index)
-- [ ] `__init__.py`: `get_adapters() -> dict[str, PoseAdapter]` — discover subclasses
-- [ ] `sleap_adapter.py` — `SleapAdapter`:
+- [x] `base.py`: `PoseAdapter` ABC (with updated `(trial, frame, instance, bodypart)` index)
+- [x] `__init__.py`: `get_adapters() -> dict[str, PoseAdapter]` — discover subclasses
+- [x] `sleap_adapter.py` — `SleapAdapter`:
   - **load**:
     1. For each `.slp` file: `sleap_io.load_file(path)` → `Labels`
     2. For each `Video` in labels: match `Path(video.filename).name` against `trials.csv` video basenames → find `(trial, camera)`
@@ -868,7 +869,7 @@ label3d/
   - **save**:
     1. Group points by `(trial, camera)`
     2. For each group: build `sleap_io.Labels` with `Skeleton`, `Video`, `LabeledFrame`s
-    3. Instance type from per-camera states: any `set`/`occluded` → `Instance`; all `predicted` → `PredictedInstance`
+    3. Instance type from per-camera states: any `set`/`not_visible` → `Instance`; all `predicted` → `PredictedInstance`
     4. `NaN` coords → `visible=False` in SLEAP point
     5. `sleap_io.save_file(labels, path)`
 
@@ -876,16 +877,16 @@ label3d/
 
 ---
 
-### Phase 3 — Labeling: overlays, interaction, selection
+### Phase 3 — Labeling: overlays, interaction, selection ✓
 
 **Goal**: Full labeling UI — see skeleton, click to place/move points, select bodyparts, see epipolar lines.
 
 **Integration with Phase 1**: `CameraPanel.set_frame()` continues to set the background; skeleton overlays are added to the same `QGraphicsScene`. Mouse events in `CameraPanel` are extended — the existing `ScrollHandDrag` mode is used when no bodypart is selected; point interaction takes priority otherwise. The `CameraGrid.update_frame()` call chain is extended to also update overlays. `ProjectState.selection_changed` and `points_changed` signals (already defined) now drive overlay updates.
 
 #### 3.1 Point item (`widgets/point_item.py`)
-- [ ] `PointItem(QGraphicsEllipseItem)`:
+- [x] `PointItem(QGraphicsEllipseItem)`:
   - Properties: `bodypart: str`, `instance: int`, `state: str`, `error: float | None`
-  - Render by state: filled circle (`set`), ring (`predicted`), dim dot (`not_set` with reproject), hollow-X (`occluded`)
+  - Render by state: filled circle (`set`), ring (`predicted`), dim dot (`not_set` with reproject), hollow-X (`not_visible`)
   - Color from reprojection error (green/yellow/red/grey)
   - White outline when selected
   - `hoverEnterEvent` → tooltip (bodypart, camera, coords, error)
@@ -893,7 +894,7 @@ label3d/
   - Size: ~8px radius at 1:1 zoom; constant screen-size via `ItemIgnoresTransformations`
 
 #### 3.2 Skeleton overlay (`widgets/skeleton_overlay.py`)
-- [ ] `SkeletonOverlay` manages `PointItem`s + `QGraphicsLineItem` edges for one camera panel:
+- [x] `SkeletonOverlay` manages `PointItem`s + `QGraphicsLineItem` edges for one camera panel:
   - `update(frame_data, skeleton, camera)`:
     - For each (instance, bodypart): create/update/hide `PointItem`
     - For each skeleton edge: draw line between the two node positions (if both exist)
@@ -902,77 +903,77 @@ label3d/
   - Instance visibility: `H` toggle shows/hides non-selected instances
 
 #### 3.3 Mouse interaction in CameraPanel
-- [ ] `mousePressEvent`:
+- [x] `mousePressEvent`:
   - Left-click near existing point (within ~15px threshold) → select that (instance, bodypart)
   - Left-click on empty space with bodypart selected → place point at click → `set_point(state=set)`
   - Left-click on empty space with nothing selected → deselect
-  - Right-click on existing point → toggle `occluded` ↔ `set`
-- [ ] `mouseMoveEvent` (while dragging): update point position in real-time (visual only)
-- [ ] `mouseReleaseEvent`: commit new position to `PointsStore`; if was `predicted` → promote to `set`
-- [ ] Hit testing: `scene.items(click_pos)` filtered to `PointItem` instances
+  - Right-click on existing point → toggle `not_visible` ↔ `set`
+- [x] `mouseMoveEvent` (while dragging): update point position in real-time (visual only)
+- [x] `mouseReleaseEvent`: commit new position to `PointsStore`; if was `predicted` → promote to `set`
+- [x] Hit testing: `scene.items(click_pos)` filtered to `PointItem` instances
 
 #### 3.4 Selection model (in `state.py`)
-- [ ] `selection_changed` signal carries `(instance: int, bodypart: str)`
-- [ ] `↑`/`↓` cycle `bodypart` through `skeleton.nodes` (wrapping); if multiple instances, cycle through all (instance, bodypart) pairs in order
-- [ ] `` ` `` cycles to next instance (same bodypart)
-- [ ] `1`–`9` select instance by index
-- [ ] `Escape` clears selection
-- [ ] On selection change: all CameraPanels update overlay (white outline, epipolar lines)
+- [x] `selection_changed` signal carries `(instance: int, bodypart: str)`
+- [x] `↑`/`↓` cycle `bodypart` through `skeleton.nodes` (wrapping); if multiple instances, cycle through all (instance, bodypart) pairs in order
+- [x] `` ` `` cycles to next instance (same bodypart)
+- [x] `1`–`9` select instance by index
+- [x] `Escape` clears selection
+- [x] On selection change: all CameraPanels update overlay (white outline, epipolar lines)
 
 #### 3.5 Epipolar lines (`geometry.py`, `widgets/epipolar_overlay.py`)
-- [ ] `compute_fundamental_matrix(cam_a: Camera, cam_b: Camera) -> np.ndarray`:
+- [x] `compute_fundamental_matrix(cam_a: Camera, cam_b: Camera) -> np.ndarray`:
   - From K, R, t for both cameras, compute 3×3 fundamental matrix F
   - `E = [t₂ - R₂·R₁ᵀ·t₁]× · R₂·R₁ᵀ`; `F = K₂⁻ᵀ · E · K₁⁻¹`
   - Cache per camera pair (recompute only on calibration change)
-- [ ] `compute_epipolar_line(F, point_2d) -> (pt1, pt2)`:
+- [x] `compute_epipolar_line(F, point_2d) -> (pt1, pt2)`:
   - `l = F @ [x, y, 1]` → line coefficients; clip to image bounds → two endpoints
-- [ ] `EpipolarOverlay`:
+- [x] `EpipolarOverlay`:
   - For selected bodypart: in each camera with a `set`/`predicted` point, compute epipolar line in every *other* camera
   - `QGraphicsLineItem`, colored by source camera (consistent palette)
   - Uses undistorted point coordinates for accurate geometry
   - Updates on selection change or point edit
 
 #### 3.6 Keyboard shortcuts (in `label_view.py`)
-- [ ] Register `QShortcut`s for all keys from the keyboard shortcut tables
-- [ ] Frame navigation → update `ProjectState.current_frame`
-- [ ] Selection → update `ProjectState.selected_bodypart` / `selected_instance`
-- [ ] Instance management: `Ctrl+I` → `add_instance()`, `Ctrl+Backspace` → `delete_instance()`
-- [ ] Point manipulation: `Backspace` → `delete_point()`, etc.
+- [x] Register `QShortcut`s for all keys from the keyboard shortcut tables
+- [x] Frame navigation → update `ProjectState.current_frame`
+- [x] Selection → update `ProjectState.selected_bodypart` / `selected_instance`
+- [x] Instance management: `Ctrl+I` → `add_instance()`, `Ctrl+Backspace` → `delete_instance()`
+- [x] Point manipulation: `Backspace` → `delete_point()`, etc.
 
 #### 3.7 Bodypart list sidebar (`widgets/bodypart_list.py`)
-- [ ] `QListWidget` showing skeleton node names
-- [ ] Current selection highlighted; click to select bodypart
-- [ ] Show per-bodypart status (how many cameras have data)
+- [x] `QListWidget` showing skeleton node names
+- [x] Current selection highlighted; click to select bodypart
+- [x] Show per-bodypart status (how many cameras have data)
 
 **Milestone**: Full labeling workflow — see skeleton on all cameras, click to place/move points, select bodyparts with keyboard/mouse, see error coloring and epipolar lines.
 
 ---
 
-### Phase 4 — Calibration
+### Phase 4 — Calibration ✓
 
 **Goal**: Load calibration media, detect corners, run bundle adjustment, visualize results.
 
 #### 4.1 Calibration view (`widgets/calibration_view.py`)
-- [ ] Top panel: board settings form (spinboxes for Charuco params)
-- [ ] Reuse `CameraGrid` to display calibration images/video frames
-- [ ] "Detect Corners" button → launches `CalibrationWorker`
-- [ ] "Run Calibration" button (enabled after detection)
-- [ ] "Save" button → `CameraGroup.dump()`
-- [ ] Per-camera error badge overlay; overall error in status bar
+- [x] Top panel: board settings form (spinboxes for Charuco params)
+- [x] Reuse `CameraGrid` to display calibration images/video frames
+- [x] "Detect Corners" button → launches `DetectionWorker`
+- [x] "Run Calibration" button (enabled after detection) → launches `CalibrationWorker`
+- [x] "Save" button → `CameraGroup.dump()`
+- [x] Per-camera error badge overlay; overall error in status bar
 
 #### 4.2 Calibration worker (`workers/calibration_worker.py`)
-- [ ] `CalibrationWorker(QThread)`:
-  - Step 1: detect corners per camera (emit per-camera progress)
-  - Step 2: `CameraGroup.calibrate_rows()` (emit progress)
-  - Step 3: compute per-frame reprojection errors
+- [x] `DetectionWorker(QThread)`: detect corners per camera (emit per-camera progress)
+- [x] `CalibrationWorker(QThread)`:
+  - `CameraGroup.calibrate_rows()` (emit progress)
+  - Compute per-frame reprojection errors
   - Emit results: detected corners, calibrated `CameraGroup`, error arrays
-- [ ] On completion: overlay detected corners (green dots), reprojected corners (red crosses), error vectors
+- [x] `charuco_overlay.py`: overlay detected corners (green dots), reprojected corners (red crosses)
 
 #### 4.3 Calibration input discovery
-- [ ] Scan `calibration/cam*/` subfolders
-- [ ] If subfolder contains video files (`.mp4`/`.avi`) → `board.detect_video(path, skip=N)`
-- [ ] If subfolder contains images (`.png`/`.jpg`) → `board.detect_images(paths)`
-- [ ] Camera names derived from subfolder names; validated against `trials.csv`
+- [x] Scan `calibration/cam*/` subfolders
+- [x] If subfolder contains video files (`.mp4`/`.avi`) → `board.detect_video(path, skip=N)`
+- [x] If subfolder contains images (`.png`/`.jpg`) → `board.detect_images(paths)`
+- [x] Camera names derived from subfolder names; validated against `trials.csv`
 
 ---
 
