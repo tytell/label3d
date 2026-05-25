@@ -46,4 +46,4 @@ uv run python <script>  # run any script in the project venv
 
 ## Implementation phases
 
-See `DESIGN.md §Implementation Plan`. Current status: Phases 1–4 complete. Next: Phase 5 (triangulation engine, batch worker, 3D view).
+See `DESIGN.md §Implementation Plan`. Current status: Phases 1–5 complete. Next: Phase 6 (export view) or Phase 7 polish items.

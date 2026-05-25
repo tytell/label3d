@@ -709,7 +709,7 @@ label3d/
 ├── setup_project.py             # ✓ Project setup: classify files, match trials, create structure
 ├── points.py                    # ✓ PointsStore: DataFrame wrapper, CRUD, save/load
 ├── skeleton.py                  # ✓ Skeleton: nodes, edges, symmetry pairs
-├── geometry.py                  # ✓ CameraParams, fundamental matrix, epipolar lines; triangulation Phase 5
+├── geometry.py                  # ✓ CameraParams, fundamental matrix, epipolar lines, triangulation
 ├── video.py                     # ✓ VideoReader: cv2.VideoCapture wrapper, frame cache
 ├── widgets/
 │   ├── __init__.py              # ✓
@@ -721,7 +721,7 @@ label3d/
 │   ├── skeleton_overlay.py      # ✓ Manages all point_items + edges for one camera
 │   ├── epipolar_overlay.py      # ✓ Epipolar line items for one camera
 │   ├── charuco_overlay.py       # ✓ Detected / reprojected corner overlays for calibration
-│   ├── view_3d.py               # Phase 5: pyqtgraph GLViewWidget wrapper
+│   ├── view_3d.py               # ✓ pyqtgraph GLViewWidget: 3D points, edges, frustums
 │   ├── bodypart_list.py         # ✓ Sidebar: bodypart names, click to select
 │   ├── calibration_view.py      # ✓ Calibration mode: settings panel + camera grid
 │   ├── label_view.py            # ✓ Labeling mode: grid + controls + sidebar
@@ -733,7 +733,7 @@ label3d/
 └── workers/
     ├── __init__.py
     ├── calibration_worker.py    # ✓ DetectionWorker + CalibrationWorker QThreads
-    └── triangulation_worker.py  # Phase 5: QThread: batch triangulate all frames
+    └── triangulation_worker.py  # ✓ TriangulationWorker QThread: batch triangulate all frames
 ```
 
 ---
@@ -977,40 +977,38 @@ label3d/
 
 ---
 
-### Phase 5 — Triangulation and 3D view
+### Phase 5 — Triangulation and 3D view ✓
 
 **Goal**: Real-time triangulation of current frame, batch triangulation, 3D visualization.
 
 #### 5.1 Triangulation engine (`geometry.py`)
-- [ ] `triangulate_frame(camera_group, points_store, trial, frame, instance)`:
+- [x] `triangulate_frame(cameras, points_store, trial, frame, instance)`:
   - For each bodypart: collect 2D points from cameras where state ∈ {`set`, `predicted`}
   - Undistort on the fly via `camera.undistort_points()`
   - If ≥2 cameras: `camera_group.triangulate()` → 3D point
   - Reproject into all cameras → fill `xr`, `yr`; compute per-camera error
   - Store results via `PointsStore.set_3d()` and `set_reprojected()`
   - Return per-bodypart error dict for status bar display
-- [ ] Auto-triangulate toggle in toolbar (checkbox, default on)
-- [ ] `triangulate_frame_auto()`: called after any point edit if toggle is on
-- [ ] `T` shortcut: triangulate current frame manually
+- [x] Auto-triangulate default on (`state.auto_triangulate`); runs in `label_view._on_points_changed` after each edit
+- [x] `T` shortcut: triangulate current frame manually
 
 #### 5.2 Batch triangulation (`workers/triangulation_worker.py`)
-- [ ] `TriangulationWorker(QThread)`:
+- [x] `TriangulationWorker(QThread)`:
   - Iterates all labeled frames in current trial (or all trials)
   - Calls `triangulate_frame()` for each
-  - Emits progress (frame N of M)
-  - Triggered by `Ctrl+Shift+T` or "Triangulate All" button
-  - Auto-triggered before export if checkbox is set
+  - Emits `progress(int, int)` and `frame_done(int)`
+  - Triggered by `Ctrl+Shift+T`
 
 #### 5.3 3D view (`widgets/view_3d.py`)
-- [ ] `View3D(QWidget)` wrapping `pyqtgraph.opengl.GLViewWidget`:
+- [x] `View3D(QWidget)` wrapping `pyqtgraph.opengl.GLViewWidget`:
   - `GLScatterPlotItem` for bodypart points (colored by reprojection error)
   - `GLLinePlotItem` for skeleton edges
   - Camera frustums: wireframe pyramids from K, R, t, image_size; toggled with checkbox
-  - World axes: three colored lines at origin
-  - `update_frame(frame_data_3d)`: rebuild scatter/line data from current frame's `3d` columns
+  - World axes and XY grid via `GLAxisItem` / `GLGridItem`
+  - `update_frame(...)`: rebuild scatter/line data from current frame's `3d` columns
   - Selected bodypart rendered larger / brighter
-- [ ] Placed in a `QSplitter` alongside the camera grid; show/hide toggle
-- [ ] Falls back gracefully if OpenGL is unavailable (disable button, show message)
+- [x] Placed in a `QSplitter` as third panel in `LabelView` (alongside bodypart sidebar and camera grid)
+- [x] Falls back gracefully if OpenGL is unavailable (shows placeholder label)
 
 ---
 
