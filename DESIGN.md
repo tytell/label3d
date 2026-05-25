@@ -1038,6 +1038,18 @@ label3d/
 - [ ] **Suggested frames**: uniformly spaced unlabeled frames shown as ticks on seekbar; `Space`/`Shift+Space` navigate to them
 - [ ] **Progress indicators**: "42% of frames labeled" per trial
 - [ ] **Frame pre-caching**: on step to frame N, pre-decode N+1 through N+3 in a background thread for all cameras
+- [ ] **Settings persistence** (`QSettings`, INI format):
+  - *App-level* (`~/.config/label3d/label3d.ini` or platform equivalent): window geometry, splitter proportions, toolbar positions, last-opened project path
+  - *Project-level* (`.label3d_session.ini` in the project root, gitignored): current trial, current frame, active camera layout, per-camera zoom/pan state — restored on next open
+  - Save app-level settings on `closeEvent`; save project-level settings on trial/frame change (debounced) and on close
+- [ ] **Toolbar and zoom UX**:
+  - `QToolBar` with standard actions: Open Project, Save, Zoom In, Zoom Out, Fit View, Zoom to Instance, Zoom to Point
+  - **Drag-box zoom**: rubber-band rectangle drawn with right-click-drag (or `Z`+drag) in any `CameraPanel` → `fitInView(rubber_band_rect)`
+  - **Keyboard zoom shortcuts**:
+    - `Ctrl+=` / `Ctrl+-`: zoom in / out active panel
+    - `F`: fit active panel to full frame
+    - `G`: zoom all panels to the selected instance (fits bounding box of all visible points for that instance across cameras)
+    - `P`: zoom active panel to the selected point (centers and zooms to ~100px around it)
 
 ---
 
