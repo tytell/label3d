@@ -243,7 +243,217 @@ class EpipolarCache:
         return compute_epipolar_line(F, pt, tgt.size)
 
 
-# -- Triangulation ------------------------------------------------------------
+# -- Ad-hoc triangulation (for axis alignment) ---------------------------------
+
+def triangulate_point(
+    cameras: dict[str, "CameraParams"],
+    picks_2d: dict[str, tuple[float, float]],
+) -> np.ndarray | None:
+    """Triangulate a single 3D point from 2D observations in ≥2 cameras.
+
+    Args:
+        cameras: calibration params keyed by camera name.
+        picks_2d: {cam_name: (x, y)} raw pixel coordinates.
+
+    Returns:
+        (3,) world-space point, or None if fewer than 2 valid observations
+        or if triangulation fails.
+    """
+    valid = {c: xy for c, xy in picks_2d.items() if c in cameras}
+    if len(valid) < 2:
+        return None
+
+    cgroup = build_camera_group({c: cameras[c] for c in valid})
+    cam_order = sorted(valid.keys())
+
+    pts = np.full((len(cam_order), 1, 2), np.nan)
+    for i, cam in enumerate(cam_order):
+        x, y = valid[cam]
+        ud = cameras[cam].undistort_points(np.array([[x, y]]))
+        pts[i, 0] = ud[0]
+
+    try:
+        xyz = cgroup.triangulate(pts, undistort=False)  # (1, 3)
+        if np.any(np.isnan(xyz)):
+            return None
+        return xyz[0].astype(float)
+    except Exception:
+        return None
+
+
+# -- Axis alignment ------------------------------------------------------------
+
+def _arb_perp(v: np.ndarray) -> np.ndarray:
+    """Return an arbitrary unit vector perpendicular to v."""
+    v = v / np.linalg.norm(v)
+    # Pick the component of v smallest in magnitude and zero it, then cross
+    i = int(np.argmin(np.abs(v)))
+    basis = np.zeros(3)
+    basis[i] = 1.0
+    w = np.cross(v, basis)
+    return w / np.linalg.norm(w)
+
+
+def compute_axis_alignment(
+    origin: np.ndarray,
+    x_vec: "np.ndarray | None",
+    y_vec: "np.ndarray | None",
+    z_vec: "np.ndarray | None",
+    flip_x: bool = False,
+    flip_y: bool = False,
+    flip_z: bool = False,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute a rotation matrix aligning NEW world axes to the calibrated world.
+
+    At least two of x_vec, y_vec, z_vec must be non-None.
+
+    Gram-Schmidt ordering: the longest axis vector is taken as primary (its
+    direction is preserved exactly after normalisation). The next longest is
+    orthogonalised against the first. The third axis is the cross product of
+    the first two, giving a right-handed system; flip individual axes if the
+    resulting handedness is wrong.
+
+    Flips are applied to the RAW vectors before Gram-Schmidt.
+
+    Returns:
+        R_align: (3, 3) rotation matrix whose columns are [x_hat, y_hat, z_hat]
+                 expressed in the OLD (calibrated) world coordinate system.
+                 Transform: p_old = R_align @ p_new + origin
+                            p_new = R_align.T @ (p_old − origin)
+        origin:  (3,) origin in OLD world coords.
+
+    New camera params after alignment:
+        R_cam_new = R_cam_old @ R_align   (as rotation matrix)
+        t_cam_new = R_cam_old @ origin + t_cam_old
+    """
+    raw: dict[str, np.ndarray | None] = {
+        "x": (-x_vec if flip_x else x_vec.copy()) if x_vec is not None else None,
+        "y": (-y_vec if flip_y else y_vec.copy()) if y_vec is not None else None,
+        "z": (-z_vec if flip_z else z_vec.copy()) if z_vec is not None else None,
+    }
+    available = {k: v for k, v in raw.items() if v is not None}
+    if len(available) < 2:
+        raise ValueError("At least two axis vectors are required.")
+
+    lengths = {k: float(np.linalg.norm(v)) for k, v in available.items()}
+
+    # GS order: longest first, then next longest
+    gs_order = sorted(available.keys(), key=lambda k: -lengths[k])
+
+    basis: dict[str, np.ndarray] = {}
+
+    # Primary axis — just normalise
+    p = gs_order[0]
+    lp = lengths[p]
+    if lp < 1e-10:
+        raise ValueError(f"Axis '{p}' vector has zero length.")
+    basis[p] = available[p] / lp
+
+    # Secondary — orthogonalise against primary
+    s = gs_order[1]
+    v = available[s].copy()
+    v -= np.dot(v, basis[p]) * basis[p]
+    ls = float(np.linalg.norm(v))
+    if ls < 1e-10:
+        raise ValueError(f"Axis '{s}' is parallel to '{p}'.")
+    basis[s] = v / ls
+
+    # Tertiary — cross product for right-hand rule, or GS of provided vector
+    remaining = [k for k in ("x", "y", "z") if k not in basis]
+    third = remaining[0]
+
+    if third in available:
+        # Orthogonalise the user-provided third vector
+        w = available[third].copy()
+        w -= np.dot(w, basis[p]) * basis[p]
+        w -= np.dot(w, basis[s]) * basis[s]
+        lw = float(np.linalg.norm(w))
+        if lw < 1e-10:
+            # Degenerate — fall through to cross product
+            w = None
+        else:
+            basis[third] = w / lw
+            w = basis[third]
+    else:
+        w = None
+
+    if w is None:
+        # Derive from right-hand cross-product rule: x×y=z, y×z=x, z×x=y
+        _rh = {"z": ("x", "y"), "x": ("y", "z"), "y": ("z", "x")}
+        a_lbl, b_lbl = _rh[third]
+        basis[third] = np.cross(basis[a_lbl], basis[b_lbl])
+
+    R_align = np.column_stack([basis["x"], basis["y"], basis["z"]])
+    return R_align, np.asarray(origin, dtype=float)
+
+
+def apply_alignment_to_cameras(
+    cameras: dict[str, "CameraParams"],
+    R_align: np.ndarray,
+    origin: np.ndarray,
+) -> dict[str, "CameraParams"]:
+    """Return new CameraParams with extrinsics rotated to the aligned world.
+
+    For each camera:
+        R_new = R_cam @ R_align   (as matrix; stored back as Rodrigues)
+        t_new = R_cam @ origin + t_cam
+    """
+    import cv2 as _cv2
+
+    updated: dict[str, CameraParams] = {}
+    for name, cp in cameras.items():
+        R_new = cp.R @ R_align
+        rvec_new, _ = _cv2.Rodrigues(R_new)
+        tvec_new = cp.R @ origin + cp.tvec.ravel()
+
+        updated[name] = CameraParams(
+            name=cp.name,
+            matrix=cp.matrix.copy(),
+            dist=cp.dist.copy(),
+            rvec=rvec_new.ravel(),
+            tvec=tvec_new,
+            size=cp.size,
+        )
+    return updated
+
+
+def save_aligned_calibration(
+    cameras: dict[str, "CameraParams"],
+    path: "Path",
+    R_align: np.ndarray,
+    origin: np.ndarray,
+) -> None:
+    """Write calibration.toml with aligned camera extrinsics.
+
+    The file follows the aniposelib CameraGroup.dump() format so that
+    CameraGroup.load() can read it directly.  An extra [alignment] section
+    records the rotation matrix and origin used, purely for reference.
+    """
+    import toml as _toml
+
+    data: dict = {}
+    for i, name in enumerate(sorted(cameras.keys())):
+        cp = cameras[name]
+        section = f"cam_{i}"
+        data[section] = {
+            "name": cp.name,
+            "size": list(cp.size),
+            "matrix": cp.matrix.tolist(),
+            "distortions": cp.dist.tolist(),
+            "rotation": cp.rvec.ravel().tolist(),
+            "translation": cp.tvec.ravel().tolist(),
+        }
+
+    data["alignment"] = {
+        "origin": origin.tolist(),
+        "R_align": R_align.tolist(),
+    }
+
+    with open(path, "w") as fh:
+        _toml.dump(data, fh)
+
+
+# -- Triangulation (frame-level, for labeling) ---------------------------------
 
 def build_camera_group(cameras: dict[str, "CameraParams"]):
     """Build an aniposelib CameraGroup from a CameraParams dict.

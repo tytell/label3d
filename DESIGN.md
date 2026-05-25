@@ -237,9 +237,18 @@ translation = [tx, ty, tz]
 
 [metadata]
 # aniposelib internal; ignored by label3d
+
+[alignment]
+# Optional; written after axis alignment step (ignored by aniposelib and by load_cameras())
+# origin: 3D point used as origin in the new coordinate system, in old world coords (cm)
+origin = [ox, oy, oz]
+# R_align: 3×3 rotation matrix whose columns are [x_hat, y_hat, z_hat] in OLD world space
+# Transform new→old: p_old = R_align @ p_new + origin
+# Transform old→new: p_new = R_align.T @ (p_old − origin)
+R_align = [[r00, r01, r02], [r10, r11, r12], [r20, r21, r22]]
 ```
 
-Loaded via `CameraGroup.load(fname)`, which reads all sections except `metadata` in sorted order and reconstructs `Camera` objects. Camera IDs used throughout the app (in `trials.csv`, `points.csv` column headers) are taken from the `name` field, not the section name.
+Loaded via `CameraGroup.load(fname)`, which reads all sections except `metadata` in sorted order and reconstructs `Camera` objects. Camera IDs used throughout the app (in `trials.csv`, `points.csv` column headers) are taken from the `name` field, not the section name. `label3d`'s own `load_cameras()` similarly skips sections named `"metadata"` or `"alignment"`.
 
 ---
 
@@ -410,6 +419,89 @@ camera_group.dump("calibration.toml")
 - `calibration.toml` is written; the Label and Triangulate modes become available
 - The calibration viewer remains accessible to inspect per-camera error distributions
 - Re-running calibration overwrites `calibration.toml` (with confirmation prompt)
+
+### Axis Alignment (Optional)
+
+After calibration the world coordinate origin and axes are defined arbitrarily by the board placement during the calibration shoot. The axis alignment step lets the user re-orient the coordinate system to match a meaningful physical reference — e.g. setting the origin at the subject's center of mass and aligning the axes to anatomical directions.
+
+#### When it applies
+
+This is a separate, optional step that runs **after** calibration. It is independent of the main labeling workflow. The result is stored in `calibration.toml` as an `[alignment]` section and is applied to all triangulated 3D points on load. The camera extrinsics (`rotation`, `translation` in each `[cam_N]` section) are **not modified**.
+
+#### Reference video source
+
+Axis reference points are picked from **trial videos**, not from calibration images. The user selects a trial and navigates to a frame where a suitable reference object is visible in at least two cameras.
+
+#### Axis Alignment UI
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Axis Alignment                              Trial: [trial1 v]  │
+│                                              Frame: [  42  ] ◀▶ │
+├──────────────┬──────────────┬──────────────┬────────────────────┤
+│   Camera 0   │   Camera 1   │   Camera 2   │  Pick targets      │
+│              │              │              │                    │
+│  (video)     │  (video)     │  (video)     │  [Origin]          │
+│  ✦ origin    │  ✦ origin    │              │  [X near]  [X far] │
+│  → x near    │  → x near    │  → x near    │  [Y near]  [Y far] │
+│              │              │              │  [Z near]  [Z far] │
+│              │              │              │                    │
+│              │              │              │  Table:            │
+│              │              │              │  Origin  ✓         │
+│              │              │              │  X near  ✓         │
+│              │              │              │  X far   –         │
+│              │              │              │  Y near  ✓         │
+│              │              │              │  Y far   –         │
+│              │              │              │  Z near  –         │
+│              │              │              │  Z far   –         │
+│              │              │              │                    │
+│              │              │              │  Flip: [x] [y] [z] │
+│              │              │              │                    │
+│              │              │              │  [Compute]         │
+│              │              │              │  [Apply & Save]    │
+└──────────────┴──────────────┴──────────────┴────────────────────┘
+│  [◀ Prev]  Frame 42 / 500  [Next ▶]                             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Pick targets** (right-side panel, seven buttons):
+- **Origin** — one point defining where the new world origin sits
+- **X near / X far** — one or two points defining the X axis direction
+- **Y near / Y far** — one or two points defining the Y axis direction
+- **Z near / Z far** — one or two points defining the Z axis direction
+
+Activating a button enters *pick mode* on all camera panels: the next click in any panel adds the 2D pick for that camera (replacing the prior one for the same target). Pick status (✓ / –) is shown in the table.
+
+One-point axis: the axis vector is `triangulate(point) − triangulate(origin)`.
+Two-point axis: the axis vector is `triangulate(far) − triangulate(near)`, independent of the origin.
+
+At least **Origin + two axis points** (from two different axes) are required to compute alignment. The third axis is derived as a cross product.
+
+**Flip checkboxes** — three independent toggles (x, y, z). When checked, the corresponding axis vector is negated **before** Gram-Schmidt, allowing the user to correct a non-right-handed result.
+
+#### Gram-Schmidt algorithm
+
+1. Triangulate each clicked target using the standard DLT triangulation (`triangulate_point(cameras, picks_2d)`) on the raw click coordinates.
+2. Compute the three raw axis vectors from the triangulated points (as above).
+3. Negate any vectors whose flip checkbox is checked.
+4. Rank the three raw vectors by length. The **longest** is the primary axis; the **next longest** is the secondary; the third is derived.
+5. Orthogonalize in the order primary → secondary → tertiary via Gram-Schmidt:
+   - `a_hat = primary / |primary|`
+   - `b_raw = secondary − (secondary · a_hat) a_hat`; `b_hat = b_raw / |b_raw|`
+   - `c_hat = a_hat × b_hat` (right-hand rule)
+6. Re-assign `a_hat, b_hat, c_hat` back to `x_hat, y_hat, z_hat` according to the original x/y/z labels (preserving the x/y/z assignment the user intended, just ensuring orthonormality).
+7. Build `R_align` as `[x_hat | y_hat | z_hat]` (3×3, columns are basis vectors in old-world space).
+
+#### Transform convention
+
+- New → old: `p_old = R_align @ p_new + origin`
+- Old → new: `p_new = R_align.T @ (p_old − origin)`
+
+When alignment is present, all triangulated 3D points stored in `points.csv` are transformed to the new coordinate system before display and before writing. The `[alignment]` section in `calibration.toml` records `origin` and `R_align` for this transform.
+
+#### No-conflict loading
+
+`load_cameras()` in `geometry.py` iterates TOML sections and skips `"metadata"` and `"alignment"` — the `[alignment]` section is transparent to aniposelib's `CameraGroup.load()` as well (aniposelib ignores unknown sections).
 
 ---
 
@@ -724,6 +816,7 @@ label3d/
 │   ├── view_3d.py               # ✓ pyqtgraph GLViewWidget: 3D points, edges, frustums
 │   ├── bodypart_list.py         # ✓ Sidebar: bodypart names, click to select
 │   ├── calibration_view.py      # ✓ Calibration mode: settings panel + camera grid
+│   ├── axis_alignment_widget.py # Phase 5.5: Axis alignment panel (trial video + pick targets)
 │   ├── label_view.py            # ✓ Labeling mode: grid + controls + sidebar
 │   └── export_view.py           # Phase 6: Export mode: form + summary
 ├── adapters/
@@ -1009,6 +1102,52 @@ label3d/
   - Selected bodypart rendered larger / brighter
 - [x] Placed in a `QSplitter` as third panel in `LabelView` (alongside bodypart sidebar and camera grid)
 - [x] Falls back gracefully if OpenGL is unavailable (shows placeholder label)
+
+---
+
+### Phase 5.5 — Axis Alignment (optional calibration step)
+
+**Goal**: Let the user re-orient the world coordinate system to a physical reference by clicking points in trial video frames.
+
+#### Current state (partial implementation)
+
+- `geometry.py`: `triangulate_point()`, `compute_axis_alignment()`, `apply_alignment_to_cameras()`, `save_aligned_calibration()` — implemented; not yet connected to UI
+- `widgets/camera_panel.py`: `raw_clicked = Signal(str, float, float)` signal and `set_pick_mode(bool)` method — implemented
+- `widgets/axis_alignment_widget.py` — **not yet created**
+- `widgets/calibration_view.py` — not yet modified to add alignment tab
+
+#### 5.5.1 `load_cameras()` fix (`geometry.py`)
+
+- [ ] Add `"alignment"` to the skip list in `load_cameras()` alongside `"metadata"`
+- [ ] Add `load_alignment(path) -> tuple[np.ndarray, np.ndarray] | None` — reads `R_align` and `origin` from `[alignment]` section; returns `None` if absent
+
+#### 5.5.2 Axis alignment widget (`widgets/axis_alignment_widget.py`)
+
+- [ ] `AxisAlignmentWidget(QWidget)`:
+  - Trial selector `QComboBox` + frame navigation (prev/next buttons + frame spinbox)
+  - Reuses the existing `CameraGrid` + `FrameProvider` to display trial video frames
+  - Right-side panel: 7 `QPushButton` pick targets (Origin, X near, X far, Y near, Y far, Z near, Z far), a `QTableWidget` showing pick status (✓ / –) per target, and three "Flip" `QCheckBox`es for x/y/z
+  - "Compute" button — runs `compute_axis_alignment()`; shows preview (axis vectors + R_align) in a text area
+  - "Apply & Save" button — calls `save_aligned_calibration()`, writes `[alignment]` section to `calibration.toml`
+  - Pick workflow:
+    1. User clicks a pick-target button → button stays pressed (checked), all `CameraPanel`s enter pick mode (`set_pick_mode(True)`)
+    2. User clicks in any camera panel → `raw_clicked(cam, x, y)` received; stored in a `dict[target, dict[cam, (x, y)]]`
+    3. Each target accumulates clicks across cameras (≥2 cameras needed for triangulation); table cell updated
+    4. Clicking the same button again or pressing Escape cancels pick mode
+  - Frame navigation updates `FrameProvider` and `CameraGrid` directly (no `ProjectState` shared state)
+  - On "Compute":
+    1. For each pick target with ≥2 camera picks: call `triangulate_point(cameras, picks)`
+    2. Pass triangulated points to `compute_axis_alignment(..., flip_x, flip_y, flip_z)`
+    3. Show resulting `R_align` and `origin` in a read-only text area
+  - On "Apply & Save":
+    1. Write `[alignment]` section to `calibration.toml` (`save_aligned_calibration()`)
+    2. Emit `alignment_saved` signal so `CalibrationView` / `LabelView` can reload calibration
+
+#### 5.5.3 Integrate into calibration view (`widgets/calibration_view.py`)
+
+- [ ] Add "Axis Alignment" as a second tab in `CalibrationView` (alongside the existing board detection / calibration tab)
+- [ ] Instantiate `AxisAlignmentWidget` in the new tab
+- [ ] Connect `AxisAlignmentWidget.alignment_saved` → reload cameras in `LabelView` (via `ProjectState` or a direct callback)
 
 ---
 

@@ -46,4 +46,4 @@ uv run python <script>  # run any script in the project venv
 
 ## Implementation phases
 
-See `DESIGN.md §Implementation Plan`. Current status: Phases 1–5 complete. Next: Phase 6 (export view) or Phase 7 polish items.
+See `DESIGN.md §Implementation Plan`. Current status: Phases 1–5 complete; Phase 5.5 (axis alignment) partially implemented — geometry helpers and CameraPanel pick mode done, UI widget not yet created. Next: finish Phase 5.5 or move to Phase 6 (export view).

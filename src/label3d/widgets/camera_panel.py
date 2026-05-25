@@ -112,6 +112,8 @@ class CameraPanel(QGraphicsView):
     point_right_clicked = Signal(str, int, str)
     # clicked on empty space
     deselect_requested = Signal()
+    # (camera_name, x, y) — raw pixel click in pick mode
+    raw_clicked = Signal(str, float, float)
 
     def __init__(self, camera_name: str, parent=None):
         super().__init__(parent)
@@ -162,6 +164,7 @@ class CameraPanel(QGraphicsView):
         self._drag_start_pos = None
         self._legend: _CameraLegend | None = None
         self._charuco_overlay = None  # CharucoOverlay — set externally for calibration mode
+        self._pick_mode = False       # raw click-to-pick mode for axis alignment
 
         # Epipolar line labels (viewport-fixed, rotated)
         self._line_labels: list[_RotatedLabel] = []
@@ -316,6 +319,18 @@ class CameraPanel(QGraphicsView):
 
         return best
 
+    def set_pick_mode(self, enabled: bool):
+        """Enable/disable raw pick mode for axis alignment.
+
+        When enabled, left-click emits raw_clicked(camera, x, y) and
+        suppresses all normal point interaction.
+        """
+        self._pick_mode = enabled
+        if enabled:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        else:
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+
     def set_interaction_mode(self, has_selection: bool):
         """Update cursor based on selection state.
 
@@ -396,6 +411,12 @@ class CameraPanel(QGraphicsView):
     def mousePressEvent(self, event: QMouseEvent):
         """Handle point interaction on left/right click."""
         scene_pos = self.mapToScene(event.position().toPoint())
+
+        # Pick mode: emit raw coordinates and skip all other interaction
+        if self._pick_mode and event.button() == Qt.MouseButton.LeftButton:
+            self.raw_clicked.emit(self._camera_name, scene_pos.x(), scene_pos.y())
+            event.accept()
+            return
 
         if event.button() == Qt.MouseButton.LeftButton:
             # Calibration mode: charuco corners, no drag
