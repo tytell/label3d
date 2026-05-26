@@ -14,10 +14,13 @@ from label3d.setup_project import (
     classify_files,
     execute_setup,
     preview_assignment,
+    split_project_groups,
     write_project_toml,
     _identify_camera,
     _extract_trial_key_number,
     _extract_trial_key_datestamp,
+    _extract_calib_prefix,
+    _extract_trial_prefix,
 )
 
 
@@ -475,3 +478,163 @@ class TestWriteProjectToml:
         data = toml.load(path)
         assert "charuco" not in data
         assert data["project"]["name"] == "test"
+
+
+# --- Unit tests: prefix extraction ---
+
+
+class TestExtractCalibPrefix:
+    def test_keyword_and_camera_removed(self):
+        assert _extract_calib_prefix("PS18_calib_left.mp4", ["left", "right"], "calib") == "PS18"
+
+    def test_no_prefix(self):
+        # file like "calib_left.mp4" — nothing remains after removing cam + keyword
+        assert _extract_calib_prefix("calib_left.mp4", ["left", "right"], "calib") == ""
+
+    def test_multi_part_name(self):
+        assert _extract_calib_prefix("Exp03_charuco_cam0.mp4", ["cam0", "cam1"], "charuco") == "Exp03"
+
+    def test_no_calib_keyword(self):
+        assert _extract_calib_prefix("PS18_left.mp4", ["left", "right"], "") == "PS18"
+
+
+class TestExtractTrialPrefix:
+    def test_keyword_strategy(self):
+        assert (
+            _extract_trial_prefix("PS18_Trial1_left.mp4", ["left", "right"], "keyword", trial_keyword="Trial")
+            == "PS18"
+        )
+
+    def test_number_strategy(self):
+        assert (
+            _extract_trial_prefix("PS18_001_left.mp4", ["left", "right"], "number")
+            == "PS18"
+        )
+
+    def test_datestamp_strategy(self):
+        assert (
+            _extract_trial_prefix("PS18_20260316_142000_left.mp4", ["left", "right"], "datestamp")
+            == "PS18"
+        )
+
+    def test_no_prefix(self):
+        # Number at start → nothing before it
+        result = _extract_trial_prefix("001_left.mp4", ["left", "right"], "number")
+        assert result == ""
+
+    def test_fallback_first_token(self):
+        # mtime strategy falls back to first token
+        result = _extract_trial_prefix("PS19_randomname_left.mp4", ["left", "right"], "mtime")
+        assert result == "PS19"
+
+
+# --- Integration tests: split detection ---
+
+
+@pytest.fixture
+def split_source_dir(tmp_path: Path) -> Path:
+    """Flat source dir with two calibration groups (PS18 and PS19)."""
+    src = tmp_path / "source"
+    src.mkdir()
+    for cam in ["left", "right"]:
+        # PS18 group
+        (src / f"PS18_calib_{cam}.mp4").write_bytes(b"\x00" * 100)
+        for trial in ["1", "2"]:
+            (src / f"PS18_Trial{trial}_{cam}.mp4").write_bytes(b"\x00" * 100)
+        # PS19 group
+        (src / f"PS19_calib_{cam}.mp4").write_bytes(b"\x00" * 100)
+        (src / f"PS19_Trial1_{cam}.mp4").write_bytes(b"\x00" * 100)
+    return src
+
+
+class TestSplitDetection:
+    def test_needs_split_detected(self, split_source_dir, tmp_path):
+        config = SetupConfig(
+            source_dir=split_source_dir,
+            output_dir=tmp_path / "project",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="keyword",
+            trial_keyword="Trial",
+        )
+        assignment = classify_files(config)
+        assert assignment.needs_split
+        assert set(assignment.calibration_groups.keys()) == {"PS18", "PS19"}
+
+    def test_trial_prefix_assigned(self, split_source_dir, tmp_path):
+        config = SetupConfig(
+            source_dir=split_source_dir,
+            output_dir=tmp_path / "project",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="keyword",
+            trial_keyword="Trial",
+        )
+        assignment = classify_files(config)
+        ps18_trials = [t for t, p in assignment.trial_prefix.items() if p == "PS18"]
+        ps19_trials = [t for t, p in assignment.trial_prefix.items() if p == "PS19"]
+        assert len(ps18_trials) == 2
+        assert len(ps19_trials) == 1
+
+    def test_no_split_single_calibration(self, source_dir, tmp_path):
+        config = SetupConfig(
+            source_dir=source_dir,
+            output_dir=tmp_path / "project",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="number",
+        )
+        assignment = classify_files(config)
+        assert not assignment.needs_split
+        assert assignment.calibration_groups == {}
+
+    def test_split_project_groups_returns_two(self, split_source_dir, tmp_path):
+        config = SetupConfig(
+            source_dir=split_source_dir,
+            output_dir=tmp_path / "project",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="keyword",
+            trial_keyword="Trial",
+        )
+        assignment = classify_files(config)
+        groups = split_project_groups(config, assignment)
+        assert set(groups.keys()) == {"PS18", "PS19"}
+        ps18_config, ps18_assignment = groups["PS18"]
+        assert ps18_config.output_dir == tmp_path / "PS18"
+        assert len(ps18_assignment.trials) == 2
+        assert len(ps18_assignment.calibration) > 0
+
+    def test_split_execute_creates_two_projects(self, split_source_dir, tmp_path):
+        config = SetupConfig(
+            source_dir=split_source_dir,
+            output_dir=tmp_path / "project",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="keyword",
+            trial_keyword="Trial",
+            copy_files=True,
+        )
+        assignment = classify_files(config)
+        groups = split_project_groups(config, assignment)
+        for prefix, (sub_config, sub_assignment) in groups.items():
+            execute_setup(sub_config, sub_assignment)
+        assert (tmp_path / "PS18").is_dir()
+        assert (tmp_path / "PS19").is_dir()
+        assert (tmp_path / "PS18" / "videos" / "trials.csv").is_file()
+        assert (tmp_path / "PS19" / "videos" / "trials.csv").is_file()
+
+    def test_preview_shows_split_summary(self, split_source_dir, tmp_path):
+        config = SetupConfig(
+            source_dir=split_source_dir,
+            output_dir=tmp_path / "project",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="keyword",
+            trial_keyword="Trial",
+        )
+        assignment = classify_files(config)
+        text = preview_assignment(config, assignment)
+        assert "Multiple calibration groups detected" in text
+        assert "PS18" in text
+        assert "PS19" in text

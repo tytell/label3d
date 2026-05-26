@@ -47,6 +47,15 @@ class FileAssignment:
     unmatched: list[Path] = field(default_factory=list)
     # warnings generated during classification
     warnings: list[str] = field(default_factory=list)
+    # prefix -> {camera: [calib files]} — populated when >1 distinct prefix found
+    calibration_groups: dict[str, dict[str, list[Path]]] = field(default_factory=dict)
+    # trial_name -> prefix — populated when calibration_groups is non-empty
+    trial_prefix: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def needs_split(self) -> bool:
+        """True when multiple calibration groups with distinct prefixes were detected."""
+        return len(self.calibration_groups) > 1
 
 
 def classify_files(config: SetupConfig) -> FileAssignment:
@@ -167,6 +176,11 @@ def classify_files(config: SetupConfig) -> FileAssignment:
                 f"Trial '{trial_name}' is missing cameras: {', '.join(sorted(missing))}"
             )
 
+    # Detect whether calibration files split into multiple experiment groups
+    _detect_calibration_groups(
+        assignment, calib_videos, calib_images, data_videos, config
+    )
+
     return assignment
 
 
@@ -183,6 +197,31 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
         strategy_str += f" (pattern={config.trial_regex!r})"
     lines.append(f"Strategy: {strategy_str}")
     lines.append("")
+
+    # Split summary
+    if assignment.needs_split:
+        lines.append(
+            f"Multiple calibration groups detected — "
+            f"recommended to split into {len(assignment.calibration_groups)} projects:"
+        )
+        for prefix in sorted(assignment.calibration_groups):
+            sub_out = config.output_dir.parent / prefix
+            trial_names = [t for t, p in assignment.trial_prefix.items() if p == prefix]
+            calib_count = sum(
+                len(files) for files in assignment.calibration_groups[prefix].values()
+            )
+            lines.append(
+                f"  {prefix!r}  →  {sub_out}"
+                f"  ({len(trial_names)} trials, {calib_count} calib files)"
+            )
+        unmatched_trials = [
+            t for t, p in assignment.trial_prefix.items() if not p
+        ]
+        if unmatched_trials:
+            lines.append(
+                f"  (no group) {len(unmatched_trials)} trial(s) with unrecognised prefix"
+            )
+        lines.append("")
 
     # Trials
     if assignment.trials:
@@ -302,6 +341,46 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     write_project_toml(out, config.project_name or out.name, config.charuco)
 
     return out
+
+
+def split_project_groups(
+    config: SetupConfig, assignment: FileAssignment
+) -> dict[str, tuple[SetupConfig, FileAssignment]]:
+    """Split a multi-calibration assignment into one (config, assignment) per group.
+
+    Returns an empty dict when only one calibration group is present.
+    Each sub-config has output_dir set to config.output_dir.parent / prefix and
+    project_name set to the prefix. Call execute_setup() on each pair.
+    """
+    if not assignment.needs_split:
+        return {}
+
+    result: dict[str, tuple[SetupConfig, FileAssignment]] = {}
+    for prefix, calib_files in assignment.calibration_groups.items():
+        sub_config = SetupConfig(
+            source_dir=config.source_dir,
+            output_dir=config.output_dir.parent / prefix,
+            camera_names=config.camera_names,
+            calib_keyword=config.calib_keyword,
+            match_strategy=config.match_strategy,
+            mtime_window_sec=config.mtime_window_sec,
+            datestamp_window_sec=config.datestamp_window_sec,
+            charuco=config.charuco,
+            project_name=prefix,
+            copy_files=config.copy_files,
+            trial_keyword=config.trial_keyword,
+            trial_regex=config.trial_regex,
+        )
+        sub = FileAssignment()
+        sub.calibration = calib_files
+        for trial_name, cam_files in assignment.trials.items():
+            if assignment.trial_prefix.get(trial_name) == prefix:
+                sub.trials[trial_name] = cam_files
+        for trial_name, cam_files in assignment.slp_files.items():
+            if assignment.trial_prefix.get(trial_name) == prefix:
+                sub.slp_files[trial_name] = cam_files
+        result[prefix] = (sub_config, sub)
+    return result
 
 
 def write_project_toml(
@@ -641,3 +720,131 @@ def _match_by_mtime(
         result[trial_name] = cam_files
 
     return result
+
+
+def _extract_calib_prefix(
+    filename: str, camera_names: list[str], calib_keyword: str
+) -> str:
+    """Return the experiment prefix from a calibration filename.
+
+    Removes the camera name and calib_keyword from the stem, then returns
+    the first separator-delimited token of what remains.
+    E.g. 'PS18_calib_cam0.mp4' with keyword 'calib' and cam 'cam0' → 'PS18'.
+    """
+    stem = Path(filename).stem
+    for cam in camera_names:
+        stem = re.sub(re.escape(cam), "", stem, flags=re.IGNORECASE)
+    if calib_keyword:
+        stem = re.sub(re.escape(calib_keyword), "", stem, flags=re.IGNORECASE)
+    stem = stem.strip("_- ")
+    if not stem:
+        return ""
+    return re.split(r"[_\-\s]+", stem)[0]
+
+
+def _extract_trial_prefix(
+    filename: str,
+    camera_names: list[str],
+    strategy: str,
+    trial_keyword: str = "",
+    trial_regex: str = "",
+) -> str:
+    """Return the experiment prefix from a trial filename.
+
+    Extracts the leading portion of the stem before the trial-identifying
+    part (number, keyword+number, datestamp, or regex match), after removing
+    the camera name.
+    E.g. 'PS18_Trial1_cam0.mp4' with strategy='keyword', keyword='Trial' → 'PS18'.
+    Falls back to the first separator-delimited token if no match is found.
+    """
+    stem = Path(filename).stem
+    for cam in camera_names:
+        stem = re.sub(re.escape(cam), "", stem, flags=re.IGNORECASE)
+    stem = stem.strip("_- ")
+
+    if strategy == "keyword" and trial_keyword:
+        m = re.search(re.escape(trial_keyword) + r"\d+", stem, re.IGNORECASE)
+        if m:
+            return stem[: m.start()].strip("_- ")
+    elif strategy == "number":
+        # Prefer a separator-preceded digit group (the actual trial number),
+        # so that a digit embedded in the prefix (e.g. "PS18") is not mistaken
+        # for the trial identifier.
+        m = re.search(r"[_\-\s]\d+", stem)
+        if m:
+            return stem[: m.start()].strip("_- ")
+        # Fallback: everything before the first digit
+        m = re.search(r"\d", stem)
+        if m:
+            return stem[: m.start()].strip("_- ")
+    elif strategy == "datestamp":
+        for regex, _, _ in _DATESTAMP_PATTERNS:
+            m = regex.search(stem)
+            if m:
+                return stem[: m.start()].strip("_- ")
+    elif strategy == "regex" and trial_regex:
+        try:
+            m = re.search(trial_regex, stem, re.IGNORECASE)
+            if m:
+                return stem[: m.start()].strip("_- ")
+        except re.error:
+            pass
+
+    # Fallback: first separator-delimited token
+    parts = re.split(r"[_\-\s]+", stem)
+    return parts[0] if parts else ""
+
+
+def _detect_calibration_groups(
+    assignment: FileAssignment,
+    calib_videos: list[tuple[str, Path]],
+    calib_images: list[tuple[str, Path]],
+    data_videos: list[tuple[str, Path]],
+    config: SetupConfig,
+) -> None:
+    """Populate assignment.calibration_groups and assignment.trial_prefix.
+
+    Only has an effect when more than one distinct experiment prefix is found
+    among the calibration files. Modifies assignment in place.
+    """
+    all_calib = calib_videos + calib_images
+    if not all_calib:
+        return
+
+    # Group calibration files by prefix
+    groups: dict[str, dict[str, list[Path]]] = {}
+    for camera, filepath in all_calib:
+        prefix = _extract_calib_prefix(
+            filepath.name, config.camera_names, config.calib_keyword
+        )
+        groups.setdefault(prefix, {}).setdefault(camera, []).append(filepath)
+
+    if len(groups) <= 1:
+        return  # Single calibration — no split needed
+
+    assignment.calibration_groups = groups
+
+    # Match each trial to its calibration group by prefix
+    for trial_name, cam_files in assignment.trials.items():
+        if not cam_files:
+            assignment.trial_prefix[trial_name] = ""
+            continue
+        first_file = next(iter(cam_files.values()))
+        prefix = _extract_trial_prefix(
+            first_file.name,
+            config.camera_names,
+            config.match_strategy,
+            config.trial_keyword,
+            config.trial_regex,
+        )
+        # Case-insensitive exact match against known calibration prefixes
+        matched = next(
+            (p for p in groups if p.lower() == prefix.lower()), ""
+        )
+        if not matched:
+            assignment.warnings.append(
+                f"Trial '{trial_name}' has prefix '{prefix}' that does not match "
+                f"any calibration group ({', '.join(sorted(groups))}); "
+                f"it will be excluded from the split."
+            )
+        assignment.trial_prefix[trial_name] = matched

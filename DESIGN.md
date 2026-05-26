@@ -1432,6 +1432,8 @@ The `[charuco]` section is optional — if absent, calibration images are not ge
 
 7. **Point storage**: Raw pixel coordinates stored in `points.csv`. Undistortion is applied on the fly when computing epipolar lines and triangulating — never stored. This preserves fidelity to what the user clicked and allows recalculation if calibration is updated.
 
+8. **Multiple calibrations → separate projects**: When trials from different recording sessions require different calibrations (e.g. the camera rig shifted between experiments), create separate label3d projects — one per calibration. A single project has exactly one `calibration.toml`. This keeps the geometry stack simple (no per-trial calibration lookup), keeps `points.csv` in a coherent 3D coordinate frame, and avoids mixing incompatible world frames in the 3D view or downstream analysis. The `SleapAdapter` already handles the cross-project SLP import case: it matches by video basename and silently ignores videos not present in the current project, so a combined-experiment SLP file can be imported into each sub-project independently.
+
 ---
 
 ## Prompt Template for Initial Code Generation
