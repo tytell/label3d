@@ -6,6 +6,7 @@ Coordinates are raw pixels; undistortion is applied on the fly when needed.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,6 +16,8 @@ import toml
 
 if TYPE_CHECKING:
     from label3d.points import PointsStore
+
+logger = logging.getLogger(__name__)
 
 
 class CameraParams:
@@ -515,6 +518,11 @@ def triangulate_frame(
             errors[bp] = np.nan
             continue
 
+        logger.debug(
+            "triangulate %s/%s inst=%s bp=%s: cams=%s pts=%s",
+            trial, frame, instance, bp, valid_cams, valid_pts,
+        )
+
         # Build a sub-cgroup with only the cameras that have observations.
         # Pass raw pixel coordinates and let aniposelib undistort internally
         # (undistort=True). aniposelib's DLT uses [R|t] extrinsics and expects
@@ -523,6 +531,8 @@ def triangulate_frame(
         tri_input = np.array(valid_pts, dtype=np.float64)[:, np.newaxis, :]  # (n, 1, 2)
         xyz = sub_cgroup.triangulate(tri_input, undistort=True)  # (1, 3)
         x3, y3, z3 = float(xyz[0, 0]), float(xyz[0, 1]), float(xyz[0, 2])
+
+        logger.debug("  → 3D = (%.4f, %.4f, %.4f)", x3, y3, z3)
 
         if np.any(np.isnan([x3, y3, z3])):
             errors[bp] = np.nan
@@ -541,6 +551,8 @@ def triangulate_frame(
             pt = points_store.get_point(trial, frame, instance, bp, cam)
             if pt.state in ("set", "predicted") and not np.isnan(pt.x):
                 err = float(np.hypot(pt.x - xr, pt.y - yr))
+                logger.debug("  reproj %s: obs=(%.1f,%.1f) proj=(%.1f,%.1f) err=%.2f px",
+                             cam, pt.x, pt.y, xr, yr, err)
                 reproj_errors.append(err)
 
         errors[bp] = float(np.mean(reproj_errors)) if reproj_errors else np.nan

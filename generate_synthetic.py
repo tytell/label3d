@@ -36,6 +36,7 @@ Optional:     sleap-io (for .slp file generation)
 """
 
 import argparse
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -75,7 +76,16 @@ def main():
             "Output goes to <output_dir>_flat_<strategy>/"
         ),
     )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+    if args.debug:
+        for pkg in ("label3d", "synthetic"):
+            logging.getLogger(pkg).setLevel(logging.DEBUG)
 
     config = load_config(args.config)
 

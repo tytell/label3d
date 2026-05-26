@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from label3d.geometry import CameraParams, triangulate_frame
 from label3d.points import PointsStore
+
+logger = logging.getLogger(__name__)
 
 
 class TriangulationWorker(QThread):
