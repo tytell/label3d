@@ -28,6 +28,9 @@ class SetupConfig:
     datestamp_window_sec: float = 0.0  # tolerance for datestamp matching (0 = exact)
     charuco: dict | None = None
     project_name: str = ""
+    copy_files: bool = False
+    trial_keyword: str = "Trial"  # used by "keyword" match strategy
+    trial_regex: str = ""         # used by "regex" match strategy
 
 
 @dataclass
@@ -122,6 +125,12 @@ def classify_files(config: SetupConfig) -> FileAssignment:
     # Match data videos into trials
     if config.match_strategy == "number":
         assignment.trials = _match_by_number(data_videos, config.camera_names)
+    elif config.match_strategy == "keyword":
+        assignment.trials = _match_by_keyword(
+            data_videos, config.trial_keyword
+        )
+    elif config.match_strategy == "regex":
+        assignment.trials = _match_by_regex(data_videos, config.trial_regex)
     elif config.match_strategy == "datestamp":
         assignment.trials = _match_by_datestamp(
             data_videos, config.camera_names, config.datestamp_window_sec
@@ -137,6 +146,10 @@ def classify_files(config: SetupConfig) -> FileAssignment:
     if data_slps:
         if config.match_strategy == "number":
             assignment.slp_files = _match_by_number(data_slps, config.camera_names)
+        elif config.match_strategy == "keyword":
+            assignment.slp_files = _match_by_keyword(data_slps, config.trial_keyword)
+        elif config.match_strategy == "regex":
+            assignment.slp_files = _match_by_regex(data_slps, config.trial_regex)
         elif config.match_strategy == "datestamp":
             assignment.slp_files = _match_by_datestamp(
                 data_slps, config.camera_names, config.datestamp_window_sec
@@ -163,7 +176,12 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
     lines.append(f"Project: {config.project_name or config.output_dir.name}")
     lines.append(f"Output:  {config.output_dir}")
     lines.append(f"Cameras: {', '.join(config.camera_names)}")
-    lines.append(f"Strategy: {config.match_strategy}")
+    strategy_str = config.match_strategy
+    if config.match_strategy == "keyword":
+        strategy_str += f" (keyword={config.trial_keyword!r})"
+    elif config.match_strategy == "regex":
+        strategy_str += f" (pattern={config.trial_regex!r})"
+    lines.append(f"Strategy: {strategy_str}")
     lines.append("")
 
     # Trials
@@ -222,7 +240,7 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
 
 
 def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
-    """Create project folder structure, move files, write trials.csv and project.toml.
+    """Create project folder structure, move or copy files, write trials.csv and project.toml.
 
     Returns the output directory path.
     """
@@ -230,19 +248,21 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     if out.exists():
         raise FileExistsError(f"Output directory already exists: {out}")
 
+    transfer = shutil.copy2 if config.copy_files else shutil.move
+
     # Create directory structure
     videos_dir = out / "videos"
     videos_dir.mkdir(parents=True)
 
-    # Move calibration files
+    # Move/copy calibration files
     if assignment.calibration:
         for cam, files in assignment.calibration.items():
             cam_dir = out / "calibration" / cam
             cam_dir.mkdir(parents=True, exist_ok=True)
             for f in files:
-                shutil.move(str(f), str(cam_dir / f.name))
+                transfer(str(f), str(cam_dir / f.name))
 
-    # Move data videos and build trials.csv rows
+    # Move/copy data videos and build trials.csv rows
     trials_rows = []
     for trial_name in sorted(assignment.trials):
         cam_files = assignment.trials[trial_name]
@@ -251,7 +271,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
             if cam in cam_files:
                 src = cam_files[cam]
                 dst = videos_dir / src.name
-                shutil.move(str(src), str(dst))
+                transfer(str(src), str(dst))
                 row[cam] = src.name
                 row[f"{cam}_start"] = 0
                 row[f"{cam}_end"] = ""
@@ -270,13 +290,13 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         df = pd.DataFrame(trials_rows, columns=columns)
         df.to_csv(videos_dir / "trials.csv", index=False)
 
-    # Move SLP files
+    # Move/copy SLP files
     if assignment.slp_files:
         slp_dir = out / "slp"
         slp_dir.mkdir(parents=True, exist_ok=True)
         for trial_name, cam_files in assignment.slp_files.items():
             for cam, f in cam_files.items():
-                shutil.move(str(f), str(slp_dir / f.name))
+                transfer(str(f), str(slp_dir / f.name))
 
     # Write project.toml
     write_project_toml(out, config.project_name or out.name, config.charuco)
@@ -411,6 +431,84 @@ def _extract_trial_key_datestamp(
                     label=date_str, timestamp=0.0, date_str=date_str
                 )
     return None
+
+
+def _extract_trial_key_keyword(filename: str, trial_keyword: str) -> str | None:
+    """Extract a trial key using a keyword-number pattern (e.g. Trial8).
+
+    Returns everything from the start of the stem up to and including the
+    keyword+number match, stripped of leading/trailing separators.
+    For example: 'PS20_Trial8_Ventral_H264' with keyword 'Trial' → 'PS20_Trial8'.
+    """
+    stem = Path(filename).stem
+    pattern = re.compile(re.escape(trial_keyword) + r"\d+", re.IGNORECASE)
+    m = pattern.search(stem)
+    if m is None:
+        return None
+    key = stem[: m.end()].strip("_- ")
+    return key if key else None
+
+
+def _match_by_keyword(
+    files: list[tuple[str, Path]],
+    trial_keyword: str,
+) -> dict[str, dict[str, Path]]:
+    """Match files into trials by a keyword+number pattern in the filename.
+
+    The trial key is the portion of the stem up to and including the
+    keyword+number (e.g. 'PS20_Trial8'), so experiment prefixes are
+    preserved and different experiments with the same trial number are kept
+    separate.
+    """
+    key_groups: dict[str, dict[str, Path]] = {}
+    for camera, filepath in files:
+        key = _extract_trial_key_keyword(filepath.name, trial_keyword)
+        if key is None:
+            continue
+        key_groups.setdefault(key, {})[camera] = filepath
+    return key_groups
+
+
+def _extract_trial_key_regex(filename: str, pattern: re.Pattern) -> str | None:
+    """Extract a trial key by applying a compiled regex to the filename stem.
+
+    Uses the named group 'trial' if present, otherwise group 1, otherwise
+    the full match.
+    """
+    m = pattern.search(Path(filename).stem)
+    if m is None:
+        return None
+    try:
+        return m.group("trial")
+    except IndexError:
+        pass
+    if m.lastindex:
+        return m.group(1)
+    return m.group(0)
+
+
+def _match_by_regex(
+    files: list[tuple[str, Path]],
+    trial_regex: str,
+) -> dict[str, dict[str, Path]]:
+    """Match files into trials by a user-supplied regex pattern.
+
+    The pattern is matched against each filename stem. The trial key is taken
+    from the named group 'trial' if present, else group 1, else the full match.
+    Raises ValueError for an invalid pattern.
+    """
+    try:
+        pattern = re.compile(trial_regex, re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(f"Invalid trial_regex pattern '{trial_regex}': {exc}") from exc
+
+    key_groups: dict[str, dict[str, Path]] = {}
+    for camera, filepath in files:
+        key = _extract_trial_key_regex(filepath.name, pattern)
+        if key is None:
+            continue
+        key_groups.setdefault(key, {})[camera] = filepath
+    return key_groups
 
 
 def _match_by_number(

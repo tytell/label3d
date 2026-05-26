@@ -11,7 +11,9 @@ Config file format (TOML):
     output_dir = "/path/to/new/project"
     camera_names = ["left", "right", "bottom"]
     calib_keyword = "calib"
-    match_strategy = "number"    # "number" | "datestamp" | "mtime"
+    match_strategy = "keyword"   # "keyword" | "regex" | "number" | "datestamp" | "mtime"
+    trial_keyword = "Trial"      # only for keyword strategy
+    trial_regex = "([A-Z]+\\d+_\\d+)"  # only for regex strategy
     mtime_window_sec = 60.0      # only for mtime strategy
 
     [project]
@@ -28,6 +30,7 @@ Config file format (TOML):
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -131,7 +134,34 @@ def prompt_charuco() -> dict:
     }
 
 
-def run_interactive() -> None:
+def save_config_toml(config: SetupConfig, path: Path) -> None:
+    """Write a TOML config file capturing all settings from a SetupConfig."""
+    data: dict = {
+        "setup": {
+            "source_dir": str(config.source_dir),
+            "output_dir": str(config.output_dir),
+            "camera_names": config.camera_names,
+            "calib_keyword": config.calib_keyword,
+            "match_strategy": config.match_strategy,
+        },
+        "project": {"name": config.project_name},
+    }
+    setup = data["setup"]
+    if config.match_strategy == "keyword":
+        setup["trial_keyword"] = config.trial_keyword
+    elif config.match_strategy == "regex":
+        setup["trial_regex"] = config.trial_regex
+    elif config.match_strategy == "mtime":
+        setup["mtime_window_sec"] = config.mtime_window_sec
+    elif config.match_strategy == "datestamp":
+        setup["datestamp_window_sec"] = config.datestamp_window_sec
+    if config.charuco:
+        data["charuco"] = config.charuco
+    with open(path, "w") as f:
+        toml.dump(data, f)
+
+
+def run_interactive(copy_files: bool = False, dry_run: bool = False) -> None:
     """Run the setup utility in interactive mode."""
     print("=" * 60)
     print("label3d — Project Setup")
@@ -150,11 +180,22 @@ def run_interactive() -> None:
 
     print()
     match_strategy = prompt_choice(
-        "Trial matching strategy", ["number", "datestamp", "mtime"]
+        "Trial matching strategy", ["keyword", "regex", "number", "datestamp", "mtime"]
     )
     mtime_window = 60.0
     datestamp_window = 0.0
-    if match_strategy == "mtime":
+    trial_keyword = "Trial"
+    trial_regex = ""
+    if match_strategy == "keyword":
+        trial_keyword = input("  Trial keyword (e.g. Trial, trial) [Trial]: ").strip() or "Trial"
+    elif match_strategy == "regex":
+        print("  Regex matched against filename stem; named group 'trial' or group 1 becomes the trial key.")
+        print("  Example: ([A-Z]+\\d+_\\d+) matches 'PS18_20' from 'PS18_20_Ventral.mp4'")
+        while not trial_regex:
+            trial_regex = input("  Pattern: ").strip()
+            if not trial_regex:
+                print("  Please enter a pattern.")
+    elif match_strategy == "mtime":
         mtime_window = prompt_float("  Clustering window (seconds)", 60.0)
     elif match_strategy == "datestamp":
         datestamp_window = prompt_float(
@@ -171,8 +212,11 @@ def run_interactive() -> None:
         match_strategy=match_strategy,
         mtime_window_sec=mtime_window,
         datestamp_window_sec=datestamp_window,
+        trial_keyword=trial_keyword,
+        trial_regex=trial_regex,
         charuco=charuco,
         project_name=project_name,
+        copy_files=copy_files,
     )
 
     # Classify files
@@ -185,8 +229,19 @@ def run_interactive() -> None:
     print(preview_assignment(config, assignment))
     print("-" * 60)
 
+    if dry_run:
+        print("\nDry run — no files will be moved or copied.")
+        save_path_str = input("Save config to TOML file? Enter path (or press Enter to skip): ").strip()
+        if save_path_str:
+            save_path = Path(save_path_str).expanduser().resolve()
+            save_config_toml(config, save_path)
+            print(f"Config saved to: {save_path}")
+            print(f"Run with: uv run python setup_project_cli.py {save_path}")
+        return
+
     # Confirm
-    confirm = input("\nProceed? Files will be MOVED to the project folder. [y/N]: ")
+    action = "COPIED" if copy_files else "MOVED"
+    confirm = input(f"\nProceed? Files will be {action} to the project folder. [y/N]: ")
     if confirm.strip().lower() != "y":
         print("Aborted.")
         return
@@ -197,7 +252,7 @@ def run_interactive() -> None:
     print("You can now open it with: uv run label3d", result_dir)
 
 
-def run_from_config(config_path: Path) -> None:
+def run_from_config(config_path: Path, copy_files: bool = False, dry_run: bool = False) -> None:
     """Run the setup utility from a TOML config file."""
     raw = toml.load(config_path)
     setup = raw.get("setup", {})
@@ -210,11 +265,14 @@ def run_from_config(config_path: Path) -> None:
         output_dir=output_dir,
         camera_names=setup["camera_names"],
         calib_keyword=setup.get("calib_keyword", "calib"),
-        match_strategy=setup.get("match_strategy", "number"),
+        match_strategy=setup.get("match_strategy", "keyword"),
+        trial_keyword=setup.get("trial_keyword", "Trial"),
+        trial_regex=setup.get("trial_regex", ""),
         mtime_window_sec=setup.get("mtime_window_sec", 60.0),
         datestamp_window_sec=setup.get("datestamp_window_sec", 0.0),
         charuco=raw.get("charuco", CHARUCO_DEFAULTS),
         project_name=raw.get("project", {}).get("name", output_dir.name),
+        copy_files=copy_files,
     )
 
     print("Scanning files...")
@@ -224,19 +282,46 @@ def run_from_config(config_path: Path) -> None:
     print(preview_assignment(config, assignment))
     print()
 
+    if dry_run:
+        print("Dry run — no files will be moved or copied.")
+        return
+
     result_dir = execute_setup(config, assignment)
     print(f"Project created at: {result_dir}")
 
 
 def main() -> None:
-    if len(sys.argv) > 1:
-        config_path = Path(sys.argv[1])
+    parser = argparse.ArgumentParser(
+        description="Set up a label3d project from a flat folder of videos."
+    )
+    parser.add_argument(
+        "config",
+        nargs="?",
+        metavar="CONFIG",
+        help="TOML config file (omit for interactive mode)",
+    )
+    parser.add_argument(
+        "--copy",
+        action="store_true",
+        default=False,
+        help="Copy files instead of moving them (useful for testing)",
+    )
+    parser.add_argument(
+        "-n", "--dry-run",
+        action="store_true",
+        default=False,
+        help="Show what would be done without moving or copying any files",
+    )
+    args = parser.parse_args()
+
+    if args.config:
+        config_path = Path(args.config)
         if not config_path.exists():
             print(f"Config file not found: {config_path}", file=sys.stderr)
             sys.exit(1)
-        run_from_config(config_path)
+        run_from_config(config_path, copy_files=args.copy, dry_run=args.dry_run)
     else:
-        run_interactive()
+        run_interactive(copy_files=args.copy, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
