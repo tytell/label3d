@@ -31,6 +31,7 @@ class SetupConfig:
     copy_files: bool = False
     trial_keyword: str = "Trial"  # used by "keyword" match strategy
     trial_regex: str = ""         # used by "regex" match strategy
+    experiment_keywords: list[str] = field(default_factory=list)  # empty → single "default" experiment
 
 
 @dataclass

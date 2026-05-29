@@ -11,6 +11,7 @@ Config file format (TOML):
     output_dir = "/path/to/new/project"
     camera_names = ["left", "right", "bottom"]
     calib_keyword = "calib"
+    experiment_keywords = ["PS", "BG"]   # omit or [] for single experiment named "default"
     match_strategy = "keyword"   # "keyword" | "regex" | "number" | "datestamp" | "mtime"
     trial_keyword = "Trial"      # only for keyword strategy
     trial_regex = "([A-Z]+\\d+_\\d+)"  # only for regex strategy
@@ -79,6 +80,14 @@ def prompt_list(label: str) -> list[str]:
         return items
 
 
+def prompt_optional_list(label: str, hint: str = "") -> list[str]:
+    """Prompt for comma-separated values; blank entry returns empty list."""
+    if hint:
+        print(f"  {hint}")
+    raw = input(f"{label}: ").strip()
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 def prompt_choice(label: str, choices: list[str]) -> str:
     """Prompt user to choose from a list."""
     choices_str = " / ".join(choices)
@@ -142,6 +151,7 @@ def save_config_toml(config: SetupConfig, path: Path) -> None:
             "output_dir": str(config.output_dir),
             "camera_names": config.camera_names,
             "calib_keyword": config.calib_keyword,
+            "experiment_keywords": config.experiment_keywords,
             "match_strategy": config.match_strategy,
         },
         "project": {"name": config.project_name},
@@ -179,6 +189,16 @@ def run_interactive(copy_files: bool = False, dry_run: bool = False) -> None:
     calib_keyword = input("Calibration keyword (e.g. calib, charuco): ").strip()
 
     print()
+    print("--- Experiment grouping ---")
+    experiment_keywords = prompt_optional_list(
+        "Experiment keywords, e.g. PS,BG (leave blank for single experiment [default])",
+        hint="Files matching PS\\d+ → experiment PS18, BG\\d+ → BG03, etc.",
+    )
+    if experiment_keywords:
+        print(f"  Experiments: {', '.join(experiment_keywords)}")
+
+    print()
+    print("--- Trial matching (within each experiment) ---")
     match_strategy = prompt_choice(
         "Trial matching strategy", ["keyword", "regex", "number", "datestamp", "mtime"]
     )
@@ -209,6 +229,7 @@ def run_interactive(copy_files: bool = False, dry_run: bool = False) -> None:
         output_dir=output_dir,
         camera_names=camera_names,
         calib_keyword=calib_keyword,
+        experiment_keywords=experiment_keywords,
         match_strategy=match_strategy,
         mtime_window_sec=mtime_window,
         datestamp_window_sec=datestamp_window,
@@ -265,6 +286,7 @@ def run_from_config(config_path: Path, copy_files: bool = False, dry_run: bool =
         output_dir=output_dir,
         camera_names=setup["camera_names"],
         calib_keyword=setup.get("calib_keyword", "calib"),
+        experiment_keywords=setup.get("experiment_keywords", []),
         match_strategy=setup.get("match_strategy", "keyword"),
         trial_keyword=setup.get("trial_keyword", "Trial"),
         trial_regex=setup.get("trial_regex", ""),

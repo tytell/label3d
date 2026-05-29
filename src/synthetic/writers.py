@@ -28,16 +28,20 @@ def write_calibration_toml(cameras: dict, output_path: Path):
 
 
 def write_trials_csv(
-    cameras: dict, trial_name: str, num_frames: int, video_dir: Path
+    cameras: dict,
+    trial_name: str,
+    num_frames: int,
+    output_path: Path,
+    experiment_name: str = "default",
 ):
-    """Write trials.csv."""
-    row = {"trial": trial_name}
+    """Write global trials.csv with experiment column."""
+    row = {"experiment": experiment_name, "trial": trial_name}
     for cam_name in cameras:
         row[cam_name] = f"{cam_name}_{trial_name}.mp4"
         row[f"{cam_name}_start"] = 0
         row[f"{cam_name}_end"] = num_frames - 1
 
-    pd.DataFrame([row]).to_csv(video_dir / "trials.csv", index=False)
+    pd.DataFrame([row]).to_csv(output_path, index=False)
 
 
 def write_points_csv(
@@ -48,8 +52,12 @@ def write_points_csv(
     trial_name: str,
     num_frames: int,
     output_path: Path,
+    experiment_name: str = "default",
 ):
-    """Write ground-truth points.csv with zero reprojection error."""
+    """Write ground-truth points.csv with zero reprojection error.
+
+    Row index is 5-level: (experiment, trial, frame, instance, bodypart).
+    """
     cam_names = list(cameras.keys())
 
     # Column MultiIndex
@@ -66,7 +74,7 @@ def write_points_csv(
     idx_tuples = []
     for fi in range(num_frames):
         for bi, bp in enumerate(node_names):
-            idx_tuples.append((trial_name, fi, 0, bp))
+            idx_tuples.append((experiment_name, trial_name, fi, 0, bp))
             row = {}
             for cam_name in cam_names:
                 px, py = all_projected[cam_name][fi][bi]
@@ -83,10 +91,20 @@ def write_points_csv(
             rows.append(row)
 
     row_idx = pd.MultiIndex.from_tuples(
-        idx_tuples, names=["trial", "frame", "instance", "bodypart"]
+        idx_tuples, names=["experiment", "trial", "frame", "instance", "bodypart"]
     )
     df = pd.DataFrame(rows, index=row_idx, columns=col_idx)
     df.to_csv(output_path)
+
+
+def write_project_toml(output_path: Path, project_name: str, charuco: dict | None = None):
+    """Write project.toml at the project root."""
+    data: dict = {"project": {"name": project_name}}
+    if charuco:
+        data["charuco"] = charuco
+    with open(output_path, "w") as f:
+        toml.dump(data, f)
+    print(f"  {output_path}")
 
 
 def write_skeleton_json(
@@ -216,6 +234,7 @@ def write_flat_folder(
     cameras: dict,
     trial_name: str,
     strategy: str,
+    experiment_name: str = "default",
     calib_keyword: str = "calib",
     charuco_config: dict | None = None,
 ) -> Path:
@@ -231,6 +250,7 @@ def write_flat_folder(
         cameras: Camera dict from build_cameras()
         trial_name: Original trial name used in generation
         strategy: Naming strategy — "number", "datestamp", or "datestamp_simple"
+        experiment_name: Experiment name used when generating the project
         calib_keyword: Keyword used to tag calibration files
         charuco_config: Charuco board config dict (optional, for setup_config.toml)
 
@@ -239,13 +259,14 @@ def write_flat_folder(
     """
     flat_dir.mkdir(parents=True, exist_ok=True)
     cam_names = list(cameras.keys())
+    experiment_dir = project_dir / "experiments" / experiment_name
 
     # Base timestamp for datestamp strategies (14:21:07 = 51667 seconds)
     base_time = 51667.519576
     time_offset_per_cam = 0.003  # 3ms offset between cameras
 
     # --- Copy data videos with new names ---
-    video_dir = project_dir / "videos"
+    video_dir = experiment_dir / "videos"
     for ci, cam_name in enumerate(cam_names):
         src = video_dir / f"{cam_name}_{trial_name}.mp4"
         if src.exists():
@@ -272,7 +293,7 @@ def write_flat_folder(
                 shutil.copy2(str(src), str(flat_dir / new_name))
 
     # --- Copy calibration files with calib keyword in name ---
-    calib_dir = project_dir / "calibration"
+    calib_dir = experiment_dir / "calibration"
     if calib_dir.exists():
         for cam_name in cam_names:
             cam_calib = calib_dir / cam_name

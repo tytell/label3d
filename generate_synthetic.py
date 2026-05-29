@@ -9,19 +9,22 @@ Usage:
 
 Generates:
     <output_dir>/
-    ├── videos/
-    │   ├── trials.csv
-    │   ├── cam0_trial1.mp4
-    │   └── cam1_trial1.mp4
-    ├── calibration.toml
-    ├── points.csv
+    ├── trials.csv
     ├── skeleton.json
-    ├── calibration/              (if [charuco] section present)
-    │   ├── cam1/board_000.png
-    │   └── ...
-    └── slp/                     (if sleap_io is installed)
-        ├── cam0_trial1.slp
-        └── cam1_trial1.slp
+    ├── project.toml
+    ├── slp/
+    │   ├── cam0_trial1.slp
+    │   └── cam1_trial1.slp
+    └── experiments/
+        └── <experiment_name>/
+            ├── calibration/         (if [charuco] section present)
+            │   ├── cam1/board_000.png
+            │   └── ...
+            ├── calibration.toml
+            ├── points.csv
+            └── videos/
+                ├── cam0_trial1.mp4
+                └── cam1_trial1.mp4
 
 With --flat, also generates flat folder(s) for testing setup_project:
     <output_dir>_flat_<strategy>/
@@ -52,6 +55,7 @@ from synthetic import (
     write_calibration_toml,
     write_flat_folder,
     write_points_csv,
+    write_project_toml,
     write_skeleton_json,
     write_slp_files,
     write_trials_csv,
@@ -92,6 +96,7 @@ def main():
     # ── Unpack config ────────────────────────────────────────────────────
     project_cfg = config["project"]
     output_dir = Path(project_cfg["output_dir"])
+    experiment_name = project_cfg.get("experiment_name", "default")
     trial_name = project_cfg["trial_name"]
     num_frames = project_cfg["num_frames"]
 
@@ -128,7 +133,8 @@ def main():
                     )
 
     # ── Create output directories ────────────────────────────────────────
-    video_dir = output_dir / "videos"
+    experiment_dir = output_dir / "experiments" / experiment_name
+    video_dir = experiment_dir / "videos"
     video_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Write outputs ────────────────────────────────────────────────────
@@ -140,23 +146,36 @@ def main():
     )
 
     print("Writing calibration.toml...")
-    write_calibration_toml(cameras, output_dir / "calibration.toml")
-    print(f"  {output_dir / 'calibration.toml'}")
+    write_calibration_toml(cameras, experiment_dir / "calibration.toml")
+    print(f"  {experiment_dir / 'calibration.toml'}")
 
     print("Writing trials.csv...")
-    write_trials_csv(cameras, trial_name, num_frames, video_dir)
-    print(f"  {video_dir / 'trials.csv'}")
+    trials_csv_path = output_dir / "trials.csv"
+    write_trials_csv(cameras, trial_name, num_frames, trials_csv_path, experiment_name)
+    print(f"  {trials_csv_path}")
 
     print("Writing points.csv...")
+    points_csv_path = experiment_dir / "points.csv"
     write_points_csv(
         all_pts_3d, all_projected, cameras,
         node_names, trial_name, num_frames,
-        output_dir / "points.csv",
+        points_csv_path,
+        experiment_name,
     )
-    print(f"  {output_dir / 'points.csv'}")
+    print(f"  {points_csv_path}")
 
     print("Writing skeleton.json...")
     write_skeleton_json(node_names, edges, node_offsets, output_dir / "skeleton.json")
+
+    print("Writing project.toml...")
+    charuco_cfg = config.get("charuco")
+    charuco_board = (
+        {k: charuco_cfg[k] for k in
+         ("squares_x", "squares_y", "square_length", "marker_length", "marker_bits", "dict_size")
+         if k in charuco_cfg}
+        if charuco_cfg else None
+    )
+    write_project_toml(output_dir / "project.toml", project_cfg.get("name", output_dir.name), charuco_board)
 
     print("Writing .slp files...")
     write_slp_files(
@@ -167,10 +186,11 @@ def main():
     # ── Charuco calibration images ───────────────────────────────────────
     if "charuco" in config and not args.no_charuco:
         print("\nGenerating Charuco calibration images...")
-        generate_charuco_images(config["charuco"], cameras, output_dir)
+        generate_charuco_images(config["charuco"], cameras, experiment_dir)
 
     # ── Summary ──────────────────────────────────────────────────────────
     print(f"\nDone. Output: {output_dir}/")
+    print(f"  Experiment: {experiment_name}")
     print(f"  Cameras:   {list(cameras.keys())}")
     print(f"  Frames:    {num_frames}")
     print(f"  Bodyparts: {node_names}")
@@ -183,7 +203,7 @@ def main():
         )
 
     # ── Sanity checks ────────────────────────────────────────────────────
-    run_sanity_checks(cameras, all_pts_3d, all_projected, node_names, output_dir)
+    run_sanity_checks(cameras, all_pts_3d, all_projected, node_names, experiment_dir)
 
     # ── Flat folder output ────────────────────────────────────────────────
     if args.flat:
@@ -192,7 +212,6 @@ def main():
             if args.flat == "all"
             else [args.flat]
         )
-        charuco_cfg = config.get("charuco")
         for strategy in strategies:
             flat_dir = output_dir.parent / f"{output_dir.name}_flat_{strategy}"
             print(f"\nGenerating flat folder ({strategy}): {flat_dir}/")
@@ -202,6 +221,7 @@ def main():
                 cameras=cameras,
                 trial_name=trial_name,
                 strategy=strategy,
+                experiment_name=experiment_name,
                 calib_keyword="calib",
                 charuco_config=charuco_cfg,
             )
