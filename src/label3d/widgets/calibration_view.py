@@ -345,6 +345,7 @@ class CalibrationView(QWidget):
             project_root=self._project.root,
             cam_names=self._project.cameras,
             board_params=self._board_params(),
+            active_experiment=self._project.active_experiment,
             skip=self._skip_spin.value(),
         )
         self._detection_worker.progress.connect(self._log_msg)
@@ -437,7 +438,7 @@ class CalibrationView(QWidget):
     def _on_save(self):
         if self._cgroup is None:
             return
-        out_path = self._project.root / "calibration.toml"
+        out_path = self._project.root / "experiments" / self._project.active_experiment / "calibration.toml"
         try:
             self._cgroup.dump(str(out_path))
             self._log_msg(f"Saved: {out_path}")

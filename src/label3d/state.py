@@ -20,9 +20,11 @@ class ProjectState(QObject):
     trial_changed = Signal(str)          # trial name
     selection_changed = Signal(int, str) # (instance, bodypart) or (-1, "") for deselect
     points_changed = Signal(str, int, int, str)  # (trial, frame, instance, bodypart)
+    experiment_changed = Signal(str)     # experiment name
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._current_experiment: str = ""
         self._current_trial: str = ""
         self._current_frame: int = 0
         self._max_frame: int = 0
@@ -49,6 +51,20 @@ class ProjectState(QObject):
     @skeleton.setter
     def skeleton(self, value: Skeleton | None):
         self._skeleton = value
+
+    # -- Experiment --
+
+    @property
+    def current_experiment(self) -> str:
+        return self._current_experiment
+
+    @current_experiment.setter
+    def current_experiment(self, value: str):
+        if value != self._current_experiment:
+            if self._points_store is not None:
+                self._points_store.save_if_dirty()
+            self._current_experiment = value
+            self.experiment_changed.emit(value)
 
     # -- Trial --
 

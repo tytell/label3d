@@ -42,19 +42,34 @@ A `CameraGroup` holds a list of `Camera` objects and is saved/loaded as `calibra
 
 ## Data Model
 
+All projects use the **hierarchical layout**: a shared project root with `experiments/` subfolders, one per calibration group.
+
 ```
 Project
-├── project.toml             # project config: name, charuco board params (see below)
-├── calibration/             # calibration images or videos, one subfolder per camera
-│   ├── cam0/
-│   └── cam1/
-├── videos/                  # trial videos, one subfolder or flat with trials.csv
-│   └── trials.csv           # maps trial names → per-camera video filenames + frame ranges
-├── calibration.toml         # written by the Calibrate step (aniposelib CameraGroup.dump)
-├── skeleton.json            # node names, edges, symmetries (from SLEAP or manual definition)
-├── slp/                     # optional: imported .slp files, one per (trial, camera)
-└── points.csv               # 2D + 3D labels (MultiIndex CSV, see below)
+├── project.toml             # top-level config: name, charuco params (shared)
+├── skeleton.json            # shared skeleton across all experiments
+├── trials.csv               # global: all trials across all experiments (has experiment column)
+├── slp/                     # optional: imported .slp files (global, not per-experiment)
+└── experiments/
+    ├── PS18/                # one subfolder per experiment
+    │   ├── calibration/     # calibration media for this experiment
+    │   │   ├── cam0/
+    │   │   └── cam1/
+    │   ├── videos/          # video files for this experiment's trials
+    │   ├── calibration.toml # written after calibrating this experiment
+    │   └── points.csv       # 2D + 3D labels for this experiment's trials
+    ├── PS19/
+    │   └── …
+    └── BG03/
+        └── …
 ```
+
+**Key design properties:**
+- `trials.csv` is **global** at the project root; it has an `experiment` column so all experiments' trials live in one file. Trial names may repeat across experiments and are disambiguated by the `experiment` value.
+- Each experiment has its own `calibration.toml` and `points.csv` — per-experiment because each has a distinct calibration and independent label data.
+- `.slp` files live in the top-level `slp/` folder; the adapter receives the full global `trials.csv` and resolves which `(experiment, trial, camera)` each file belongs to by matching video basenames across all rows.
+- `points.csv` row index is `(experiment, trial, frame, instance, bodypart)` — the `experiment` level is constant within a single file but allows cross-experiment aggregation via plain `pd.concat`.
+- The calibration for each experiment is `experiments/{name}/calibration.toml`; the geometry stack (triangulation, epipolar lines) always sees exactly one `CameraGroup` per experiment.
 
 ### Project configuration (`project.toml`)
 
@@ -77,31 +92,38 @@ The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init_
 
 ### Videos and trials
 
-`trials.csv` has one row per trial. Columns:
+`trials.csv` lives at the project root and has one row per trial across all experiments. Columns:
 
-| trial | cam0 | cam0_start | cam0_end | cam1 | cam1_start | cam1_end | … |
-|---|---|---|---|---|---|---|---|
-| trial1 | cam0_t1.mp4 | 0 | 500 | cam1_t1.mp4 | 3 | 503 | … |
+| experiment | trial | cam0 | cam0_start | cam0_end | cam1 | cam1_start | cam1_end | … |
+|---|---|---|---|---|---|---|---|---|
+| PS18 | trial1 | cam0_t1.mp4 | 0 | 500 | cam1_t1.mp4 | 3 | 503 | … |
+| PS18 | trial2 | cam0_t2.mp4 | 0 | 480 | cam1_t2.mp4 | 0 | 480 | … |
+| PS19 | trial1 | cam0_t1.mp4 | 0 | 600 | cam1_t1.mp4 | 0 | 600 | … |
 
+- `experiment` identifies which experiment subfolder the trial belongs to; trial names are local to each experiment and may repeat across experiments.
 - `_start` / `_end`: frame indices into the video file (inclusive). Blank = start (0) / end of file.
 - The per-camera offset is **implicit**: global frame `N` maps to video frame `_start + N` for each camera. If cam0 starts at frame 0 and cam1 starts at frame 3, cam1 is effectively offset by 3 frames — no separate offset column needed.
 - **Trial length** (number of valid global frames) = `min(_end_i - _start_i + 1)` across all cameras for that trial. If `_end` is blank for a camera, its frame count is determined from the video file at load time via `cv2.VideoCapture.get(cv2.CAP_PROP_FRAME_COUNT)`.
 - Camera ID columns must match the `name` field values in `calibration.toml`.
+- Video filenames are resolved relative to `experiments/{experiment}/videos/` — `Project.video_path(experiment, trial, camera)` returns `project_root / "experiments" / experiment / "videos" / filename`.
 
 ### Primary storage: `points.csv`
 
-A single file storing both 2D and 3D data. Rows are indexed by `(trial, frame, instance, bodypart)` — one row per bodypart per instance per frame. Columns are grouped by **view**, where each real camera has `(x, y, xr, yr, state)` coords and the reconstructed 3D is treated as a pseudo-camera with `(x, y, z)` coords.
+One file per experiment, storing both 2D and 3D data. Rows are indexed by `(experiment, trial, frame, instance, bodypart)` — one row per bodypart per instance per frame. Columns are grouped by **view**, where each real camera has `(x, y, xr, yr, state)` coords and the reconstructed 3D is treated as a pseudo-camera with `(x, y, z)` coords.
 
 ```
-                                        cam0                          cam1                3d
-trial  frame  instance  bodypart        x     y    xr   yr   state    x     y   xr  yr  state   x    y    z
-trial1 0      0         head            92   202   91  203   set      88   199  87  200  set    1.2  0.4  3.1
-                        tail           152   158  151  159   set     148   154 149  155  set    2.1  0.8  4.2
-                        spine          NaN   NaN  NaN  NaN   occluded NaN  NaN NaN  NaN  set    NaN  NaN  NaN
-              1         head           NaN   NaN  NaN  NaN   predicted 91  201  90  202  predicted NaN NaN NaN
-       1      0         head            93   201   92  202   set       …
-trial2 0      0         head            …
+                                              cam0                          cam1                3d
+experiment trial  frame  instance  bodypart   x     y    xr   yr   state    x     y   xr  yr  state   x    y    z
+PS18       trial1 0      0         head       92   202   91  203   set      88   199  87  200  set    1.2  0.4  3.1
+                  0      0         tail      152   158  151  159   set     148   154 149  155  set    2.1  0.8  4.2
+                  0      0         spine     NaN   NaN  NaN  NaN   occluded NaN  NaN NaN  NaN  set    NaN  NaN  NaN
+                  0      1         head      NaN   NaN  NaN  NaN   predicted 91  201  90  202  predicted NaN NaN NaN
+                  1      0         head       93   201   92  202   set       …
+           trial2 0      0         head       …
+PS19       trial1 0      0         head       …
 ```
+
+Within a single experiment's `points.csv` the `experiment` value is constant (redundant per file), but storing it in every row enables cross-experiment aggregation by simple `pd.concat` with no post-processing.
 
 Column structure is a 2-level `MultiIndex (view, coord)`:
 - Real cameras: `coord` ∈ `{x, y, xr, yr, state}` — clicked coords, reprojected coords, and point state
@@ -123,24 +145,25 @@ Written/read with:
 # Write
 df.to_csv("points.csv")
 
-# Read — 2-level column header, 4-level row index
-df = pd.read_csv("points.csv", header=[0, 1], index_col=[0, 1, 2, 3])
+# Read — 2-level column header, 5-level row index
+df = pd.read_csv("points.csv", header=[0, 1], index_col=[0, 1, 2, 3, 4])
 # → df.columns: MultiIndex([(cam0, x), (cam0, y), ..., (cam0, state), (3d, x), (3d, y), (3d, z)])
-# → df.index:   MultiIndex([(trial1, 0, 0, head), (trial1, 0, 0, tail), ...])
+# → df.index:   MultiIndex([(PS18, trial1, 0, 0, head), ...])
+#                           (experiment, trial, frame, instance, bodypart)
 
 # Access one camera
-cam0 = df["cam0"]                         # columns: x, y, xr, yr, state
-cam0_xy = cam0[["x", "y"]]               # clicked coords, shape (n_rows, 2)
-cam0_set = cam0[cam0["state"] == "set"]   # only user-placed points
+cam0 = df["cam0"]                                        # columns: x, y, xr, yr, state
+cam0_xy = cam0[["x", "y"]]                              # clicked coords, shape (n_rows, 2)
+cam0_set = cam0[cam0["state"] == "set"]                  # only user-placed points
 
 # Access 3D
-xyz = df["3d"][["x", "y", "z"]]           # world coords, shape (n_rows, 3)
+xyz = df["3d"][["x", "y", "z"]]                         # world coords, shape (n_rows, 3)
 
-# Access one trial/frame, all instances
-frame = df.loc[("trial1", 0)]             # index is now (instance, bodypart)
+# Access one trial/frame, all instances (within one experiment's PointsStore)
+frame = df.loc[("PS18", "trial1", 0)]                   # index is now (instance, bodypart)
 
-# Access a specific instance
-inst = df.loc[("trial1", 0, 0)]          # index is now just bodypart
+# Cross-experiment aggregation (combine two experiments' DataFrames)
+combined = pd.concat([df_ps18, df_ps19])                # experiment levels differ
 ```
 
 Missing coordinates are `NaN`. Reprojected coords (`xr`, `yr`) are `NaN` until triangulation has been run. The `3d` pseudo-camera has no `state` column.
@@ -161,7 +184,7 @@ class PoseAdapter(ABC):
     def load(
         self,
         files: list[Path],
-        trials: pd.DataFrame,       # contents of trials.csv
+        trials: pd.DataFrame,       # global trials.csv (with experiment column)
         cameras: list[str],         # ordered camera IDs from calibration.toml
     ) -> pd.DataFrame:
         """Read one or more external files and return a points-compatible DataFrame.
@@ -170,10 +193,11 @@ class PoseAdapter(ABC):
                   network, which may cover one or several cameras). The adapter
                   matches each file to camera(s) by comparing the video filenames
                   embedded in the file against the video columns in trials.csv.
-        trials  — the trials table, used to resolve file→camera→trial mapping.
+        trials  — the global trials table (contents of the top-level trials.csv,
+                  with experiment column); used to resolve file→(experiment, trial, camera).
         cameras — canonical camera list; output columns must cover these IDs.
 
-        Returns a DataFrame with MultiIndex(trial, frame, instance, bodypart) rows
+        Returns a DataFrame with MultiIndex(experiment, trial, frame, instance, bodypart) rows
         and MultiIndex(view, coord) columns. Missing points are NaN.
         Reprojected coords (xr, yr) and 3d columns are omitted — caller fills them.
         """
@@ -212,10 +236,10 @@ label3d/
 The UI **Import / Export** dialogs populate their format dropdown from the registry — adding a new format requires only dropping a new file in `adapters/`.
 
 **SLEAP adapter — camera matching logic:**
-1. For each `.slp` file, read the `Video.filename` values embedded in the file (these are full absolute paths)
-2. Match using **basename only** (`Path(video.filename).name`) against the basename of the video paths in `trials.csv` — full paths differ between machines, only filenames are reliable
+1. For each `.slp` file in the project-level `slp/` folder, read the `Video.filename` values embedded in the file (these are full absolute paths)
+2. Match using **basename only** (`Path(video.filename).name`) against the basename of video paths across all rows of the global `trials.csv` — full paths differ between machines, only filenames are reliable; the `experiment` column in each matching row identifies which experiment and trial the video belongs to
 3. A single `.slp` can cover multiple cameras if they were tracked together; separate out by video reference
-4. Extract `(frame_idx, node_name, x, y)` per `(trial, camera)` and populate the output DataFrame with state `predicted`
+4. Extract `(frame_idx, node_name, x, y)` per `(experiment, trial, camera)` and populate the output DataFrame (with `(experiment, trial, frame, instance, bodypart)` index) with state `predicted`
 
 **Key invariant:** all adapters produce and consume the same `points` schema — `(trial, frame, instance, bodypart)` row index, `(view, coord)` column index, `NaN` for missing.
 
@@ -275,34 +299,96 @@ uv run python setup_project_cli.py config.toml      # config file mode
 | `output_dir` | Path for the new project folder |
 | `camera_names` | Camera name substrings found in filenames (e.g. `left, right, bottom`) |
 | `calib_keyword` | Keyword identifying calibration files (e.g. `calib`, `charuco`) |
-| `match_strategy` | How to group files into trials: `number`, `datestamp`, or `mtime` |
+| `experiment_keywords` | *(optional)* Experiment-prefix keywords (e.g. `PS, BG`); groups files by experiment prefix; leave empty for single-experiment project |
+| `match_strategy` | How to group files into trials: `keyword`, `number`, `datestamp`, `regex`, or `mtime` |
+| `trial_keyword` | Keyword used by `keyword` strategy (e.g. `Trial`) |
 | Charuco params | Board parameters written to `project.toml` |
 
-### File classification
+### Two-level file classification (hierarchical mode)
 
-1. Scan `source_dir` for video files (`.mp4`, `.avi`, `.mov`, `.mkv`), `.slp` files, and images
-2. Assign each file to a camera by matching `camera_names` as case-insensitive substrings
-3. Files containing `calib_keyword` → calibration; remainder → data videos
-4. Data videos are grouped into trials using the chosen matching strategy
+When `experiment_keywords` is provided, file classification runs in two levels:
+
+**Level 1 — Experiment identification**
+
+Each keyword in `experiment_keywords` is matched as a case-insensitive prefix immediately followed by a number. The full token (keyword + number) is the experiment identifier.
+
+```
+experiment_keywords = ["PS", "BG"]
+
+PS18_Trial1_left.mp4  → experiment "PS18"
+PS19_calib_left.mp4   → experiment "PS19"
+BG03_Trial2_cam0.mp4  → experiment "BG03"
+```
+
+Pattern: `(?:PS|BG)\d+` (constructed from the keyword list). The experiment identifier is extracted as the full matched token (e.g., `PS18`). Files that match no experiment keyword are assigned to a `"default"` experiment and generate a warning if keywords were provided.
+
+Helper: `_extract_experiment_id(filename, experiment_keywords, camera_names) -> str | None`
+
+**Level 2 — Trial identification within each experiment**
+
+After the experiment identifier is stripped from the filename, the remaining stem is matched by the same `match_strategy` as the flat mode:
+- `keyword`: match `trial_keyword + \d+` in the stripped stem (e.g., `Trial1`)
+- `number`: first (separator-preceded) numeric sequence in the stripped stem (e.g., `001`)
+- `datestamp` / `mtime` / `regex`: same logic as flat mode, applied to the stripped stem
+
+Within each experiment, calibration files are identified by `calib_keyword` as before.
+
+**Single-experiment project**
+
+When `experiment_keywords` is empty and no experiment prefixes are detected, all files are placed in a single experiment named after the project (e.g., `experiments/default/`). The `needs_split` detection still runs and warns if multiple calibration prefixes are found unexpectedly.
+
+### Data model
+
+```python
+@dataclass
+class ExperimentAssignment:
+    """Classification results for one experiment (one calibration group)."""
+    name: str
+    trials: dict[str, dict[str, Path]]        # trial_name → {camera: path}
+    calibration: dict[str, list[Path]]        # camera → [calib files]
+    unmatched: list[Path] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+```
+
+`FileAssignment` gains:
+- `experiments: dict[str, ExperimentAssignment]` — always populated (at minimum one entry); replaces the `calibration_groups` / `trial_prefix` split-detection approach for the primary workflow
+- `slp_files: list[Path]` — all `.slp` files from the source folder; global (not per-experiment); moved to `project_root/slp/` at execute time
+
+`SetupConfig` gains:
+- `experiment_keywords: list[str] = field(default_factory=list)` — e.g. `["PS", "BG"]`
 
 ### Trial matching strategies
 
-**Number** — extract numeric substrings from filenames; group by matching number.
-Example: `left_001.mp4` + `right_001.mp4` → `trial_001`
+**Keyword** — match `trial_keyword + \d+` in the experiment-stripped stem.
+Example: `PS18_Trial1_left.mp4` → experiment `PS18`, stripped stem `Trial1_left`, trial `Trial1`
 
-**Datestamp** — extract date/datetime patterns (`YYYYMMDD`, `YYYYMMDD_HHMMSS`, `YYYY-MM-DD`, etc.); group by matching stamp.
-Example: `left_20260315_143000.mp4` + `right_20260315_143000.mp4` → `trial_20260315_143000`
+**Number** — first separator-preceded numeric sequence in the experiment-stripped stem.
+Example: `PS18_001_left.mp4` → experiment `PS18`, stripped stem `001_left`, trial `trial_001`
+
+**Datestamp** — date/datetime patterns (`YYYYMMDD`, `YYYYMMDD_HHMMSS`, `YYYY-MM-DD`, etc.).
+Example: `PS18_20260315_143000_left.mp4` → experiment `PS18`, trial `trial_20260315_143000`
 
 **Modification time** — cluster files by OS modification time within a configurable window (default 60s).
-Example: files modified within 30 seconds of each other → same trial.
+
+**Regex** — user-supplied pattern; named group `trial` if present, else group 1, else full match.
 
 ### Output
 
-Files are **moved** (not copied) from the source folder into the project structure. The utility writes `trials.csv`, `project.toml`, and creates `calibration/{camera}/` subfolders.
+Files are **moved** (not copied) from the source folder into the project structure.
+
+Always creates `experiments/{name}/` for each experiment; within each:
+- `calibration/{camera}/` for calibration media
+- `videos/` folder (video files moved here; no per-experiment trials.csv)
+- placeholder `points.csv` (empty, with the correct 5-level row index, created so the folder is loadable immediately)
+
+At the project root:
+- `trials.csv` (global): all experiments' trials in one file with an `experiment` column; trial names have the experiment prefix stripped (e.g. `PS18_Trial1` → experiment `PS18`, trial `Trial1`).
+- `project.toml`, `skeleton.json`, and `slp/` directory.
+- `.slp` files from the source folder are moved into `slp/` regardless of which experiment they correspond to.
 
 ### Core module
 
-`label3d/setup_project.py` — contains `SetupConfig`, `FileAssignment`, `classify_files()`, `preview_assignment()`, `execute_setup()`, `write_project_toml()`. Pure logic, no UI dependency.
+`label3d/setup_project.py` — contains `SetupConfig`, `ExperimentAssignment`, `FileAssignment`, `classify_files()`, `preview_assignment()`, `execute_setup()`, `write_project_toml()`, `split_project_groups()`. Pure logic, no UI dependency. Always produces hierarchical output.
 
 ---
 
@@ -344,11 +430,11 @@ board = CharucoBoard(squaresX=6, squaresY=8,
 
 ### Calibration input
 
-Calibration images or video frames are loaded **separately** from the trial videos. The project folder contains
+Calibration images or video frames are loaded **separately** from the trial videos. Each experiment folder contains
 either individual videos for each camera (stored in the calibration folder) or image folders for each camera.
 
 ```
-Project
+experiments/{name}/
 ├── calibration/
 │   ├── cam0/        # images or a video for cam0
 │   ├── cam1/
@@ -1063,7 +1149,7 @@ label3d/
 - [x] `charuco_overlay.py`: overlay detected corners (green dots), reprojected corners (red crosses)
 
 #### 4.3 Calibration input discovery
-- [x] Scan `calibration/cam*/` subfolders
+- [x] Scan `experiments/{active}/calibration/cam*/` subfolders
 - [x] If subfolder contains video files (`.mp4`/`.avi`) → `board.detect_video(path, skip=N)`
 - [x] If subfolder contains images (`.png`/`.jpg`) → `board.detect_images(paths)`
 - [x] Camera names derived from subfolder names; validated against `trials.csv`
@@ -1115,7 +1201,170 @@ Two bugs were found and fixed after initial implementation:
 
 ---
 
-### Phase 5.5 — Axis Alignment (optional calibration step)
+### Phase 6 — Hierarchical (multi-experiment) projects
+
+**Goal**: Support projects where different groups of trials have different calibrations, structured as `experiments/{name}/` subfolders under a shared project root. All projects use this layout, including single-experiment projects.
+
+**Prerequisite**: Phases 1–5 complete.
+
+#### 6.1 Synthetic data generator — hierarchical output ✅
+
+- [x] Update `generate_synthetic.py`: determine `experiment_name` from config (`project.experiment_name`, default `"default"`); set `experiment_dir = output_dir / "experiments" / experiment_name`
+- [x] Route video files from `write_videos()` to `experiment_dir / "videos/"`
+- [x] Route `write_calibration_toml()` to `experiment_dir / "calibration.toml"`
+- [x] Route `generate_charuco_images()` to `experiment_dir` (function writes `calibration/{cam}/` relative to its argument — no function change needed)
+- [x] Route `write_points_csv()` to `experiment_dir / "points.csv"`; add `experiment_name` parameter; expand row index to 5 levels `(experiment, trial, frame, instance, bodypart)` — drop the `calibration` level from the old design
+- [x] Update `write_trials_csv()` to write the global `trials.csv` at `output_dir / "trials.csv"` with an `experiment` column (set to `experiment_name`); no longer writes to `experiment_dir / "videos/"`
+- [x] Keep `write_slp_files()` output at `output_dir / "slp"` (already at project root — no change)
+- [x] Keep `write_skeleton_json()` at `output_dir / "skeleton.json"` — no change
+- [x] Add `write_project_toml()` call at project root
+- [x] Update `write_flat_folder()`: add `experiment_name` parameter; change `project_dir / "videos"` → `project_dir / "experiments" / experiment_name / "videos"` and `project_dir / "calibration"` → `project_dir / "experiments" / experiment_name / "calibration"`; global `trials.csv` stays at project root; `slp_dir` stays at project root
+- [x] Update `run_sanity_checks()`: change `output_dir / "calibration.toml"` → `output_dir / "experiments" / experiment_name / "calibration.toml"` (or accept `experiment_dir` directly)
+- [x] Add optional `experiment_name` key to `[project]` section of `synthetic_config.toml`
+- [x] Regenerate `test_project/` by running the updated generator — overwrites the existing flat layout with the hierarchical structure; no migration utility needed since `test_project` is generated data
+
+#### 6.2 `setup_project_cli.py` — two-level interactive flow ✅
+
+**Interactive prompt order** (`run_interactive()`):
+
+```
+============================================================
+label3d — Project Setup
+============================================================
+
+Source folder: /path/to/flat/folder
+Output project folder: /path/to/project
+Project name [project]:
+
+Camera names (comma-separated, e.g. left,right,bottom): left, right
+Calibration keyword (e.g. calib, charuco): calib
+
+--- Experiment grouping ---
+Experiment keywords, e.g. PS,BG (leave blank for single experiment [default]):
+  (Files matching PS\d+ → experiment PS18, BG\d+ → BG03, etc.)
+> PS, BG
+
+--- Trial matching (within each experiment) ---
+Trial matching strategy [keyword / regex / number / datestamp / mtime]: keyword
+  Trial keyword (e.g. Trial, trial) [Trial]: Trial
+
+Charuco board parameters (press Enter for defaults):
+  ...
+```
+
+- The **experiment grouping** section is inserted between camera/calib prompts and trial-matching prompts
+- Blank entry (just Enter) → single experiment named `"default"` — same output as before but routed through `experiments/default/`
+- Non-blank entry → comma-separated keywords; each keyword followed by digits forms an experiment ID (e.g. `PS,BG` → detects `PS18`, `BG03`, etc.)
+- When `experiment_keywords` is non-empty the prompt explains what it will do with an example
+
+**Config file additions** (`setup_config.toml`):
+
+```toml
+[setup]
+source_dir = "/path/to/flat/folder"
+output_dir = "/path/to/new/project"
+camera_names = ["left", "right"]
+calib_keyword = "calib"
+experiment_keywords = ["PS", "BG"]   # new; omit or leave empty for single experiment
+match_strategy = "keyword"
+trial_keyword = "Trial"
+# trial_regex, mtime_window_sec, datestamp_window_sec as before
+```
+
+**Changes to `save_config_toml(config, path)`**:
+- Always write `experiment_keywords` to `[setup]` (write empty list `[]` for single-experiment projects so the key is always present and round-trips correctly)
+
+**Changes to `run_from_config(config_path, ...)`**:
+- Read `setup.get("experiment_keywords", [])` → pass to `SetupConfig`
+
+**Changes to `run_interactive()`**:
+- Add `prompt_optional_list()` helper (like `prompt_list` but allows blank → empty list)
+- Insert experiment keyword prompt between calib_keyword and match_strategy prompts
+- Pass `experiment_keywords` to `SetupConfig`
+
+**`prompt_optional_list(label, hint)` helper**:
+```python
+def prompt_optional_list(label: str, hint: str = "") -> list[str]:
+    """Prompt for comma-separated values; blank entry returns empty list."""
+    raw = input(f"{label}: ").strip()
+    if hint:
+        print(f"  {hint}")
+    items = [s.strip() for s in raw.split(",") if s.strip()]
+    return items
+```
+
+- [x] Add `prompt_optional_list()` helper to `setup_project_cli.py`
+- [x] Insert experiment keyword prompt in `run_interactive()` between calib_keyword and match_strategy steps
+- [x] When keywords are non-empty, print an example showing which filenames map to which experiments
+- [x] Add `experiment_keywords` to `SetupConfig(...)` call in both `run_interactive()` and `run_from_config()`
+- [x] Update `save_config_toml()` to always write `experiment_keywords`
+- [x] Update the docstring at the top of `setup_project_cli.py` to show `experiment_keywords` in the example config block
+- [x] `setup_config.toml` gains: `experiment_keywords = ["PS", "BG"]` (or `[]` for single-experiment)
+
+#### 6.3 `project.py` — hierarchical project loading
+
+- [ ] `Project.load()` expects both `experiments/` subdirectory and global `trials.csv` at the project root; raises `ValueError` if either is absent
+- [ ] Read global `trials.csv` at project root; group by `experiment` column to build per-experiment trial lists
+- [ ] Add `ExperimentInfo` dataclass: `name: str`, `root: Path`, `cameras: list[str]`, `trials: list[TrialInfo]`, `has_calibration: bool`
+- [ ] `project.experiments: dict[str, ExperimentInfo]` — populated from all `experiments/*/` subfolders; trial lists built from global `trials.csv` grouped by experiment
+- [ ] `project.active_experiment: str` — selects which experiment's cameras/trials/calibration are exposed via the existing API; defaults to the first experiment alphabetically
+- [ ] `project.set_experiment(name)` — updates `project.cameras`, `project.trials`, etc. to reflect the chosen experiment; emits `experiment_changed` signal (see 6.4)
+- [ ] `project.video_path(trial, camera)` resolves to `project.root / "experiments" / active_experiment / "videos" / filename`; `project.calibration_path()` resolves to `project.root / "experiments" / active_experiment / "calibration.toml"`
+- [ ] `project.slp_dir` → `project.root / "slp"` (always at project root)
+- [ ] `project.trials_csv_path` → `project.root / "trials.csv"` (global, at project root)
+
+#### 6.4 `state.py` and `MainWindow` — experiment selector
+
+- [ ] `ProjectState` gains `current_experiment: str` and `experiment_changed = Signal(str)` signal
+- [ ] Before reloading on experiment change: auto-save the current `PointsStore` if dirty (`points_store.save_if_dirty()`) to prevent data loss — no auto-save timer exists yet in Phase 6
+- [ ] Changing `current_experiment` reloads: `FrameProvider`, calibration `CameraGroup`, `PointsStore`, trial list; resets `current_trial` to the first trial in the new experiment and `current_frame` to 0
+- [ ] `MainWindow` top bar gains an **Experiment** `QComboBox` (hidden when only one experiment); populated from `project.experiments.keys()`; switching calls `state.set_experiment(name)`
+
+#### 6.5 Fix calibration paths (`calibration_worker.py`, `calibration_view.py`)
+
+The calibration code was implemented targeting the flat layout during Phase 4 and must be updated to use hierarchical paths.
+
+**Dependency note**: only requires 6.3 (`project.active_experiment`) and 6.4 (`ProjectState.current_experiment`) — does **not** require 6.7.
+
+- [ ] `workers/calibration_worker.py` — `DetectionWorker`: change calibration media scan from `project_root / "calibration" / cam_name` to `project_root / "experiments" / active_experiment / "calibration" / cam_name`; add `active_experiment: str` parameter to `DetectionWorker.__init__()` and pass it from `calibration_view.py`
+- [ ] `workers/calibration_worker.py` — `CalibrationWorker`: add same `active_experiment` parameter so it can save `calibration.toml` to the correct path
+- [ ] `widgets/calibration_view.py`: change save path from `self._project.root / "calibration.toml"` to `self._project.root / "experiments" / active_experiment / "calibration.toml"`; read `active_experiment` from `ProjectState.current_experiment`
+
+#### 6.6 `PointsStore` — per-experiment loading and cross-experiment aggregation
+
+- [ ] `PointsStore` loads from `experiments/{name}/points.csv`; row index is `(experiment, trial, frame, instance, bodypart)` (5-level — no `calibration` level)
+- [ ] `PointsStore` stores `self.experiment_name: str`; all mutation methods (`set_point()`, `add_instance()`, etc.) use the full 5-level key `(self.experiment_name, trial, frame, instance, bodypart)` internally — no `xs()` slice needed, avoiding the copy-not-view problem where `xs()` returns a copy so mutations would be silently discarded
+- [ ] Existing 4-level-style API (`get_point(trial, frame, instance, bodypart, camera)` etc.) is preserved: methods prepend `self.experiment_name` when building index keys
+- [ ] Update `INDEX_NAMES` in `points.py` from `["trial", "frame", "instance", "bodypart"]` to `["experiment", "trial", "frame", "instance", "bodypart"]`; update `from_csv()` to use `index_col=[0, 1, 2, 3, 4]`
+- [ ] Update `create_empty()` to accept `experiment_name: str` parameter; all rows get that value in the `experiment` index level
+- [ ] Cross-experiment aggregation: `pd.concat([store.df for store in all_stores])` — no post-processing needed because experiment is stored in the index
+- [ ] Add `PointsStore.load_all_experiments(project) -> pd.DataFrame` convenience method for export
+
+#### 6.7 `setup_project.py` — two-level classification
+
+- [ ] Add `experiment_keywords: list[str]` to `SetupConfig` (default empty → single-experiment project named `"default"`)
+- [ ] Add `ExperimentAssignment` dataclass: `name`, `trials`, `calibration`, `unmatched`, `warnings` (no `slp_files` — slp files are global)
+- [ ] Add `experiments: dict[str, ExperimentAssignment]` and `slp_files: list[Path]` to `FileAssignment` (experiments always populated — at minimum one `"default"` entry; slp_files collects all `.slp` sources regardless of experiment)
+- [ ] Add `_extract_experiment_id(filename, experiment_keywords, camera_names) -> str | None` helper: constructs `(?:kw1|kw2)\d+` pattern, returns the full matched token; returns `"default"` when no keywords given or no match found
+- [ ] Refactor `classify_files()`:
+  1. Assign each file to an experiment using `_extract_experiment_id`; files with no match → `"default"` experiment + warning if keywords were provided
+  2. `.slp` files always assigned to the shared project-level `slp/` list (not per-experiment)
+  3. Within each experiment group: separate calibration vs. data files; strip the experiment identifier from filenames before trial matching
+  4. Apply existing `match_strategy` to stripped stems → per-experiment trial dict
+  5. Populate `assignment.experiments`
+- [ ] Update `execute_setup()`:
+  - Create `experiments/{name}/calibration/{camera}/` for calibration media
+  - Create `experiments/{name}/videos/` folder and move video files there
+  - Create placeholder `experiments/{name}/points.csv` with 5-level row index `(experiment, trial, frame, instance, bodypart)` and correct column MultiIndex
+  - Write global `trials.csv` at project root with `experiment` column and all experiments' trials; strip experiment prefix from trial names (e.g. `PS18_Trial1` → experiment `PS18`, trial `Trial1`)
+  - Move `.slp` files into project-level `slp/` directory
+  - Write shared `project.toml` and `skeleton.json` at project root
+- [ ] Update `preview_assignment()` to show per-experiment trial and calibration counts
+- [ ] Supersedes `split_project_groups()` for the primary workflow; keep `split_project_groups()` for retroactive splitting
+
+---
+
+### Phase 7 — Axis Alignment (optional calibration step)
 
 **Goal**: Let the user re-orient the world coordinate system to a physical reference by clicking points in trial video frames.
 
@@ -1126,12 +1375,12 @@ Two bugs were found and fixed after initial implementation:
 - `widgets/axis_alignment_widget.py` — **not yet created**
 - `widgets/calibration_view.py` — not yet modified to add alignment tab
 
-#### 5.5.1 `load_cameras()` fix (`geometry.py`)
+#### 7.1 `load_cameras()` fix (`geometry.py`)
 
-- [ ] Add `"alignment"` to the skip list in `load_cameras()` alongside `"metadata"`
+- [ ] Check whether `load_cameras()` already skips `"alignment"` sections — the calibration file schema section documents this behavior but the actual skip list in `geometry.py` may only include `"metadata"`; add `"alignment"` to the skip list if not already present
 - [ ] Add `load_alignment(path) -> tuple[np.ndarray, np.ndarray] | None` — reads `R_align` and `origin` from `[alignment]` section; returns `None` if absent
 
-#### 5.5.2 Axis alignment widget (`widgets/axis_alignment_widget.py`)
+#### 7.2 Axis alignment widget (`widgets/axis_alignment_widget.py`)
 
 - [ ] `AxisAlignmentWidget(QWidget)`:
   - Trial selector `QComboBox` + frame navigation (prev/next buttons + frame spinbox)
@@ -1153,7 +1402,7 @@ Two bugs were found and fixed after initial implementation:
     1. Write `[alignment]` section to `calibration.toml` (`save_aligned_calibration()`)
     2. Emit `alignment_saved` signal so `CalibrationView` / `LabelView` can reload calibration
 
-#### 5.5.3 Integrate into calibration view (`widgets/calibration_view.py`)
+#### 7.3 Integrate into calibration view (`widgets/calibration_view.py`)
 
 - [ ] Add "Axis Alignment" as a second tab in `CalibrationView` (alongside the existing board detection / calibration tab)
 - [ ] Instantiate `AxisAlignmentWidget` in the new tab
@@ -1161,11 +1410,11 @@ Two bugs were found and fixed after initial implementation:
 
 ---
 
-### Phase 6 — Export
+### Phase 8 — Export
 
 **Goal**: Export labeled data back to external formats.
 
-#### 6.1 Export view (`widgets/export_view.py`)
+#### 8.1 Export view (`widgets/export_view.py`)
 - [ ] Format dropdown (populated from adapter registry)
 - [ ] Trial selector (all / specific)
 - [ ] Instance type checkboxes (user / predicted)
@@ -1174,10 +1423,11 @@ Two bugs were found and fixed after initial implementation:
 - [ ] "Triangulate All Before Export" checkbox (default on)
 - [ ] "Export" button → batch triangulation if needed → `adapter.save()`
 - [ ] Progress bar during export
+- [ ] Experiment selector (all / specific experiment); "All" uses `PointsStore.load_all_experiments()` for cross-experiment export
 
 ---
 
-### Phase 7 — Polish and robustness
+### Phase 9 — Polish and robustness
 
 - [ ] **Undo/redo**: Command pattern — each point edit creates an `UndoCommand(trial, frame, instance, bodypart, camera, old_value, new_value)` on `QUndoStack`; `Ctrl+Z`/`Ctrl+Shift+Z`
 - [ ] **Auto-save**: `PointsStore` writes `points.csv` every 30s if dirty + on app close; backup to `.points.csv.bak` before overwriting
@@ -1243,11 +1493,31 @@ Two bugs were found and fixed after initial implementation:
             │                      │
             └──────────┬───────────┘
                        ▼
-              6.1 export view
+         6.1 synthetic data generator (hierarchical test_project) ✅
+         6.2 setup_project_cli (experiment keywords prompt) ✅
+                       │
+                       ▼
+         6.3 project.py (hierarchical loading)
+                       │
+                       ▼
+         6.4 state.py + MainWindow (experiment selector)
+                       │
+                       ├──────────────────────┐
+                       ▼                      ▼
+         6.5 fix calibration paths     6.6 PointsStore (5-level index)
+                       │                      │
+                       └──────────┬───────────┘
+                                  ▼
+                   6.7 setup_project.py (two-level classification)
+                                  ▼
+         7.1–7.3 axis alignment (calibration_view tab)
+                       │
+                       ▼
+              8.1 export view
                        │
                        │  ★ MILESTONE: complete app
                        ▼
-                  7.* polish
+                  9.* polish
 ```
 
 ---
@@ -1380,21 +1650,28 @@ seed = 348294                    # RNG seed for reproducible board poses
    - Composite onto the background
 4. **Write output** — Save images as `calibration/{cam_name}/board_{NN:03d}.png`
 
-**Output structure**:
+**Output structure** (after Phase 6.1 hierarchical update):
 
 ```
 test_project/
-├── calibration/
-│   ├── cam1/
-│   │   ├── board_000.png
-│   │   ├── board_001.png
-│   │   └── ...
-│   ├── cam2/
-│   │   └── ...
-│   └── cam3/
-│       └── ...
-├── calibration.toml          # ground-truth (existing, from camera params)
-└── ...                       # other existing outputs
+├── trials.csv                    # global trials table (experiment column)
+├── skeleton.json
+├── project.toml
+├── slp/
+└── experiments/
+    └── default/                  # experiment name from synthetic_config.toml
+        ├── calibration/
+        │   ├── cam1/
+        │   │   ├── board_000.png
+        │   │   ├── board_001.png
+        │   │   └── ...
+        │   ├── cam2/
+        │   │   └── ...
+        │   └── cam3/
+        │       └── ...
+        ├── calibration.toml      # ground-truth (from camera params)
+        ├── points.csv            # ground-truth points (5-level row index)
+        └── videos/               # rendered trial videos
 ```
 
 **Verification** — After generating images, an optional sanity check runs the full aniposelib calibration pipeline on the generated images and compares the recovered camera parameters against the known ground truth:
@@ -1432,7 +1709,9 @@ The `[charuco]` section is optional — if absent, calibration images are not ge
 
 7. **Point storage**: Raw pixel coordinates stored in `points.csv`. Undistortion is applied on the fly when computing epipolar lines and triangulating — never stored. This preserves fidelity to what the user clicked and allows recalculation if calibration is updated.
 
-8. **Multiple calibrations → separate projects**: When trials from different recording sessions require different calibrations (e.g. the camera rig shifted between experiments), create separate label3d projects — one per calibration. A single project has exactly one `calibration.toml`. This keeps the geometry stack simple (no per-trial calibration lookup), keeps `points.csv` in a coherent 3D coordinate frame, and avoids mixing incompatible world frames in the 3D view or downstream analysis. The `SleapAdapter` already handles the cross-project SLP import case: it matches by video basename and silently ignores videos not present in the current project, so a combined-experiment SLP file can be imported into each sub-project independently.
+8. **Always hierarchical layout**: All projects use `experiments/{name}/` subfolders — there is no flat layout. A single-experiment project has exactly one subfolder (`experiments/default/` or named after the experiment). Each experiment has exactly one `calibration.toml`, so the geometry stack (triangulation, epipolar, 3D view) always works with a single `CameraGroup`. The project-level `skeleton.json`, `project.toml`, and `trials.csv` are shared at the project root. `.slp` files live at the project root in `slp/` and are global; the `SleapAdapter` resolves which `(experiment, trial, camera)` each file belongs to by matching video basenames against the global `trials.csv`. `points.csv` is per-experiment with a `(experiment, trial, frame, instance, bodypart)` row index (5-level — no separate `calibration` level, since each experiment has exactly one calibration) — cross-experiment aggregation is plain `pd.concat` with no post-processing.
+
+9. **Trial names are local to each experiment**: The global `trials.csv` has an `experiment` column that disambiguates trial names — `Trial1` in experiment `PS18` is distinct from `Trial1` in experiment `PS19`. The experiment identity comes from the `experiment` column (matching the folder name under `experiments/`), not from the trial name itself. This keeps trial names short and avoids duplication in the UI.
 
 ---
 
@@ -1454,7 +1733,7 @@ Requirements:
   showing the same global frame (mapped to video frame via _start offset).
 - User can step frames with arrow keys or buttons. No playback.
 - Store labels in points.csv: a pandas MultiIndex CSV with row index
-  (trial, frame, instance, bodypart) and column MultiIndex (view, coord).
+  (experiment, trial, frame, instance, bodypart) and column MultiIndex (view, coord).
   Each camera has coords {x, y, xr, yr, state}; the "3d" pseudo-camera has
   {x, y, z}. state ∈ {set, predicted, not_set, occluded}. NaN = missing.
 - Click to place/move points in any camera panel. Full skeleton overlay

@@ -50,7 +50,7 @@ def _draw_corners(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
 
 
 class DetectionWorker(QThread):
-    """Scans calibration/{cam}/ subfolders and detects Charuco corners.
+    """Scans experiments/{active}/calibration/{cam}/ folders and detects Charuco corners.
 
     Emits:
         progress(str)                         — log message
@@ -72,6 +72,7 @@ class DetectionWorker(QThread):
         project_root: Path,
         cam_names: list[str],
         board_params: dict,
+        active_experiment: str = "default",
         skip: int = 20,
         parent=None,
     ):
@@ -79,6 +80,7 @@ class DetectionWorker(QThread):
         self._root = Path(project_root)
         self._cam_names = cam_names
         self._board_params = board_params
+        self._active_experiment = active_experiment
         self._skip = skip
 
     def run(self):
@@ -100,7 +102,7 @@ class DetectionWorker(QThread):
             cam_media: dict[str, list[Path]] = {}
 
             for cam_name in self._cam_names:
-                cam_dir = self._root / "calibration" / cam_name
+                cam_dir = self._root / "experiments" / self._active_experiment / "calibration" / cam_name
                 if not cam_dir.is_dir():
                     self.progress.emit(f"  {cam_name}: no calibration folder, skipping")
                     all_rows[cam_name] = []

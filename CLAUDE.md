@@ -17,12 +17,23 @@ A PySide6 desktop app for 3D point labeling across multiple synchronized calibra
 - **Coordinates stored as raw pixels**; undistortion applied on the fly when needed for geometry
 - **Video sync**: offset is implicit — `cam_start` values in `trials.csv` encode per-camera frame offset, no separate column
 
-## Data files
+## Data files (hierarchical layout — all projects)
 
-- `calibration.toml` — aniposelib `CameraGroup.dump()` format: sections `cam_0`, `cam_1`, …; keys `name`, `size`, `matrix`, `distortions`, `rotation` (Rodrigues), `translation`
-- `videos/trials.csv` — columns `trial, cam0, cam0_start, cam0_end, cam1, …`; video filenames matched by name, not path
-- `points.csv` — pandas MultiIndex CSV; row index `(trial, frame, instance, bodypart)`; column MultiIndex `(view, coord)` where cameras have `{x, y, xr, yr, state}` and `"3d"` pseudo-camera has `{x, y, z}`; `state` ∈ `{set, predicted, not_set, not_visible}`
-- `skeleton.json` — `{nodes, edges, symmetries, node_offsets_cm}`
+```
+project/
+├── project.toml, skeleton.json, trials.csv, slp/
+└── experiments/{name}/
+    ├── calibration/{camera}/, videos/
+    ├── calibration.toml
+    └── points.csv
+```
+
+- `trials.csv` — **global**, at project root; columns `experiment, trial, cam0, cam0_start, cam0_end, cam1, …`; trial names are local to each experiment (disambiguated by the `experiment` column)
+- `experiments/{name}/calibration.toml` — aniposelib `CameraGroup.dump()` format
+- `experiments/{name}/videos/` — video files for that experiment's trials (no trials.csv here)
+- `experiments/{name}/points.csv` — pandas MultiIndex CSV; row index `(experiment, trial, frame, instance, bodypart)` (5-level); column MultiIndex `(view, coord)` where cameras have `{x, y, xr, yr, state}` and `"3d"` pseudo-camera has `{x, y, z}`; `state` ∈ `{set, predicted, not_set, not_visible}`
+- `skeleton.json` — `{nodes, edges, symmetries, node_offsets_cm}` (shared at project root)
+- `slp/` — imported `.slp` files (global, at project root)
 
 ## External dependencies cloned locally (not in repo)
 
@@ -35,7 +46,7 @@ A PySide6 desktop app for 3D point labeling across multiple synchronized calibra
 uv run python generate_synthetic.py synthetic_config.toml
 ```
 
-Writes `test_project/` with two synthetic camera views, known-correct ground truth (`points.csv`), calibration, and `.slp` files. Sanity checks (triangulation, epipolar, reprojection) should all pass at machine precision.
+Writes `test_project/` with two synthetic camera views in `experiments/default/`, known-correct ground truth (`points.csv` with 5-level row index), calibration, and `.slp` files at project root. Sanity checks (triangulation, epipolar, reprojection) should all pass at machine precision.
 
 ## Development
 
@@ -46,4 +57,4 @@ uv run python <script>  # run any script in the project venv
 
 ## Implementation phases
 
-See `DESIGN.md §Implementation Plan`. Current status: Phases 1–5 complete; Phase 5.5 (axis alignment) partially implemented — geometry helpers and CameraPanel pick mode done, UI widget not yet created. Next: finish Phase 5.5 or move to Phase 6 (export view).
+See `DESIGN.md §Implementation Plan`. Current status: Phases 1–5 complete; Phase 6 in progress — 6.1 (hierarchical generator + test_project) and 6.2 (setup_project_cli experiment keywords) done; next is 6.3 (project.py loading) → 6.4 (state/UI) → 6.5 (calibration paths) / 6.6 (PointsStore 5-level index) → 6.7 (setup_project two-level classification). Phase 7 (axis alignment) partially implemented — geometry helpers and CameraPanel pick mode done, UI widget not yet created.

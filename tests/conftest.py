@@ -40,7 +40,7 @@ def skeleton_json_path() -> Path:
 
 @pytest.fixture
 def points_csv_path() -> Path:
-    return TEST_PROJECT / "experiments" / "default" / "points.csv"
+    return TEST_PROJECT / "experiments" / "exp1" / "points.csv"
 
 
 @pytest.fixture

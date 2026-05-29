@@ -40,6 +40,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"label3d — {project.root.name}")
         self.resize(1200, 800)
 
+        # Initialise state's experiment field silently (no signal yet)
+        state._current_experiment = project.active_experiment
+
         # Central widget
         central = QWidget()
         self.setCentralWidget(central)
@@ -47,7 +50,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Top bar: tabs + trial selector
+        # Top bar: tabs + selectors
         top_bar = QWidget()
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(4, 2, 4, 2)
@@ -61,6 +64,21 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self._tabs)
 
         top_layout.addStretch()
+
+        # Experiment selector (hidden when only one experiment)
+        self._exp_label = QLabel("Experiment:")
+        self._exp_combo = QComboBox()
+        for exp_name in sorted(project.experiments.keys()):
+            self._exp_combo.addItem(exp_name)
+        self._exp_combo.setCurrentText(project.active_experiment)
+        _single_experiment = len(project.experiments) <= 1
+        self._exp_label.setVisible(not _single_experiment)
+        self._exp_combo.setVisible(not _single_experiment)
+        self._exp_combo.currentTextChanged.connect(self._on_experiment_combo_changed)
+        top_layout.addWidget(self._exp_label)
+        top_layout.addWidget(self._exp_combo)
+
+        top_layout.addSpacing(12)
 
         # Camera view selector
         top_layout.addWidget(QLabel("View:"))
@@ -126,6 +144,7 @@ class MainWindow(QMainWindow):
         self._setup_menus()
 
         # Connect state signals
+        state.experiment_changed.connect(self._on_experiment_state_changed)
         state.frame_changed.connect(self._on_frame_changed)
         state.points_changed.connect(self._on_points_changed_status)
 
@@ -198,6 +217,32 @@ class MainWindow(QMainWindow):
             self._layout_actions[mode] = action
 
         self._layout_actions[LayoutMode.GRID].setChecked(True)
+
+    # -- Experiment switching ------------------------------------------------
+
+    def _on_experiment_combo_changed(self, name: str):
+        """Called when the user picks a different experiment from the combo."""
+        if not name or name == self._project.active_experiment:
+            return
+        self._state.current_experiment = name  # auto-saves dirty store + emits signal
+
+    def _on_experiment_state_changed(self, name: str):
+        """Reload everything after an experiment switch."""
+        self._project.set_experiment(name)
+        self._state.points_store = self._project.points
+
+        # Repopulate trial combo without triggering _on_trial_changed
+        self._trial_combo.blockSignals(True)
+        self._trial_combo.clear()
+        for trial_name in self._project.trial_names():
+            self._trial_combo.addItem(trial_name)
+        self._trial_combo.blockSignals(False)
+
+        if self._project.trial_names():
+            self._load_trial(self._project.trial_names()[0])
+            self._trial_combo.setCurrentIndex(0)
+
+    # -- Tab switching -------------------------------------------------------
 
     def _on_tab_changed(self, index: int):
         """Switch main content area when tab changes."""
