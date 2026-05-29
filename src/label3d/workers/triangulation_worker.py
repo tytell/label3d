@@ -50,7 +50,7 @@ class TriangulationWorker(QThread):
             if frames is None:
                 # Collect all frames that have any data
                 try:
-                    trial_df = self._store.df.loc[trial]
+                    trial_df = self._store.df.loc[(self._store.experiment_name, trial)]
                     frames = sorted(
                         trial_df.index.get_level_values("frame").unique().tolist()
                     )

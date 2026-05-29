@@ -51,7 +51,7 @@ class SleapAdapter(PoseAdapter):
                 if not matches:
                     continue
 
-                for trial_name, cam_name in matches:
+                for experiment_name, trial_name, cam_name in matches:
                     frame_idx = lf.frame_idx
                     # Adjust frame index by start offset
                     start_col = f"{cam_name}_start"
@@ -84,6 +84,7 @@ class SleapAdapter(PoseAdapter):
                                 y_val = float(y)
 
                             rows.append({
+                                "experiment": experiment_name,
                                 "trial": trial_name,
                                 "frame": global_frame,
                                 "instance": inst_idx,
@@ -123,81 +124,85 @@ class SleapAdapter(PoseAdapter):
             for src, dst in skeleton.edges:
                 sio_skeleton.add_edge(src, dst)
 
-        # Group by trial
-        for trial_name in df.index.get_level_values("trial").unique():
-            trial_df = df.loc[trial_name]
+        # Group by (experiment, trial)
+        for experiment_name in df.index.get_level_values("experiment").unique():
+            exp_df = df.loc[experiment_name]
+            for trial_name in exp_df.index.get_level_values("trial").unique():
+                trial_df = exp_df.loc[trial_name]
 
-            for cam in cameras:
-                if cam not in df.columns.get_level_values(0):
-                    continue
+                for cam in cameras:
+                    if cam not in df.columns.get_level_values(0):
+                        continue
 
-                # Resolve video path for the Video reference
-                video_filename = ""
-                if trials_df is not None:
-                    trial_row = trials_df[trials_df["trial"] == trial_name]
-                    if not trial_row.empty and cam in trial_row.columns:
-                        video_filename = str(trial_row.iloc[0][cam])
+                    # Resolve video path for the Video reference
+                    video_filename = ""
+                    if trials_df is not None:
+                        trial_row = trials_df[trials_df["trial"] == trial_name]
+                        if not trial_row.empty and cam in trial_row.columns:
+                            video_filename = str(trial_row.iloc[0][cam])
 
-                video = sio.Video(filename=video_filename)
-                node_names = [n.name for n in sio_skeleton.nodes]
+                    video = sio.Video(filename=video_filename)
+                    node_names = [n.name for n in sio_skeleton.nodes]
 
-                labeled_frames = []
-                for frame_idx in trial_df.index.get_level_values("frame").unique():
-                    frame_df = trial_df.loc[frame_idx]
-                    instances = []
+                    labeled_frames = []
+                    for frame_idx in trial_df.index.get_level_values("frame").unique():
+                        frame_df = trial_df.loc[frame_idx]
+                        instances = []
 
-                    for inst_idx in frame_df.index.get_level_values("instance").unique():
-                        inst_df = frame_df.loc[inst_idx]
-                        pts = np.full((len(node_names), 2), np.nan, dtype=np.float32)
+                        for inst_idx in frame_df.index.get_level_values("instance").unique():
+                            inst_df = frame_df.loc[inst_idx]
+                            pts = np.full((len(node_names), 2), np.nan, dtype=np.float32)
 
-                        any_set = False
-                        all_predicted = True
-                        for bp_idx, bp in enumerate(node_names):
-                            if bp in inst_df.index:
-                                row = inst_df.loc[bp]
-                                x = row.get((cam, "x"), np.nan)
-                                y = row.get((cam, "y"), np.nan)
-                                state = row.get((cam, "state"), "not_set")
-                                if pd.notna(x) and pd.notna(y):
-                                    pts[bp_idx] = [float(x), float(y)]
-                                if state in ("set", "occluded", "not_set"):
-                                    all_predicted = False
-                                if state == "set":
-                                    any_set = True
+                            any_set = False
+                            all_predicted = True
+                            for bp_idx, bp in enumerate(node_names):
+                                if bp in inst_df.index:
+                                    row = inst_df.loc[bp]
+                                    x = row.get((cam, "x"), np.nan)
+                                    y = row.get((cam, "y"), np.nan)
+                                    state = row.get((cam, "state"), "not_set")
+                                    if pd.notna(x) and pd.notna(y):
+                                        pts[bp_idx] = [float(x), float(y)]
+                                    if state in ("set", "occluded", "not_set"):
+                                        all_predicted = False
+                                    if state == "set":
+                                        any_set = True
 
-                        if all_predicted:
-                            inst = sio.PredictedInstance.from_numpy(
-                                pts, skeleton=sio_skeleton, score=1.0
+                            if all_predicted:
+                                inst = sio.PredictedInstance.from_numpy(
+                                    pts, skeleton=sio_skeleton, score=1.0
+                                )
+                            else:
+                                inst = sio.Instance.from_numpy(
+                                    pts, skeleton=sio_skeleton
+                                )
+                            instances.append(inst)
+
+                        if instances:
+                            lf = sio.LabeledFrame(
+                                video=video, frame_idx=int(frame_idx), instances=instances
                             )
-                        else:
-                            inst = sio.Instance.from_numpy(
-                                pts, skeleton=sio_skeleton
-                            )
-                        instances.append(inst)
+                            labeled_frames.append(lf)
 
-                    if instances:
-                        lf = sio.LabeledFrame(
-                            video=video, frame_idx=int(frame_idx), instances=instances
-                        )
-                        labeled_frames.append(lf)
-
-                if labeled_frames:
-                    labels = sio.Labels(labeled_frames=labeled_frames)
-                    slp_path = output_dir / f"{cam}_{trial_name}.slp"
-                    sio.save_file(labels, str(slp_path))
+                    if labeled_frames:
+                        labels = sio.Labels(labeled_frames=labeled_frames)
+                        slp_path = output_dir / f"{cam}_{trial_name}.slp"
+                        sio.save_file(labels, str(slp_path))
 
 
 def _build_basename_lookup(
     trials: pd.DataFrame, cameras: list[str]
-) -> dict[str, list[tuple[str, str]]]:
-    """Build video_basename -> [(trial_name, camera_name)] lookup."""
-    lookup: dict[str, list[tuple[str, str]]] = {}
+) -> dict[str, list[tuple[str, str, str]]]:
+    """Build video_basename -> [(experiment_name, trial_name, camera_name)] lookup."""
+    lookup: dict[str, list[tuple[str, str, str]]] = {}
+    has_experiment = "experiment" in trials.columns
     for _, row in trials.iterrows():
+        experiment_name = str(row["experiment"]) if has_experiment else "default"
         trial_name = str(row["trial"])
         for cam in cameras:
             if cam in row and pd.notna(row[cam]):
                 basename = Path(str(row[cam])).name
-                lookup.setdefault(basename, []).append((trial_name, cam))
+                lookup.setdefault(basename, []).append((experiment_name, trial_name, cam))
     return lookup
 
 
@@ -216,10 +221,10 @@ def _rows_to_dataframe(
         index = pd.MultiIndex.from_tuples([], names=INDEX_NAMES)
         return pd.DataFrame(index=index, columns=columns)
 
-    # Collect unique (trial, frame, instance, bodypart) keys
+    # Collect unique (experiment, trial, frame, instance, bodypart) keys
     keys: dict[tuple, dict[str, tuple]] = {}
     for r in rows:
-        key = (r["trial"], r["frame"], r["instance"], r["bodypart"])
+        key = (r.get("experiment", "default"), r["trial"], r["frame"], r["instance"], r["bodypart"])
         if key not in keys:
             keys[key] = {}
         keys[key][r["camera"]] = (r["x"], r["y"], r["state"])

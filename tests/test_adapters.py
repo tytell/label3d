@@ -284,8 +284,8 @@ class TestBasenameLookup:
         lookup = _build_basename_lookup(trials, ["cam1", "cam2"])
         assert "cam1_t1.mp4" in lookup
         assert "cam2_t1.mp4" in lookup
-        assert lookup["cam1_t1.mp4"] == [("t1", "cam1")]
-        assert lookup["cam2_t1.mp4"] == [("t1", "cam2")]
+        assert lookup["cam1_t1.mp4"] == [("default", "t1", "cam1")]
+        assert lookup["cam2_t1.mp4"] == [("default", "t1", "cam2")]
 
     def test_nan_filename_skipped(self):
         trials = pd.DataFrame({

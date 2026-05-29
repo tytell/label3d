@@ -282,22 +282,34 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
 def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     """Create project folder structure, move or copy files, write trials.csv and project.toml.
 
+    Output layout:
+      project/
+        project.toml
+        trials.csv               ← experiment + trial columns
+        slp/
+        experiments/
+          default/
+            videos/
+            calibration/{cam}/
+
     Returns the output directory path.
     """
     out = config.output_dir
     if out.exists():
         raise FileExistsError(f"Output directory already exists: {out}")
 
+    experiment_name = "default"
+    exp_dir = out / "experiments" / experiment_name
     transfer = shutil.copy2 if config.copy_files else shutil.move
 
     # Create directory structure
-    videos_dir = out / "videos"
+    videos_dir = exp_dir / "videos"
     videos_dir.mkdir(parents=True)
 
     # Move/copy calibration files
     if assignment.calibration:
         for cam, files in assignment.calibration.items():
-            cam_dir = out / "calibration" / cam
+            cam_dir = exp_dir / "calibration" / cam
             cam_dir.mkdir(parents=True, exist_ok=True)
             for f in files:
                 transfer(str(f), str(cam_dir / f.name))
@@ -306,7 +318,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     trials_rows = []
     for trial_name in sorted(assignment.trials):
         cam_files = assignment.trials[trial_name]
-        row: dict[str, str | int] = {"trial": trial_name}
+        row: dict[str, str | int] = {"experiment": experiment_name, "trial": trial_name}
         for cam in config.camera_names:
             if cam in cam_files:
                 src = cam_files[cam]
@@ -321,14 +333,13 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
                 row[f"{cam}_end"] = ""
         trials_rows.append(row)
 
-    # Write trials.csv
+    # Write trials.csv at project root with experiment column
     if trials_rows:
-        # Build column order: trial, cam0, cam0_start, cam0_end, cam1, ...
-        columns = ["trial"]
+        columns = ["experiment", "trial"]
         for cam in config.camera_names:
             columns.extend([cam, f"{cam}_start", f"{cam}_end"])
         df = pd.DataFrame(trials_rows, columns=columns)
-        df.to_csv(videos_dir / "trials.csv", index=False)
+        df.to_csv(out / "trials.csv", index=False)
 
     # Move/copy SLP files
     if assignment.slp_files:

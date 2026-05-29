@@ -211,13 +211,13 @@ class TestDeletePoint:
         store.set_point("t", 0, 0, "snout", "cam1", 1.0, 2.0)
         store.set_reprojected("t", 0, 0, "snout", "cam1", 1.1, 2.1)
         store.delete_point("t", 0, 0, "snout", "cam1")
-        row = store.df.loc[("t", 0, 0, "snout")]
+        row = store.df.loc[("default", "t", 0, 0, "snout")]
         assert pd.isna(row[("cam1", "xr")])
         assert pd.isna(row[("cam1", "yr")])
 
     def test_row_still_exists(self, store_with_one_point):
         store_with_one_point.delete_point("trial1", 0, 0, "snout", "cam1")
-        assert ("trial1", 0, 0, "snout") in store_with_one_point.df.index
+        assert ("default", "trial1", 0, 0, "snout") in store_with_one_point.df.index
 
     def test_nonexistent_is_noop(self, empty_store):
         empty_store.delete_point("trial1", 99, 0, "snout", "cam1")  # no error
@@ -330,7 +330,7 @@ class TestInstanceLevel:
 class TestThreeDApi:
     def test_set_3d_stores_values(self, store_with_one_point):
         store_with_one_point.set_3d("trial1", 0, 0, "snout", 1.0, 2.0, 3.0)
-        row = store_with_one_point.df.loc[("trial1", 0, 0, "snout")]
+        row = store_with_one_point.df.loc[("default", "trial1", 0, 0, "snout")]
         assert abs(float(row[("3d", "x")]) - 1.0) < 1e-9
         assert abs(float(row[("3d", "y")]) - 2.0) < 1e-9
         assert abs(float(row[("3d", "z")]) - 3.0) < 1e-9
@@ -346,7 +346,7 @@ class TestThreeDApi:
 
     def test_set_reprojected_stores_values(self, store_with_one_point):
         store_with_one_point.set_reprojected("trial1", 0, 0, "snout", "cam1", 101.0, 201.0)
-        row = store_with_one_point.df.loc[("trial1", 0, 0, "snout")]
+        row = store_with_one_point.df.loc[("default", "trial1", 0, 0, "snout")]
         assert abs(float(row[("cam1", "xr")]) - 101.0) < 1e-9
         assert abs(float(row[("cam1", "yr")]) - 201.0) < 1e-9
 

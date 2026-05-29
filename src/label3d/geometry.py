@@ -497,7 +497,7 @@ def triangulate_frame(
 
     # Collect bodyparts for this instance
     try:
-        inst_df = points_store.df.loc[(trial, frame, instance)]
+        inst_df = points_store.df.loc[(points_store.experiment_name, trial, frame, instance)]
         bodyparts = inst_df.index.tolist()
     except KeyError:
         return {}

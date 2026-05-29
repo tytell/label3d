@@ -57,4 +57,4 @@ uv run python <script>  # run any script in the project venv
 
 ## Implementation phases
 
-See `DESIGN.md §Implementation Plan`. Current status: Phases 1–5 complete; Phase 6 in progress — 6.1 (hierarchical generator + test_project) and 6.2 (setup_project_cli experiment keywords) done; next is 6.3 (project.py loading) → 6.4 (state/UI) → 6.5 (calibration paths) / 6.6 (PointsStore 5-level index) → 6.7 (setup_project two-level classification). Phase 7 (axis alignment) partially implemented — geometry helpers and CameraPanel pick mode done, UI widget not yet created.
+See `DESIGN.md §Implementation Plan`. Current status: Phases 1–6 complete. Phase 7 (axis alignment) partially implemented — geometry helpers and CameraPanel pick mode done, UI widget not yet created.

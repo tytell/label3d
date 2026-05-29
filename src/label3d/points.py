@@ -1,6 +1,6 @@
 """PointsStore: DataFrame wrapper for 2D + 3D labeled points.
 
-The DataFrame uses a 4-level row MultiIndex (trial, frame, instance, bodypart)
+The DataFrame uses a 5-level row MultiIndex (experiment, trial, frame, instance, bodypart)
 and a 2-level column MultiIndex (view, coord).  Real cameras have coords
 {x, y, xr, yr, state}; the "3d" pseudo-camera has coords {x, y, z}.
 """
@@ -17,7 +17,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 CAM_COORDS = ["x", "y", "xr", "yr", "state"]
 THREE_D_COORDS = ["x", "y", "z"]
-INDEX_NAMES = ["trial", "frame", "instance", "bodypart"]
+INDEX_NAMES = ["experiment", "trial", "frame", "instance", "bodypart"]
 
 
 class PointData(NamedTuple):
@@ -48,6 +48,7 @@ class PointsStore(QObject):
         self._df = df
         self._dirty = False
         self._save_path: Path | None = None
+        self._experiment_name: str = ""
 
         # Frame cache: {(instance, bodypart): {camera: PointData}}
         self._cache: dict[tuple[int, str], dict[str, PointData]] = {}
@@ -68,6 +69,10 @@ class PointsStore(QObject):
         return self._dirty
 
     @property
+    def experiment_name(self) -> str:
+        return self._experiment_name
+
+    @property
     def cameras(self) -> list[str]:
         """Return real camera names (excluding '3d')."""
         top_level = self._df.columns.get_level_values(0).unique().tolist()
@@ -81,7 +86,12 @@ class PointsStore(QObject):
     # -- Construction ----------------------------------------------------------
 
     @classmethod
-    def create_empty(cls, cameras: list[str], bodyparts: list[str]) -> PointsStore:
+    def create_empty(
+        cls,
+        cameras: list[str],
+        bodyparts: list[str],
+        experiment_name: str = "default",
+    ) -> PointsStore:
         """Create an empty PointsStore with the right column structure."""
         col_tuples = []
         for cam in cameras:
@@ -95,19 +105,22 @@ class PointsStore(QObject):
             [], names=INDEX_NAMES
         )
         df = pd.DataFrame(index=index, columns=columns)
-        return cls(df)
+        store = cls(df)
+        store._experiment_name = experiment_name
+        return store
 
     @classmethod
     def from_csv(cls, path: Path) -> PointsStore:
         """Load from points.csv."""
-        df = pd.read_csv(path, header=[0, 1], index_col=[0, 1, 2, 3])
+        df = pd.read_csv(path, header=[0, 1], index_col=[0, 1, 2, 3, 4])
         df.index.names = INDEX_NAMES
         # Ensure frame and instance are int
         df.index = df.index.set_levels(
-            [df.index.levels[0],  # trial: keep as-is
-             df.index.levels[1].astype(int),  # frame
-             df.index.levels[2].astype(int),  # instance
-             df.index.levels[3]],  # bodypart: keep as-is
+            [df.index.levels[0],          # experiment: keep as-is
+             df.index.levels[1],          # trial: keep as-is
+             df.index.levels[2].astype(int),  # frame
+             df.index.levels[3].astype(int),  # instance
+             df.index.levels[4]],         # bodypart: keep as-is
         )
         # Ensure numeric columns are float
         for cam in df.columns.get_level_values(0).unique():
@@ -116,6 +129,9 @@ class PointsStore(QObject):
                     df[(cam, coord)] = pd.to_numeric(df[(cam, coord)], errors="coerce")
         store = cls(df)
         store._save_path = path
+        # Infer experiment name from first row
+        exp_levels = df.index.get_level_values("experiment").unique()
+        store._experiment_name = str(exp_levels[0]) if len(exp_levels) > 0 else "default"
         return store
 
     def to_csv(self, path: Path | None = None) -> None:
@@ -137,16 +153,15 @@ class PointsStore(QObject):
         self._cache.clear()
         self._cache_key = key
         try:
-            frame_df = self._df.loc[(trial, frame)]
+            frame_df = self._df.loc[(self._experiment_name, trial, frame)]
         except KeyError:
             return
         cameras = self.cameras
         for idx_tuple, row in frame_df.iterrows():
-            # idx_tuple is (instance, bodypart) when sliced to trial+frame
+            # idx_tuple is (instance, bodypart) when sliced to experiment+trial+frame
             if isinstance(idx_tuple, tuple):
                 instance, bodypart = idx_tuple
             else:
-                # Single row — idx_tuple is the bodypart, instance from level
                 continue
             cam_data = {}
             for cam in cameras:
@@ -200,7 +215,7 @@ class PointsStore(QObject):
         state: str = "set",
     ) -> None:
         """Place or move a point.  Creates the row if needed."""
-        idx = (trial, frame, instance, bodypart)
+        idx = (self._experiment_name, trial, frame, instance, bodypart)
         if idx not in self._df.index:
             self._ensure_row(idx)
         self._df.at[idx, (camera, "x")] = x
@@ -213,7 +228,7 @@ class PointsStore(QObject):
         self, trial: str, frame: int, instance: int, bodypart: str, camera: str
     ) -> None:
         """Mark a point as not visible (keeps coords, excluded from epipolar/triangulation)."""
-        idx = (trial, frame, instance, bodypart)
+        idx = (self._experiment_name, trial, frame, instance, bodypart)
         if idx not in self._df.index:
             self._ensure_row(idx)
         self._df.at[idx, (camera, "state")] = "not_visible"
@@ -224,7 +239,7 @@ class PointsStore(QObject):
         self, trial: str, frame: int, instance: int, bodypart: str, camera: str
     ) -> None:
         """Remove a point (set to not_set with NaN coords)."""
-        idx = (trial, frame, instance, bodypart)
+        idx = (self._experiment_name, trial, frame, instance, bodypart)
         if idx not in self._df.index:
             return
         self._df.at[idx, (camera, "x")] = np.nan
@@ -240,14 +255,14 @@ class PointsStore(QObject):
     def get_frame_data(self, trial: str, frame: int) -> pd.DataFrame:
         """Get all data for one frame.  Returns empty DataFrame if none."""
         try:
-            return self._df.loc[(trial, frame)]
+            return self._df.loc[(self._experiment_name, trial, frame)]
         except KeyError:
             return pd.DataFrame(columns=self._df.columns)
 
     def get_instances(self, trial: str, frame: int) -> list[int]:
         """Return instance indices present in this frame."""
         try:
-            frame_df = self._df.loc[(trial, frame)]
+            frame_df = self._df.loc[(self._experiment_name, trial, frame)]
             return sorted(frame_df.index.get_level_values("instance").unique().tolist())
         except KeyError:
             return []
@@ -259,7 +274,7 @@ class PointsStore(QObject):
         existing = self.get_instances(trial, frame)
         new_idx = max(existing) + 1 if existing else 0
         for bp in bodyparts:
-            self._ensure_row((trial, frame, new_idx, bp))
+            self._ensure_row((self._experiment_name, trial, frame, new_idx, bp))
         self._mark_dirty()
         self._invalidate_cache(trial, frame)
         return new_idx
@@ -267,9 +282,9 @@ class PointsStore(QObject):
     def delete_instance(self, trial: str, frame: int, instance: int) -> None:
         """Delete all rows for an instance in a frame."""
         try:
-            to_drop = self._df.loc[(trial, frame, instance)].index
+            to_drop = self._df.loc[(self._experiment_name, trial, frame, instance)].index
             full_idx = pd.MultiIndex.from_tuples(
-                [(trial, frame, instance, bp) for bp in to_drop],
+                [(self._experiment_name, trial, frame, instance, bp) for bp in to_drop],
                 names=INDEX_NAMES,
             )
             self._df = self._df.drop(full_idx)
@@ -285,12 +300,12 @@ class PointsStore(QObject):
         existing = self.get_instances(trial, dst_frame)
         new_idx = max(existing) + 1 if existing else 0
         try:
-            src_data = self._df.loc[(trial, src_frame, src_instance)]
+            src_data = self._df.loc[(self._experiment_name, trial, src_frame, src_instance)]
         except KeyError:
             return new_idx
         for bodypart in src_data.index:
             row = src_data.loc[bodypart]
-            new_key = (trial, dst_frame, new_idx, bodypart)
+            new_key = (self._experiment_name, trial, dst_frame, new_idx, bodypart)
             self._ensure_row(new_key)
             for col in self._df.columns:
                 self._df.at[new_key, col] = row[col]
@@ -311,7 +326,7 @@ class PointsStore(QObject):
         z: float,
     ) -> None:
         """Set triangulated 3D coordinates."""
-        idx = (trial, frame, instance, bodypart)
+        idx = (self._experiment_name, trial, frame, instance, bodypart)
         if idx not in self._df.index:
             return
         self._df.at[idx, ("3d", "x")] = x
@@ -330,7 +345,7 @@ class PointsStore(QObject):
         yr: float,
     ) -> None:
         """Set reprojected coordinates for a camera."""
-        idx = (trial, frame, instance, bodypart)
+        idx = (self._experiment_name, trial, frame, instance, bodypart)
         if idx not in self._df.index:
             return
         self._df.at[idx, (camera, "xr")] = xr

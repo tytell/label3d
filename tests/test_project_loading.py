@@ -29,7 +29,6 @@ class TestProjectLoad:
         assert proj.skeleton is not None
         assert proj.skeleton.nodes == ["snout", "left_eye", "dorsal"]
 
-    @pytest.mark.xfail(reason="PointsStore.from_csv uses 4-level index; pending Phase 6.6")
     def test_loads_points(self):
         proj = Project.load(TEST_PROJECT)
         assert proj.points is not None

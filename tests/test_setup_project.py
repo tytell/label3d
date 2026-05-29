@@ -367,17 +367,18 @@ class TestExecuteSetup:
         result = execute_setup(basic_config, assignment)
 
         assert result.is_dir()
-        assert (result / "videos").is_dir()
-        assert (result / "videos" / "trials.csv").is_file()
-        assert (result / "calibration" / "left").is_dir()
-        assert (result / "calibration" / "right").is_dir()
+        assert (result / "experiments" / "default" / "videos").is_dir()
+        assert (result / "trials.csv").is_file()
+        assert (result / "experiments" / "default" / "calibration" / "left").is_dir()
+        assert (result / "experiments" / "default" / "calibration" / "right").is_dir()
         assert (result / "project.toml").is_file()
 
     def test_trials_csv_content(self, basic_config):
         assignment = classify_files(basic_config)
         execute_setup(basic_config, assignment)
 
-        df = pd.read_csv(basic_config.output_dir / "videos" / "trials.csv")
+        df = pd.read_csv(basic_config.output_dir / "trials.csv")
+        assert "experiment" in df.columns
         assert "trial" in df.columns
         assert "left" in df.columns
         assert "right" in df.columns
@@ -395,7 +396,7 @@ class TestExecuteSetup:
         assert not any(f.name == "left_trial001.mp4" for f in remaining)
 
         # Files should exist in project
-        videos = list((basic_config.output_dir / "videos").iterdir())
+        videos = list((basic_config.output_dir / "experiments" / "default" / "videos").iterdir())
         video_names = [f.name for f in videos]
         assert "left_trial001.mp4" in video_names
         assert "right_trial002.mp4" in video_names
@@ -404,7 +405,9 @@ class TestExecuteSetup:
         assignment = classify_files(basic_config)
         execute_setup(basic_config, assignment)
 
-        calib_left = list((basic_config.output_dir / "calibration" / "left").iterdir())
+        calib_left = list(
+            (basic_config.output_dir / "experiments" / "default" / "calibration" / "left").iterdir()
+        )
         assert len(calib_left) == 1
         assert calib_left[0].name == "calib_left.mp4"
 
@@ -621,8 +624,8 @@ class TestSplitDetection:
             execute_setup(sub_config, sub_assignment)
         assert (tmp_path / "PS18").is_dir()
         assert (tmp_path / "PS19").is_dir()
-        assert (tmp_path / "PS18" / "videos" / "trials.csv").is_file()
-        assert (tmp_path / "PS19" / "videos" / "trials.csv").is_file()
+        assert (tmp_path / "PS18" / "trials.csv").is_file()
+        assert (tmp_path / "PS19" / "trials.csv").is_file()
 
     def test_preview_shows_split_summary(self, split_source_dir, tmp_path):
         config = SetupConfig(

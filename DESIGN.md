@@ -1303,22 +1303,22 @@ def prompt_optional_list(label: str, hint: str = "") -> list[str]:
 
 #### 6.3 `project.py` — hierarchical project loading
 
-- [ ] `Project.load()` expects both `experiments/` subdirectory and global `trials.csv` at the project root; raises `ValueError` if either is absent
-- [ ] Read global `trials.csv` at project root; group by `experiment` column to build per-experiment trial lists
-- [ ] Add `ExperimentInfo` dataclass: `name: str`, `root: Path`, `cameras: list[str]`, `trials: list[TrialInfo]`, `has_calibration: bool`
-- [ ] `project.experiments: dict[str, ExperimentInfo]` — populated from all `experiments/*/` subfolders; trial lists built from global `trials.csv` grouped by experiment
-- [ ] `project.active_experiment: str` — selects which experiment's cameras/trials/calibration are exposed via the existing API; defaults to the first experiment alphabetically
-- [ ] `project.set_experiment(name)` — updates `project.cameras`, `project.trials`, etc. to reflect the chosen experiment; emits `experiment_changed` signal (see 6.4)
-- [ ] `project.video_path(trial, camera)` resolves to `project.root / "experiments" / active_experiment / "videos" / filename`; `project.calibration_path()` resolves to `project.root / "experiments" / active_experiment / "calibration.toml"`
-- [ ] `project.slp_dir` → `project.root / "slp"` (always at project root)
-- [ ] `project.trials_csv_path` → `project.root / "trials.csv"` (global, at project root)
+- [x] `Project.load()` expects both `experiments/` subdirectory and global `trials.csv` at the project root; raises `ValueError` if either is absent
+- [x] Read global `trials.csv` at project root; group by `experiment` column to build per-experiment trial lists
+- [x] Add `ExperimentInfo` dataclass: `name: str`, `root: Path`, `cameras: list[str]`, `trials: list[TrialInfo]`, `has_calibration: bool`
+- [x] `project.experiments: dict[str, ExperimentInfo]` — populated from all `experiments/*/` subfolders; trial lists built from global `trials.csv` grouped by experiment
+- [x] `project.active_experiment: str` — selects which experiment's cameras/trials/calibration are exposed via the existing API; defaults to the first experiment alphabetically
+- [x] `project.set_experiment(name)` — updates `project.cameras`, `project.trials`, etc. to reflect the chosen experiment; emits `experiment_changed` signal (see 6.4)
+- [x] `project.video_path(trial, camera)` resolves to `project.root / "experiments" / active_experiment / "videos" / filename`; `project.calibration_path()` resolves to `project.root / "experiments" / active_experiment / "calibration.toml"`
+- [x] `project.slp_dir` → `project.root / "slp"` (always at project root)
+- [x] `project.trials_csv_path` → `project.root / "trials.csv"` (global, at project root)
 
 #### 6.4 `state.py` and `MainWindow` — experiment selector
 
-- [ ] `ProjectState` gains `current_experiment: str` and `experiment_changed = Signal(str)` signal
-- [ ] Before reloading on experiment change: auto-save the current `PointsStore` if dirty (`points_store.save_if_dirty()`) to prevent data loss — no auto-save timer exists yet in Phase 6
-- [ ] Changing `current_experiment` reloads: `FrameProvider`, calibration `CameraGroup`, `PointsStore`, trial list; resets `current_trial` to the first trial in the new experiment and `current_frame` to 0
-- [ ] `MainWindow` top bar gains an **Experiment** `QComboBox` (hidden when only one experiment); populated from `project.experiments.keys()`; switching calls `state.set_experiment(name)`
+- [x] `ProjectState` gains `current_experiment: str` and `experiment_changed = Signal(str)` signal
+- [x] Before reloading on experiment change: auto-save the current `PointsStore` if dirty (`points_store.save_if_dirty()`) to prevent data loss — no auto-save timer exists yet in Phase 6
+- [x] Changing `current_experiment` reloads: `FrameProvider`, calibration `CameraGroup`, `PointsStore`, trial list; resets `current_trial` to the first trial in the new experiment and `current_frame` to 0
+- [x] `MainWindow` top bar gains an **Experiment** `QComboBox` (hidden when only one experiment); populated from `project.experiments.keys()`; switching calls `state.set_experiment(name)`
 
 #### 6.5 Fix calibration paths (`calibration_worker.py`, `calibration_view.py`)
 
@@ -1326,41 +1326,41 @@ The calibration code was implemented targeting the flat layout during Phase 4 an
 
 **Dependency note**: only requires 6.3 (`project.active_experiment`) and 6.4 (`ProjectState.current_experiment`) — does **not** require 6.7.
 
-- [ ] `workers/calibration_worker.py` — `DetectionWorker`: change calibration media scan from `project_root / "calibration" / cam_name` to `project_root / "experiments" / active_experiment / "calibration" / cam_name`; add `active_experiment: str` parameter to `DetectionWorker.__init__()` and pass it from `calibration_view.py`
-- [ ] `workers/calibration_worker.py` — `CalibrationWorker`: add same `active_experiment` parameter so it can save `calibration.toml` to the correct path
-- [ ] `widgets/calibration_view.py`: change save path from `self._project.root / "calibration.toml"` to `self._project.root / "experiments" / active_experiment / "calibration.toml"`; read `active_experiment` from `ProjectState.current_experiment`
+- [x] `workers/calibration_worker.py` — `DetectionWorker`: change calibration media scan from `project_root / "calibration" / cam_name` to `project_root / "experiments" / active_experiment / "calibration" / cam_name`; add `active_experiment: str` parameter to `DetectionWorker.__init__()` and pass it from `calibration_view.py`
+- [x] `workers/calibration_worker.py` — `CalibrationWorker`: add same `active_experiment` parameter so it can save `calibration.toml` to the correct path
+- [x] `widgets/calibration_view.py`: change save path from `self._project.root / "calibration.toml"` to `self._project.root / "experiments" / active_experiment / "calibration.toml"`; read `active_experiment` from `ProjectState.current_experiment`
 
 #### 6.6 `PointsStore` — per-experiment loading and cross-experiment aggregation
 
-- [ ] `PointsStore` loads from `experiments/{name}/points.csv`; row index is `(experiment, trial, frame, instance, bodypart)` (5-level — no `calibration` level)
-- [ ] `PointsStore` stores `self.experiment_name: str`; all mutation methods (`set_point()`, `add_instance()`, etc.) use the full 5-level key `(self.experiment_name, trial, frame, instance, bodypart)` internally — no `xs()` slice needed, avoiding the copy-not-view problem where `xs()` returns a copy so mutations would be silently discarded
-- [ ] Existing 4-level-style API (`get_point(trial, frame, instance, bodypart, camera)` etc.) is preserved: methods prepend `self.experiment_name` when building index keys
-- [ ] Update `INDEX_NAMES` in `points.py` from `["trial", "frame", "instance", "bodypart"]` to `["experiment", "trial", "frame", "instance", "bodypart"]`; update `from_csv()` to use `index_col=[0, 1, 2, 3, 4]`
-- [ ] Update `create_empty()` to accept `experiment_name: str` parameter; all rows get that value in the `experiment` index level
-- [ ] Cross-experiment aggregation: `pd.concat([store.df for store in all_stores])` — no post-processing needed because experiment is stored in the index
-- [ ] Add `PointsStore.load_all_experiments(project) -> pd.DataFrame` convenience method for export
+- [x] `PointsStore` loads from `experiments/{name}/points.csv`; row index is `(experiment, trial, frame, instance, bodypart)` (5-level — no `calibration` level)
+- [x] `PointsStore` stores `self.experiment_name: str`; all mutation methods (`set_point()`, `add_instance()`, etc.) use the full 5-level key `(self.experiment_name, trial, frame, instance, bodypart)` internally — no `xs()` slice needed, avoiding the copy-not-view problem where `xs()` returns a copy so mutations would be silently discarded
+- [x] Existing 4-level-style API (`get_point(trial, frame, instance, bodypart, camera)` etc.) is preserved: methods prepend `self.experiment_name` when building index keys
+- [x] Update `INDEX_NAMES` in `points.py` from `["trial", "frame", "instance", "bodypart"]` to `["experiment", "trial", "frame", "instance", "bodypart"]`; update `from_csv()` to use `index_col=[0, 1, 2, 3, 4]`
+- [x] Update `create_empty()` to accept `experiment_name: str` parameter; all rows get that value in the `experiment` index level
+- [x] Cross-experiment aggregation: `pd.concat([store.df for store in all_stores])` — no post-processing needed because experiment is stored in the index
+- [x] Add `PointsStore.load_all_experiments(project) -> pd.DataFrame` convenience method for export
 
 #### 6.7 `setup_project.py` — two-level classification
 
-- [ ] Add `experiment_keywords: list[str]` to `SetupConfig` (default empty → single-experiment project named `"default"`)
-- [ ] Add `ExperimentAssignment` dataclass: `name`, `trials`, `calibration`, `unmatched`, `warnings` (no `slp_files` — slp files are global)
-- [ ] Add `experiments: dict[str, ExperimentAssignment]` and `slp_files: list[Path]` to `FileAssignment` (experiments always populated — at minimum one `"default"` entry; slp_files collects all `.slp` sources regardless of experiment)
-- [ ] Add `_extract_experiment_id(filename, experiment_keywords, camera_names) -> str | None` helper: constructs `(?:kw1|kw2)\d+` pattern, returns the full matched token; returns `"default"` when no keywords given or no match found
-- [ ] Refactor `classify_files()`:
+- [x] Add `experiment_keywords: list[str]` to `SetupConfig` (default empty → single-experiment project named `"default"`)
+- [x] Add `ExperimentAssignment` dataclass: `name`, `trials`, `calibration`, `unmatched`, `warnings` (no `slp_files` — slp files are global)
+- [x] Add `experiments: dict[str, ExperimentAssignment]` and `slp_files: list[Path]` to `FileAssignment` (experiments always populated — at minimum one `"default"` entry; slp_files collects all `.slp` sources regardless of experiment)
+- [x] Add `_extract_experiment_id(filename, experiment_keywords, camera_names) -> str | None` helper: constructs `(?:kw1|kw2)\d+` pattern, returns the full matched token; returns `"default"` when no keywords given or no match found
+- [x] Refactor `classify_files()`:
   1. Assign each file to an experiment using `_extract_experiment_id`; files with no match → `"default"` experiment + warning if keywords were provided
   2. `.slp` files always assigned to the shared project-level `slp/` list (not per-experiment)
   3. Within each experiment group: separate calibration vs. data files; strip the experiment identifier from filenames before trial matching
   4. Apply existing `match_strategy` to stripped stems → per-experiment trial dict
   5. Populate `assignment.experiments`
-- [ ] Update `execute_setup()`:
+- [x] Update `execute_setup()`:
   - Create `experiments/{name}/calibration/{camera}/` for calibration media
   - Create `experiments/{name}/videos/` folder and move video files there
   - Create placeholder `experiments/{name}/points.csv` with 5-level row index `(experiment, trial, frame, instance, bodypart)` and correct column MultiIndex
   - Write global `trials.csv` at project root with `experiment` column and all experiments' trials; strip experiment prefix from trial names (e.g. `PS18_Trial1` → experiment `PS18`, trial `Trial1`)
   - Move `.slp` files into project-level `slp/` directory
   - Write shared `project.toml` and `skeleton.json` at project root
-- [ ] Update `preview_assignment()` to show per-experiment trial and calibration counts
-- [ ] Supersedes `split_project_groups()` for the primary workflow; keep `split_project_groups()` for retroactive splitting
+- [x] Update `preview_assignment()` to show per-experiment trial and calibration counts
+- [x] Supersedes `split_project_groups()` for the primary workflow; keep `split_project_groups()` for retroactive splitting
 
 ---
 
@@ -1497,18 +1497,18 @@ The calibration code was implemented targeting the flat layout during Phase 4 an
          6.2 setup_project_cli (experiment keywords prompt) ✅
                        │
                        ▼
-         6.3 project.py (hierarchical loading)
+         6.3 project.py (hierarchical loading) ✅
                        │
                        ▼
-         6.4 state.py + MainWindow (experiment selector)
+         6.4 state.py + MainWindow (experiment selector) ✅
                        │
                        ├──────────────────────┐
                        ▼                      ▼
-         6.5 fix calibration paths     6.6 PointsStore (5-level index)
+         6.5 fix calibration paths ✅   6.6 PointsStore (5-level index) ✅
                        │                      │
                        └──────────┬───────────┘
                                   ▼
-                   6.7 setup_project.py (two-level classification)
+                   6.7 setup_project.py (two-level classification) ✅
                                   ▼
          7.1–7.3 axis alignment (calibration_view tab)
                        │

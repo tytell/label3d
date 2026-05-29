@@ -201,7 +201,7 @@ class View3D(QWidget):
             return
 
         try:
-            inst_df = points_store.df.loc[(trial, frame)]
+            inst_df = points_store.df.loc[(points_store.experiment_name, trial, frame)]
         except KeyError:
             self._clear_points()
             return

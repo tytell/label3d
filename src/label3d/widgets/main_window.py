@@ -320,7 +320,7 @@ class MainWindow(QMainWindow):
         errors = []
         for inst in store.get_instances(trial, frame):
             try:
-                inst_df = store.df.loc[trial].loc[frame].loc[inst]
+                inst_df = store.df.loc[(store.experiment_name, trial, frame, inst)]
             except KeyError:
                 continue
             for bp in inst_df.index:
