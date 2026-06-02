@@ -27,13 +27,21 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+import logging
+
+logger = logging.getLogger(__name__)
 
 from label3d.geometry import EpipolarCache, cameras_from_cgroup
 from label3d.project import Project
 from label3d.video import VideoReader
 from label3d.widgets.camera_grid import CameraGrid
 from label3d.widgets.charuco_overlay import CharucoOverlay
-from label3d.workers.calibration_worker import CalibrationWorker, DetectionWorker
+from label3d.workers.calibration_worker import (
+    IMAGE_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    CalibrationWorker,
+    DetectionWorker,
+)
 
 # Default Charuco board params (from DESIGN.md)
 _CHARUCO_DEFAULTS = {
@@ -44,6 +52,85 @@ _CHARUCO_DEFAULTS = {
     "marker_bits": 4,
     "dict_size": 50,
 }
+
+
+def _scan_raw_media(
+    project_root: Path,
+    exp_name: str,
+    cam_names: list[str],
+    skip: int = 20,
+) -> tuple[list[dict], dict, dict]:
+    """Scan calibration dirs and build a raw frame list for display before detection.
+
+    Returns (merged_rows, cam_sizes, cam_media) ready for CalibFrameProvider.setup().
+    """
+    cam_media: dict[str, list[Path]] = {}
+    cam_sizes: dict[str, tuple[int, int]] = {}
+
+    for cam in cam_names:
+        cam_dir = project_root / "experiments" / exp_name / "calibration" / cam
+        if not cam_dir.is_dir():
+            cam_media[cam] = []
+            continue
+        files = sorted(cam_dir.iterdir())
+        image_files = [f for f in files if f.suffix.lower() in IMAGE_EXTENSIONS]
+        video_files = [f for f in files if f.suffix.lower() in VIDEO_EXTENSIONS]
+        media = image_files or video_files
+        cam_media[cam] = media
+        if media:
+            first = media[0]
+            ext = first.suffix.lower()
+            if ext in IMAGE_EXTENSIONS:
+                img = cv2.imread(str(first))
+                if img is not None:
+                    h, w = img.shape[:2]
+                    cam_sizes[cam] = (w, h)
+            elif ext in VIDEO_EXTENSIONS:
+                cap = cv2.VideoCapture(str(first))
+                if cap.isOpened():
+                    cam_sizes[cam] = (
+                        int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                        int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                    )
+                    cap.release()
+
+    is_image = any(
+        cam_media.get(c) and cam_media[c][0].suffix.lower() in IMAGE_EXTENSIONS
+        for c in cam_names
+    )
+
+    if is_image:
+        max_n = max((len(cam_media.get(c, [])) for c in cam_names), default=0)
+        merged: list[dict] = []
+        for i in range(max_n):
+            row: dict = {}
+            for cam in cam_names:
+                files = cam_media.get(cam, [])
+                if i < len(files):
+                    row[cam] = {"fname": files[i]}
+            merged.append(row)
+    else:
+        cam_frame_seqs: dict[str, list[tuple[int, int]]] = {}
+        for cam in cam_names:
+            files = cam_media.get(cam, [])
+            seq: list[tuple[int, int]] = []
+            for vi, vpath in enumerate(files):
+                cap = cv2.VideoCapture(str(vpath))
+                total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                cap.release()
+                seq.extend((vi, fi) for fi in range(0, total, skip))
+            cam_frame_seqs[cam] = seq
+        max_n = max((len(s) for s in cam_frame_seqs.values()), default=0)
+        merged = []
+        for i in range(max_n):
+            row = {}
+            for cam in cam_names:
+                seq = cam_frame_seqs.get(cam, [])
+                if i < len(seq):
+                    row[cam] = {"framenum": seq[i]}
+            merged.append(row)
+
+    return merged, cam_sizes, cam_media
 
 
 # ── Frame provider for calibration images / video frames ─────────────────────
@@ -90,7 +177,10 @@ class CalibFrameProvider:
         fname = row.get("fname")
         if fname:
             img = cv2.imread(str(fname))
-            return img if img is not None else blank
+            if img is None:
+                logger.warning(f"Could not read image {fname} for camera {camera}")
+                return blank
+            return img
 
         # Video — framenum is (video_idx, frame_in_video)
         framenum = row.get("framenum")
@@ -308,6 +398,22 @@ class CalibrationView(QWidget):
                 overlay = CharucoOverlay(panel.scene(), cam)
                 panel.charuco_overlay = overlay
                 self._charuco_overlays[cam] = overlay
+
+        # Pre-populate frame provider so images appear before corner detection
+        raw_merged, raw_sizes, raw_media = _scan_raw_media(
+            project.root, project.active_experiment, project.cameras, self._skip_spin.value()
+        )
+        if raw_merged:
+            self._cam_sizes = raw_sizes
+            self._cam_media = raw_media
+            self._calib_provider.setup(raw_merged, raw_sizes, raw_media)
+            self._show_frame(0)
+            self._update_frame_nav()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not event.spontaneous() and self._calib_provider.n_frames() > 0:
+            self._show_frame(self._current_frame)
 
     # ── Board params ──────────────────────────────────────────────────────
 
