@@ -113,6 +113,19 @@ class LabelView(QWidget):
         self._update_all_overlays()
         self._update_3d_view()
 
+    # -- Experiment reload -----------------------------------------------------
+
+    def reload_for_experiment(self) -> None:
+        """Reload calibration data for the new active experiment."""
+        calib_path = self._project.calibration_path()
+        if calib_path.exists():
+            self._cameras = load_cameras(calib_path)
+            self._epipolar_cache = EpipolarCache(self._cameras)
+        else:
+            self._cameras = {}
+            self._epipolar_cache = None
+        self._view_3d.set_cameras(self._cameras)
+
     # -- Overlay updates -------------------------------------------------------
 
     def _update_all_overlays(self):

@@ -230,6 +230,8 @@ class MainWindow(QMainWindow):
         """Reload everything after an experiment switch."""
         self._project.set_experiment(name)
         self._state.points_store = self._project.points
+        self._label_view.reload_for_experiment()
+        self._calibration_view.reload_for_experiment()
 
         # Repopulate trial combo without triggering _on_trial_changed
         self._trial_combo.blockSignals(True)

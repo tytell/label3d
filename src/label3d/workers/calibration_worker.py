@@ -21,6 +21,8 @@ _log = logging.getLogger(__name__)
 from aniposelib.boards import CharucoBoard, merge_rows
 from aniposelib.cameras import Camera, CameraGroup
 
+from label3d.calibration_io import compute_frame_errors
+
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".cine"}
 
@@ -250,7 +252,7 @@ class CalibrationWorker(QThread):
 
             # ── Per-corner reprojection errors ─────────────────────────────
             self.progress.emit("Computing per-corner reprojection errors...")
-            frame_errors = self._compute_frame_errors(
+            _, frame_errors = compute_frame_errors(
                 cgroup, board, rows_list, self._cam_names
             )
 
@@ -259,103 +261,3 @@ class CalibrationWorker(QThread):
         except Exception as exc:
             self.error_occurred.emit(str(exc))
 
-    @staticmethod
-    def _compute_frame_errors(
-        cgroup,
-        board,
-        rows_list: list[list],
-        cam_names: list[str],
-    ) -> dict:
-        """Compute per-corner reprojection errors for each merged detection frame.
-
-        For each camera in each merged frame:
-          1. Collect detected 2D corners and matching 3D board positions.
-          2. SolvePnP to get board pose in that camera.
-          3. Project all board corners back.
-          4. Error = distance between projected and detected positions.
-
-        Returns:
-            dict[merged_frame_idx, dict[cam_name, ndarray(N_corners)]]
-            Values are NaN where the corner was not detected.
-        """
-        try:
-            merged = merge_rows(rows_list, cam_names=cam_names)
-        except Exception as exc:
-            _log.warning("_compute_frame_errors: merge_rows failed: %s", exc)
-            return {}
-
-        try:
-            objp_all = board.get_object_points().reshape(-1, 3).astype(np.float64)
-        except Exception as exc:
-            _log.warning("_compute_frame_errors: get_object_points failed: %s", exc)
-            return {}
-
-        frame_errors: dict[int, dict[str, np.ndarray]] = {}
-        n_corners = len(objp_all)
-
-        for fi, merged_row in enumerate(merged):
-            frame_errors[fi] = {}
-
-            for cam_name, cam in zip(cam_names, cgroup.cameras):
-                errors = np.full(n_corners, np.nan)
-
-                if cam_name not in merged_row:
-                    frame_errors[fi][cam_name] = errors
-                    continue
-
-                row = merged_row[cam_name]
-                filled = row.get("filled")
-                if filled is None:
-                    frame_errors[fi][cam_name] = errors
-                    continue
-
-                pts2d = np.asarray(filled, dtype=np.float64).reshape(-1, 2)
-                mask = ~np.any(np.isnan(pts2d), axis=1)
-                if np.sum(mask) < 4:
-                    frame_errors[fi][cam_name] = errors
-                    continue
-
-                K = np.array(cam.get_camera_matrix(), dtype=np.float64)
-                dist = np.array(cam.get_distortions(), dtype=np.float64)
-
-                objp_det = objp_all[mask]
-                imgp_det = pts2d[mask].reshape(-1, 1, 2)
-
-                try:
-                    ok, rvec, tvec = cv2.solvePnP(objp_det, imgp_det, K, dist)
-                except Exception as exc:
-                    _log.warning("solvePnP raised for %s frame %d: %s", cam_name, fi, exc)
-                    ok = False
-
-                if not ok:
-                    # Fallback: use pose estimated during calibrate_rows
-                    rvec_raw = row.get("rvec")
-                    tvec_raw = row.get("tvec")
-                    if rvec_raw is None or tvec_raw is None:
-                        _log.debug("solvePnP failed and no fallback rvec for %s frame %d", cam_name, fi)
-                        frame_errors[fi][cam_name] = errors
-                        continue
-                    try:
-                        rvec = np.asarray(rvec_raw, dtype=np.float64).reshape(3, 1)
-                        tvec = np.asarray(tvec_raw, dtype=np.float64).reshape(3, 1)
-                    except Exception:
-                        frame_errors[fi][cam_name] = errors
-                        continue
-
-                try:
-                    projected, _ = cv2.projectPoints(objp_all, rvec, tvec, K, dist)
-                    projected = projected.reshape(-1, 2)
-                except Exception as exc:
-                    _log.warning("projectPoints failed for %s frame %d: %s", cam_name, fi, exc)
-                    frame_errors[fi][cam_name] = errors
-                    continue
-
-                for j in range(n_corners):
-                    if not np.isnan(pts2d[j, 0]):
-                        dx = projected[j, 0] - pts2d[j, 0]
-                        dy = projected[j, 1] - pts2d[j, 1]
-                        errors[j] = float(np.sqrt(dx * dx + dy * dy))
-
-                frame_errors[fi][cam_name] = errors
-
-        return frame_errors

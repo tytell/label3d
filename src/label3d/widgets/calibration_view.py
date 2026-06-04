@@ -30,8 +30,10 @@ from PySide6.QtWidgets import (
 import logging
 logger = logging.getLogger(__name__)
 
-from aniposelib.boards import merge_rows
+from aniposelib.boards import CharucoBoard, merge_rows
+from aniposelib.cameras import CameraGroup
 
+from label3d.calibration_io import compute_frame_errors, load_corners, save_corners
 from label3d.geometry import EpipolarCache, cameras_from_cgroup
 from label3d.project import Project
 from label3d.video import VideoReader
@@ -308,12 +310,9 @@ class CalibrationView(QWidget):
         btn_row = QHBoxLayout()
         self._detect_btn = QPushButton("Detect Corners")
         self._calibrate_btn = QPushButton("Run Calibration")
-        self._save_btn = QPushButton("Save")
         self._calibrate_btn.setEnabled(False)
-        self._save_btn.setEnabled(False)
         btn_row.addWidget(self._detect_btn)
         btn_row.addWidget(self._calibrate_btn)
-        btn_row.addWidget(self._save_btn)
         left_layout.addLayout(btn_row)
 
         # Overall error label
@@ -377,7 +376,6 @@ class CalibrationView(QWidget):
         # ── Connect buttons ───────────────────────────────────────────────
         self._detect_btn.clicked.connect(self._on_detect)
         self._calibrate_btn.clicked.connect(self._on_calibrate)
-        self._save_btn.clicked.connect(self._on_save)
         self._first_btn.clicked.connect(self._go_first)
         self._prev_btn.clicked.connect(self._go_prev)
         self._next_btn.clicked.connect(self._go_next)
@@ -435,7 +433,6 @@ class CalibrationView(QWidget):
             return
         self._detect_btn.setEnabled(False)
         self._calibrate_btn.setEnabled(False)
-        self._save_btn.setEnabled(False)
         self._all_rows = None
         self._merged_rows = []
         self._frame_errors = {}
@@ -473,6 +470,16 @@ class CalibrationView(QWidget):
         self._cam_sizes = cam_sizes
         self._cam_media = cam_media
 
+        # Save corners for later reload
+        exp_dir = self._project.root / "experiments" / self._project.active_experiment
+        for cam in self._project.cameras:
+            cam_dir = exp_dir / "calibration" / cam
+            if cam_dir.is_dir():
+                try:
+                    save_corners(cam_dir, all_rows.get(cam, []))
+                except Exception as exc:
+                    self._log_msg(f"  Warning: could not save corners for {cam}: {exc}")
+
         # Merge rows across cameras
         try:
             rows_list = [all_rows.get(c, []) for c in self._project.cameras]
@@ -505,7 +512,6 @@ class CalibrationView(QWidget):
         if self._calibration_worker and self._calibration_worker.isRunning():
             return
         self._calibrate_btn.setEnabled(False)
-        self._save_btn.setEnabled(False)
         self._log_msg("=== Calibration started ===")
 
         self._calibration_worker = CalibrationWorker(
@@ -520,37 +526,136 @@ class CalibrationView(QWidget):
         self._calibration_worker.start()
 
     def _on_calibrate_finished(self, cgroup, mean_error: float, frame_errors: dict):
-        self._cgroup = cgroup
         self._frame_errors = frame_errors
         self._error_label.setText(f"Reprojection error: {mean_error:.3f} px")
+        self._apply_calibration(cgroup)
+        self._log_msg("=== Calibration complete ===")
 
-        # Build epipolar cache from calibrated CameraGroup
+        out_path = self._project.calibration_path()
+        try:
+            cgroup.dump(str(out_path))
+            self._log_msg(f"Saved: {out_path}")
+        except Exception as exc:
+            self._log_msg(f"  Warning: could not save calibration: {exc}")
+
+        self._show_frame(self._current_frame)
+        self._calibrate_btn.setEnabled(True)
+
+    # ── Calibration helpers ───────────────────────────────────────────────
+
+    def _apply_calibration(self, cgroup) -> None:
+        """Store a calibrated CameraGroup and rebuild the epipolar cache."""
+        self._cgroup = cgroup
         try:
             cam_params = cameras_from_cgroup(cgroup)
             self._epipolar_cache = EpipolarCache(cam_params)
         except Exception as exc:
             self._log_msg(f"  Warning: could not build epipolar cache: {exc}")
 
-        self._log_msg("=== Calibration complete ===")
-
-        # Refresh current frame with error coloring
-        self._show_frame(self._current_frame)
-
-        self._calibrate_btn.setEnabled(True)
-        self._save_btn.setEnabled(True)
-
-    # ── Save ──────────────────────────────────────────────────────────────
-
-    def _on_save(self):
-        if self._cgroup is None:
+    def _apply_frame_errors(self, cgroup) -> None:
+        """Compute per-frame reprojection errors from loaded corners + calibration."""
+        if not self._all_rows or cgroup is None:
             return
-        out_path = self._project.root / "experiments" / self._project.active_experiment / "calibration.toml"
-        try:
-            self._cgroup.dump(str(out_path))
-            self._log_msg(f"Saved: {out_path}")
-            self._save_btn.setEnabled(False)
-        except Exception as exc:
-            self._on_error(str(exc))
+        bp = self._board_params()
+        board = CharucoBoard(
+            squaresX=bp["squares_x"],
+            squaresY=bp["squares_y"],
+            square_length=bp["square_length"],
+            marker_length=bp["marker_length"],
+            marker_bits=bp["marker_bits"],
+            dict_size=bp["dict_size"],
+        )
+        rows_list = [self._all_rows.get(cam, []) for cam in self._project.cameras]
+        mean_error, self._frame_errors = compute_frame_errors(
+            cgroup, board, rows_list, self._project.cameras
+        )
+        self._error_label.setText(f"Reprojection error: {mean_error:.3f} px")
+
+    # ── Experiment reload ─────────────────────────────────────────────────
+
+    def reload_for_experiment(self) -> None:
+        """Reset all calibration state and reload media for the new active experiment."""
+        for worker in (self._detection_worker, self._calibration_worker):
+            if worker is not None and worker.isRunning():
+                worker.quit()
+                worker.wait()
+
+        self._all_rows = None
+        self._merged_rows = []
+        self._frame_errors = {}
+        self._cgroup = None
+        self._epipolar_cache = None
+        self._current_frame = 0
+
+        self._error_label.setText("Reprojection error: —")
+        for lbl in self._cam_count_labels.values():
+            lbl.setText("—")
+        self._calibrate_btn.setEnabled(False)
+        self._clear_overlays()
+
+        # Always scan raw media to get cam_sizes and cam_media
+        raw_merged, raw_sizes, raw_media = _scan_raw_media(
+            self._project.root,
+            self._project.active_experiment,
+            self._project.cameras,
+            self._skip_spin.value(),
+        )
+        self._cam_sizes = raw_sizes
+        self._cam_media = raw_media
+
+        # Try loading saved corners per camera
+        exp_dir = self._project.root / "experiments" / self._project.active_experiment
+        loaded_rows: dict[str, list] = {}
+        for cam in self._project.cameras:
+            rows = load_corners(exp_dir / "calibration" / cam)
+            if rows is not None:
+                loaded_rows[cam] = rows
+
+        has_corners = any(len(v) > 0 for v in loaded_rows.values())
+
+        if has_corners:
+            self._all_rows = loaded_rows
+            # Recompute filled arrays (set during detection, not stored in CSV)
+            bp = self._board_params()
+            board = CharucoBoard(
+                squaresX=bp["squares_x"],
+                squaresY=bp["squares_y"],
+                square_length=bp["square_length"],
+                marker_length=bp["marker_length"],
+                marker_bits=bp["marker_bits"],
+                dict_size=bp["dict_size"],
+            )
+            for rows in loaded_rows.values():
+                board.fill_points_rows(rows)
+            try:
+                rows_list = [loaded_rows.get(c, []) for c in self._project.cameras]
+                self._merged_rows = merge_rows(rows_list, cam_names=self._project.cameras)
+            except Exception as exc:
+                self._log_msg(f"  Warning: could not merge loaded corners: {exc}")
+                self._merged_rows = []
+            for cam, rows in loaded_rows.items():
+                lbl = self._cam_count_labels.get(cam)
+                if lbl and rows:
+                    lbl.setText(str(len(rows)))
+            self._calibrate_btn.setEnabled(bool(self._merged_rows))
+            # Show only detected frames, consistent with post-detection behavior
+            self._calib_provider.setup(self._merged_rows, raw_sizes, raw_media)
+        else:
+            self._calib_provider.setup(raw_merged, raw_sizes, raw_media)
+
+        # Load existing calibration to show reprojection errors
+        calib_path = self._project.calibration_path()
+        if calib_path.exists() and has_corners:
+            try:
+                cgroup = CameraGroup.load(str(calib_path))  # type: ignore[arg-type]
+                self._apply_calibration(cgroup)
+                self._apply_frame_errors(cgroup)
+            except Exception as exc:
+                self._log_msg(f"  Warning: could not load calibration: {exc}")
+
+        if self._calib_provider.n_frames() > 0:
+            self._show_frame(0)
+        self._update_frame_nav()
 
     # ── Frame navigation ──────────────────────────────────────────────────
 
