@@ -44,6 +44,8 @@ class FileAssignment:
     calibration: dict[str, list[Path]] = field(default_factory=dict)
     # trial_name -> {camera_name: slp_path}
     slp_files: dict[str, dict[str, Path]] = field(default_factory=dict)
+    # trial_name -> experiment_name (populated when experiment_keywords are set)
+    trial_experiment: dict[str, str] = field(default_factory=dict)
     # files that couldn't be assigned
     unmatched: list[Path] = field(default_factory=list)
     # warnings generated during classification
@@ -182,6 +184,17 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         assignment, calib_videos, calib_images, data_videos, config
     )
 
+    # Assign trials to experiments using experiment_keywords
+    if config.experiment_keywords:
+        for trial_name, cam_files in assignment.trials.items():
+            if cam_files:
+                first_file = next(iter(cam_files.values()))
+                assignment.trial_experiment[trial_name] = _identify_experiment(
+                    first_file.name, config.experiment_keywords
+                )
+            else:
+                assignment.trial_experiment[trial_name] = "default"
+
     return assignment
 
 
@@ -224,17 +237,35 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
             )
         lines.append("")
 
-    # Trials
+    # Trials — grouped by experiment when experiment_keywords are set
     if assignment.trials:
-        lines.append(f"Trials ({len(assignment.trials)}):")
-        for trial_name in sorted(assignment.trials):
-            cam_files = assignment.trials[trial_name]
-            lines.append(f"  {trial_name}:")
-            for cam in config.camera_names:
-                if cam in cam_files:
-                    lines.append(f"    {cam}: {cam_files[cam].name}")
-                else:
-                    lines.append(f"    {cam}: (missing)")
+        if assignment.trial_experiment:
+            exp_groups: dict[str, list[str]] = {}
+            for tn, exp in assignment.trial_experiment.items():
+                exp_groups.setdefault(exp, []).append(tn)
+            lines.append(
+                f"Trials ({len(assignment.trials)}) across {len(exp_groups)} experiment(s):"
+            )
+            for exp_name in sorted(exp_groups):
+                lines.append(f"  [{exp_name}]")
+                for trial_name in sorted(exp_groups[exp_name]):
+                    cam_files = assignment.trials[trial_name]
+                    lines.append(f"    {trial_name}:")
+                    for cam in config.camera_names:
+                        if cam in cam_files:
+                            lines.append(f"      {cam}: {cam_files[cam].name}")
+                        else:
+                            lines.append(f"      {cam}: (missing)")
+        else:
+            lines.append(f"Trials ({len(assignment.trials)}):")
+            for trial_name in sorted(assignment.trials):
+                cam_files = assignment.trials[trial_name]
+                lines.append(f"  {trial_name}:")
+                for cam in config.camera_names:
+                    if cam in cam_files:
+                        lines.append(f"    {cam}: {cam_files[cam].name}")
+                    else:
+                        lines.append(f"    {cam}: (missing)")
     else:
         lines.append("Trials: none found")
     lines.append("")
@@ -298,40 +329,58 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     if out.exists():
         raise FileExistsError(f"Output directory already exists: {out}")
 
-    experiment_name = "default"
-    exp_dir = out / "experiments" / experiment_name
     transfer = shutil.copy2 if config.copy_files else shutil.move
 
-    # Create directory structure
-    videos_dir = exp_dir / "videos"
-    videos_dir.mkdir(parents=True)
+    # Group trials by experiment
+    if assignment.trial_experiment:
+        exp_trials: dict[str, list[str]] = {}
+        for trial_name, exp in assignment.trial_experiment.items():
+            exp_trials.setdefault(exp, []).append(trial_name)
+    else:
+        exp_trials = {"default": sorted(assignment.trials)}
 
-    # Move/copy calibration files
-    if assignment.calibration:
-        for cam, files in assignment.calibration.items():
+    # Assign calibration files to experiments.
+    # When calibration_groups has per-experiment groups, match each group prefix
+    # to an experiment keyword; otherwise all calibration goes to the first experiment.
+    exp_calib: dict[str, dict[str, list[Path]]] = {exp: {} for exp in exp_trials}
+    if assignment.calibration_groups and config.experiment_keywords:
+        for prefix, cam_dict in assignment.calibration_groups.items():
+            exp = _identify_experiment(prefix, config.experiment_keywords)
+            if exp in exp_calib:
+                exp_calib[exp] = cam_dict
+    elif assignment.calibration:
+        first_exp = next(iter(exp_trials))
+        exp_calib[first_exp] = {cam: list(files) for cam, files in assignment.calibration.items()}
+
+    # Create directory structure and move/copy files per experiment
+    trials_rows: list[dict] = []
+    for exp_name in sorted(exp_trials):
+        exp_dir = out / "experiments" / exp_name
+        videos_dir = exp_dir / "videos"
+        videos_dir.mkdir(parents=True)
+
+        for cam, files in exp_calib.get(exp_name, {}).items():
             cam_dir = exp_dir / "calibration" / cam
             cam_dir.mkdir(parents=True, exist_ok=True)
             for f in files:
                 transfer(str(f), str(cam_dir / f.name))
 
-    # Move/copy data videos and build trials.csv rows
-    trials_rows = []
-    for trial_name in sorted(assignment.trials):
-        cam_files = assignment.trials[trial_name]
-        row: dict[str, str | int] = {"experiment": experiment_name, "trial": trial_name}
-        for cam in config.camera_names:
-            if cam in cam_files:
-                src = cam_files[cam]
-                dst = videos_dir / src.name
-                transfer(str(src), str(dst))
-                row[cam] = src.name
-                row[f"{cam}_start"] = 0
-                row[f"{cam}_end"] = ""
-            else:
-                row[cam] = ""
-                row[f"{cam}_start"] = ""
-                row[f"{cam}_end"] = ""
-        trials_rows.append(row)
+        for trial_name in sorted(exp_trials[exp_name]):
+            cam_files = assignment.trials[trial_name]
+            row: dict[str, str | int] = {"experiment": exp_name, "trial": trial_name}
+            for cam in config.camera_names:
+                if cam in cam_files:
+                    src = cam_files[cam]
+                    dst = videos_dir / src.name
+                    transfer(str(src), str(dst))
+                    row[cam] = src.name
+                    row[f"{cam}_start"] = 0
+                    row[f"{cam}_end"] = ""
+                else:
+                    row[cam] = ""
+                    row[f"{cam}_start"] = ""
+                    row[f"{cam}_end"] = ""
+            trials_rows.append(row)
 
     # Write trials.csv at project root with experiment column
     if trials_rows:
@@ -414,6 +463,15 @@ def write_project_toml(
 
 
 # --- Internal helpers ---
+
+
+def _identify_experiment(filename: str, experiment_keywords: list[str]) -> str:
+    """Return the first experiment keyword found in filename (case-insensitive), or 'default'."""
+    filename_lower = filename.lower()
+    for kw in experiment_keywords:
+        if kw.lower() in filename_lower:
+            return kw
+    return "default"
 
 
 def _identify_camera(filename: str, camera_names: list[str]) -> str | None:
@@ -524,21 +582,6 @@ def _extract_trial_key_datestamp(
     return None
 
 
-def _extract_trial_key_keyword(filename: str, trial_keyword: str) -> str | None:
-    """Extract a trial key using a keyword-number pattern (e.g. Trial8).
-
-    Returns everything from the start of the stem up to and including the
-    keyword+number match, stripped of leading/trailing separators.
-    For example: 'PS20_Trial8_Ventral_H264' with keyword 'Trial' → 'PS20_Trial8'.
-    """
-    stem = Path(filename).stem
-    pattern = re.compile(re.escape(trial_keyword) + r"\d+", re.IGNORECASE)
-    m = pattern.search(stem)
-    if m is None:
-        return None
-    key = stem[: m.end()].strip("_- ")
-    return key if key else None
-
 
 def _match_by_keyword(
     files: list[tuple[str, Path]],
@@ -549,14 +592,19 @@ def _match_by_keyword(
     The trial key is the portion of the stem up to and including the
     keyword+number (e.g. 'PS20_Trial8'), so experiment prefixes are
     preserved and different experiments with the same trial number are kept
-    separate.
+    separate.  The camera name is stripped from the stem first so that a
+    camera prefix (e.g. 'cam1_PS18_Trial1.mp4') does not contaminate the key.
     """
     key_groups: dict[str, dict[str, Path]] = {}
     for camera, filepath in files:
-        key = _extract_trial_key_keyword(filepath.name, trial_keyword)
-        if key is None:
+        stem = re.sub(re.escape(camera), "", filepath.stem, flags=re.IGNORECASE).strip("_- ")
+        pattern = re.compile(re.escape(trial_keyword) + r"\d+", re.IGNORECASE)
+        m = pattern.search(stem)
+        if m is None:
             continue
-        key_groups.setdefault(key, {})[camera] = filepath
+        key = stem[: m.end()].strip("_- ")
+        if key:
+            key_groups.setdefault(key, {})[camera] = filepath
     return key_groups
 
 
