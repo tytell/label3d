@@ -192,7 +192,10 @@ def main():
         # Charuco calibration images (per-experiment since cameras differ)
         if charuco_cfg and not args.no_charuco:
             print("  Generating Charuco calibration images...")
-            generate_charuco_images(charuco_cfg, cameras, experiment_dir)
+            generate_charuco_images(
+                charuco_cfg, cameras, experiment_dir,
+                experiment_name=exp_name, calib_keyword="calib",
+            )
 
         # Sanity checks
         run_sanity_checks(cameras, all_pts_3d, all_projected, node_names, experiment_dir)

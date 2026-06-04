@@ -270,7 +270,8 @@ def write_flat_folder(
             if src.exists():
                 shutil.copy2(str(src), str(flat_dir / f"{cam_name}.slp"))
 
-    # --- Copy calibration images from each experiment, prefixed with exp name ---
+    # --- Copy calibration images from each experiment ---
+    # Files are already named {calib_keyword}_{exp}_{cam}_board_NNN.png, so copy as-is.
     for exp in experiments:
         exp_name = exp["name"]
         calib_dir = project_dir / "experiments" / exp_name / "calibration"
@@ -280,8 +281,7 @@ def write_flat_folder(
                 if cam_calib.is_dir():
                     for img in sorted(cam_calib.iterdir()):
                         if img.is_file():
-                            new_name = f"{calib_keyword}_{exp_name}_{cam_name}_{img.name}"
-                            shutil.copy2(str(img), str(flat_dir / new_name))
+                            shutil.copy2(str(img), str(flat_dir / img.name))
 
     # --- Write setup_config.toml ---
     exp_names = [e["name"] for e in experiments]

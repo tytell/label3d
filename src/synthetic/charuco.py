@@ -229,10 +229,19 @@ def _render_board_in_camera(
     return output
 
 
-def generate_charuco_images(charuco_cfg: dict, cameras: dict, output_dir: Path):
+def generate_charuco_images(
+    charuco_cfg: dict,
+    cameras: dict,
+    output_dir: Path,
+    experiment_name: str = "",
+    calib_keyword: str = "calib",
+):
     """Generate synthetic Charuco board calibration images for all cameras.
 
-    Writes images to output_dir/calibration/{cam_name}/board_NNN.png.
+    Images are written to output_dir/calibration/{cam_name}/ with filenames
+    {calib_keyword}_{experiment_name}_{cam_name}_board_NNN.png, matching the
+    flat folder naming convention so they can be copied without renaming.
+
     Board dimensions in the config (square_length, marker_length) are in mm;
     they are converted to cm for 3D placement since the project uses cm throughout.
     """
@@ -250,6 +259,9 @@ def generate_charuco_images(charuco_cfg: dict, cameras: dict, output_dir: Path):
     poses = _compute_board_poses(charuco_cfg, cameras, rng)
 
     cal_dir = output_dir / "calibration"
+
+    prefix_parts = [p for p in (calib_keyword, experiment_name) if p]
+    prefix = "_".join(prefix_parts)
 
     for cam_name, cam in cameras.items():
         cam_dir = cal_dir / cam_name
@@ -282,7 +294,7 @@ def generate_charuco_images(charuco_cfg: dict, cameras: dict, output_dir: Path):
                 print(f"  WARNING: board pose {pi} fully outside {cam_name}, rendering anyway")
 
             img = _render_board_in_camera(board_img, corners_3d, cam, bg_color)
-            img_path = cam_dir / f"board_{pi:03d}.png"
+            img_path = cam_dir / f"{prefix}_{cam_name}_board_{pi:03d}.png"
             cv2.imwrite(str(img_path), img)
 
         print(f"  {cam_dir}/ ({len(poses)} images)")
@@ -306,8 +318,8 @@ def _verify_charuco_detection(charuco_cfg: dict, cameras: dict, cal_dir: Path):
     for cam_name in cameras:
         cam_dir = cal_dir / cam_name
         cam_detected = 0
-        for pi in range(num_images):
-            img_path = cam_dir / f"board_{pi:03d}.png"
+        img_paths = sorted(cam_dir.glob("*.png")) if cam_dir.is_dir() else []
+        for img_path in img_paths:
             img = cv2.imread(str(img_path))
             if img is None:
                 continue
