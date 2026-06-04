@@ -15,6 +15,12 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
+import logging
+_log = logging.getLogger(__name__)
+
+from aniposelib.boards import CharucoBoard, merge_rows
+from aniposelib.cameras import Camera, CameraGroup
+
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".cine"}
 
@@ -85,8 +91,6 @@ class DetectionWorker(QThread):
 
     def run(self):
         try:
-            from aniposelib.boards import CharucoBoard
-
             bp = self._board_params
             board = CharucoBoard(
                 squaresX=bp["squares_x"],
@@ -201,7 +205,7 @@ class CalibrationWorker(QThread):
     """
 
     progress = Signal(str)
-    finished = Signal(object, float, dict)  # CameraGroup, mean_error_px, frame_errors
+    finished = Signal(object, float, object)  # CameraGroup, mean_error_px, frame_errors
     error_occurred = Signal(str)
 
     def __init__(
@@ -220,9 +224,6 @@ class CalibrationWorker(QThread):
 
     def run(self):
         try:
-            from aniposelib.boards import CharucoBoard, merge_rows
-            from aniposelib.cameras import Camera, CameraGroup
-
             bp = self._board_params
             board = CharucoBoard(
                 squaresX=bp["squares_x"],
@@ -277,17 +278,16 @@ class CalibrationWorker(QThread):
             dict[merged_frame_idx, dict[cam_name, ndarray(N_corners)]]
             Values are NaN where the corner was not detected.
         """
-        from aniposelib.boards import merge_rows as _merge_rows
-
         try:
-            merged = _merge_rows(rows_list, cam_names=cam_names)
-        except Exception:
+            merged = merge_rows(rows_list, cam_names=cam_names)
+        except Exception as exc:
+            _log.warning("_compute_frame_errors: merge_rows failed: %s", exc)
             return {}
 
-        # Get all 3D board corner positions (shape N x 3)
         try:
             objp_all = board.get_object_points().reshape(-1, 3).astype(np.float64)
-        except Exception:
+        except Exception as exc:
+            _log.warning("_compute_frame_errors: get_object_points failed: %s", exc)
             return {}
 
         frame_errors: dict[int, dict[str, np.ndarray]] = {}
@@ -321,13 +321,34 @@ class CalibrationWorker(QThread):
                 objp_det = objp_all[mask]
                 imgp_det = pts2d[mask].reshape(-1, 1, 2)
 
-                ok, rvec, tvec = cv2.solvePnP(objp_det, imgp_det, K, dist)
+                try:
+                    ok, rvec, tvec = cv2.solvePnP(objp_det, imgp_det, K, dist)
+                except Exception as exc:
+                    _log.warning("solvePnP raised for %s frame %d: %s", cam_name, fi, exc)
+                    ok = False
+
                 if not ok:
+                    # Fallback: use pose estimated during calibrate_rows
+                    rvec_raw = row.get("rvec")
+                    tvec_raw = row.get("tvec")
+                    if rvec_raw is None or tvec_raw is None:
+                        _log.debug("solvePnP failed and no fallback rvec for %s frame %d", cam_name, fi)
+                        frame_errors[fi][cam_name] = errors
+                        continue
+                    try:
+                        rvec = np.asarray(rvec_raw, dtype=np.float64).reshape(3, 1)
+                        tvec = np.asarray(tvec_raw, dtype=np.float64).reshape(3, 1)
+                    except Exception:
+                        frame_errors[fi][cam_name] = errors
+                        continue
+
+                try:
+                    projected, _ = cv2.projectPoints(objp_all, rvec, tvec, K, dist)
+                    projected = projected.reshape(-1, 2)
+                except Exception as exc:
+                    _log.warning("projectPoints failed for %s frame %d: %s", cam_name, fi, exc)
                     frame_errors[fi][cam_name] = errors
                     continue
-
-                projected, _ = cv2.projectPoints(objp_all, rvec, tvec, K, dist)
-                projected = projected.reshape(-1, 2)
 
                 for j in range(n_corners):
                     if not np.isnan(pts2d[j, 0]):

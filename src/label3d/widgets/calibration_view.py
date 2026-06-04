@@ -28,8 +28,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 import logging
-
 logger = logging.getLogger(__name__)
+
+from aniposelib.boards import merge_rows
 
 from label3d.geometry import EpipolarCache, cameras_from_cgroup
 from label3d.project import Project
@@ -396,7 +397,7 @@ class CalibrationView(QWidget):
             panel = self._calib_grid.get_panel(cam)
             if panel is not None:
                 overlay = CharucoOverlay(panel.scene(), cam)
-                panel.charuco_overlay = overlay
+                panel._charuco_overlay = overlay
                 self._charuco_overlays[cam] = overlay
 
         # Pre-populate frame provider so images appear before corner detection
@@ -474,7 +475,6 @@ class CalibrationView(QWidget):
 
         # Merge rows across cameras
         try:
-            from aniposelib.boards import merge_rows
             rows_list = [all_rows.get(c, []) for c in self._project.cameras]
             self._merged_rows = merge_rows(rows_list, cam_names=self._project.cameras)
         except Exception as exc:
@@ -619,11 +619,11 @@ class CalibrationView(QWidget):
             return
 
         # Look up the corner's pixel position
-        merged_row = (
-            self._merged_rows[self._current_frame]
-            if 0 <= self._current_frame < len(self._merged_rows)
-            else {}
-        )
+        if 0 <= self._current_frame < len(self._merged_rows):
+            merged_row = self._merged_rows[self._current_frame]
+        else:
+            return
+        
         if cam not in merged_row:
             return
         row = merged_row[cam]
