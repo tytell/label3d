@@ -78,8 +78,13 @@ def write_videos(
     trial_name: str,
     num_frames: int,
     video_dir: Path,
+    experiment_name: str = "",
 ):
-    """Render and write MP4 video files, one per camera."""
+    """Render and write MP4 video files, one per camera.
+
+    Video filenames are {cam}_{experiment_name}_{trial_name}.mp4 when
+    experiment_name is provided, otherwise {cam}_{trial_name}.mp4.
+    """
     point_radius = render_cfg.get("point_radius", 8)
     bg_color = render_cfg.get("background_color", [40, 40, 40])
     codec = render_cfg.get("codec", "mp4v")
@@ -97,7 +102,8 @@ def write_videos(
 
     for cam_name, cam in cameras.items():
         res = cam["resolution"]
-        video_path = video_dir / f"{cam_name}_{trial_name}.mp4"
+        stem = f"{cam_name}_{experiment_name}_{trial_name}" if experiment_name else f"{cam_name}_{trial_name}"
+        video_path = video_dir / f"{stem}.mp4"
         fourcc = cv2.VideoWriter_fourcc(*codec)
         writer = cv2.VideoWriter(str(video_path), fourcc, fps, (res[0], res[1]))
 

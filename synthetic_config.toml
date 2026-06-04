@@ -4,15 +4,14 @@
 [project]
 name = "synthetic_test"
 output_dir = "test_project"
-trial_name = "trial1"
-num_frames = 10
-experiment_name = "exp1"   # optional; sets experiments/<name>/ subfolder
 
 [world]
 # World coordinate system: x forward, y right, z up
 up = [0, 0, 1]
 
 # ── Cameras ──────────────────────────────────────────────────────────────────
+# Base camera positions shared across experiments. Each experiment may apply
+# small offsets via [experiments.<name>.camera_offsets].
 # Each camera is aimed at its target. Focal length is computed so that
 # fov_at_target cm are visible horizontally at the camera-to-target distance.
 # Square pixels (fx = fy).
@@ -61,14 +60,38 @@ color = [50, 255, 50]
 offset = [0.2, 0.0, 2.2]
 color = [50, 128, 255]
 
-# ── Motion ───────────────────────────────────────────────────────────────────
-# Linear interpolation from frame 0 to frame N-1.
-# Rotation is applied about the body's center of mass.
+# ── Experiments ───────────────────────────────────────────────────────────────
+# Each experiment has one trial, its own camera position offsets (added to the
+# base positions above), and its own motion parameters.
 
-[motion]
-start_position = [0.0, 0.0, 0.0]        # center of mass at frame 0
-total_translation = [10.0, 0.0, 2.0]    # displacement over all frames (cm)
-total_rotation_deg = [0.0, 20.0, 0.0]   # rotation about [x, y, z] axes (degrees)
+[experiments.exp1]
+trial_name = "trial1"
+num_frames = 10
+
+[experiments.exp1.camera_offsets]
+cam1 = [0.0, 0.0, 0.0]
+cam2 = [0.0, 0.0, 0.0]
+cam3 = [0.0, 0.0, 0.0]
+
+[experiments.exp1.motion]
+start_position = [0.0, 0.0, 0.0]
+total_translation = [10.0, 0.0, 2.0]
+total_rotation_deg = [0.0, 20.0, 0.0]
+
+[experiments.exp2]
+trial_name = "trial1"
+num_frames = 10
+
+[experiments.exp2.camera_offsets]
+# Cameras shifted slightly relative to exp1 (simulates rig repositioning)
+cam1 = [2.0, 0.0, 1.0]
+cam2 = [-1.5, 0.5, 0.0]
+cam3 = [0.5, 0.0, 1.0]
+
+[experiments.exp2.motion]
+start_position = [0.0, 0.0, 0.0]
+total_translation = [8.0, 2.0, 1.5]
+total_rotation_deg = [5.0, 15.0, 0.0]
 
 # ── Rendering ────────────────────────────────────────────────────────────────
 

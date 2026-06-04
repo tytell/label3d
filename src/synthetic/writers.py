@@ -27,21 +27,9 @@ def write_calibration_toml(cameras: dict, output_path: Path):
         toml.dump(d, f)
 
 
-def write_trials_csv(
-    cameras: dict,
-    trial_name: str,
-    num_frames: int,
-    output_path: Path,
-    experiment_name: str = "default",
-):
-    """Write global trials.csv with experiment column."""
-    row = {"experiment": experiment_name, "trial": trial_name}
-    for cam_name in cameras:
-        row[cam_name] = f"{cam_name}_{trial_name}.mp4"
-        row[f"{cam_name}_start"] = 0
-        row[f"{cam_name}_end"] = num_frames - 1
-
-    pd.DataFrame([row]).to_csv(output_path, index=False)
+def write_trials_csv(trial_rows: list[dict], output_path: Path):
+    """Write global trials.csv from a list of pre-built row dicts."""
+    pd.DataFrame(trial_rows).to_csv(output_path, index=False)
 
 
 def write_points_csv(
@@ -126,23 +114,22 @@ def write_skeleton_json(
 
 
 def write_slp_files(
-    all_projected: dict[str, list[np.ndarray]],
-    cameras: dict,
+    cam_trial_data: dict[str, list[tuple[Path, list[np.ndarray]]]],
     node_names: list[str],
     edges: list[tuple[str, str]],
-    trial_name: str,
-    num_frames: int,
-    video_dir: Path,
     output_dir: Path,
 ):
-    """Write per-camera .slp files using sleap_io.  Skipped if not installed."""
+    """Write one .slp per camera spanning all experiments and trials.
+
+    cam_trial_data[cam_name] = [(video_path, [frame0_pts, frame1_pts, ...]), ...]
+    Each video_path is the absolute path to the MP4; frame arrays are (n_nodes, 2).
+    """
     try:
         import sleap_io as sio
     except ImportError:
         print("  sleap_io not installed — skipping .slp generation")
         return
 
-    # Build skeleton
     skeleton = sio.Skeleton(name="synthetic")
     for name in node_names:
         skeleton.add_node(name)
@@ -151,25 +138,19 @@ def write_slp_files(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for cam_name in cameras:
-        video_path = (video_dir / f"{cam_name}_{trial_name}.mp4").resolve()
-        video = sio.Video(filename=str(video_path))
-
+    for cam_name, trials in cam_trial_data.items():
         labeled_frames = []
-        for fi in range(num_frames):
-            # points array: (n_nodes, 2), NaN for missing
-            pts_array = all_projected[cam_name][fi].astype(np.float32)
-
-            inst = sio.PredictedInstance.from_numpy(
-                pts_array, skeleton=skeleton, score=1.0
-            )
-            lf = sio.LabeledFrame(
-                video=video, frame_idx=fi, instances=[inst]
-            )
-            labeled_frames.append(lf)
+        for video_path, frame_arrays in trials:
+            video = sio.Video(filename=str(video_path))
+            for fi, pts_array in enumerate(frame_arrays):
+                inst = sio.PredictedInstance.from_numpy(
+                    pts_array.astype(np.float32), skeleton=skeleton, score=1.0
+                )
+                lf = sio.LabeledFrame(video=video, frame_idx=fi, instances=[inst])
+                labeled_frames.append(lf)
 
         labels = sio.Labels(labeled_frames=labeled_frames)
-        slp_path = output_dir / f"{cam_name}_{trial_name}.slp"
+        slp_path = output_dir / f"{cam_name}.slp"
         sio.save_file(labels, str(slp_path))
         print(f"  {slp_path}")
 
@@ -178,14 +159,18 @@ def write_slp_files(
 
 # Naming strategies: how to build filenames for each (camera, trial) pair
 _NAMING_STRATEGIES = {
-    "number": "{cam}_trial{trial_num:03d}.{ext}",
+    "number": "{cam}_{exp}_trial{trial_num:03d}.{ext}",
     "datestamp": "{cam}Y{datestamp}H{timestamp}.{frac}.{ext}",
     "datestamp_simple": "{cam}_{datestamp}_{timestamp}.{ext}",
 }
 
+# Seconds between experiments in datestamp strategies
+_DATESTAMP_EXP_OFFSET_SEC = 60.0
+
 
 def _make_flat_filename(
     cam_name: str,
+    exp_name: str,
     trial_index: int,
     strategy: str,
     ext: str,
@@ -198,19 +183,20 @@ def _make_flat_filename(
 
     Args:
         cam_name: Camera identifier string
-        trial_index: 0-based trial index
+        exp_name: Experiment name (embedded in filename to avoid collisions)
+        trial_index: 0-based global trial index across all experiments
         strategy: "number", "datestamp", or "datestamp_simple"
         ext: File extension without dot (e.g. "mp4", "slp")
         datestamp: Date string YYYYMMDD
-        base_time_sec: Base time in seconds since midnight for this trial
+        base_time_sec: Base time in seconds since midnight for trial index 0
         time_offset_per_cam: Sub-second offset per camera (simulates real hw)
         cam_index: 0-based camera index (used for per-camera time offset)
     """
     if strategy == "number":
-        return f"{cam_name}_trial{trial_index + 1:03d}.{ext}"
+        return f"{cam_name}_{exp_name}_trial{trial_index + 1:03d}.{ext}"
     elif strategy == "datestamp":
-        # Y...H... format like .cine files
-        total_sec = base_time_sec + cam_index * time_offset_per_cam
+        # Y...H... format like .cine files; each trial offset by _DATESTAMP_EXP_OFFSET_SEC
+        total_sec = base_time_sec + trial_index * _DATESTAMP_EXP_OFFSET_SEC + cam_index * time_offset_per_cam
         hh = int(total_sec // 3600)
         mm = int((total_sec % 3600) // 60)
         ss = int(total_sec % 60)
@@ -218,8 +204,8 @@ def _make_flat_filename(
         frac_str = f"{frac:.9f}"[2:]  # "000003000" style
         return f"{cam_name}Y{datestamp}H{hh:02d}{mm:02d}{ss:02d}.{frac_str}.{ext}"
     elif strategy == "datestamp_simple":
-        # YYYYMMDD_HHMMSS format
-        total_sec = base_time_sec + cam_index * time_offset_per_cam
+        # YYYYMMDD_HHMMSS format; each trial offset by _DATESTAMP_EXP_OFFSET_SEC
+        total_sec = base_time_sec + trial_index * _DATESTAMP_EXP_OFFSET_SEC + cam_index * time_offset_per_cam
         hh = int(total_sec // 3600)
         mm = int((total_sec % 3600) // 60)
         ss = int(total_sec % 60)
@@ -231,26 +217,24 @@ def _make_flat_filename(
 def write_flat_folder(
     project_dir: Path,
     flat_dir: Path,
-    cameras: dict,
-    trial_name: str,
+    cam_names: list[str],
+    experiments: list[dict],
     strategy: str,
-    experiment_name: str = "default",
     calib_keyword: str = "calib",
     charuco_config: dict | None = None,
 ) -> Path:
-    """Reorganize a generated project into a flat folder for testing setup_project.
+    """Reorganize a multi-experiment project into a flat folder for testing setup_project.
 
-    Copies videos, slp files, and calibration media from the structured project
-    into a single flat folder with filenames following the chosen naming strategy.
-    Also writes a setup_config.toml that can be fed to setup_project_cli.py.
+    Copies videos from all experiments, the single per-camera .slp files, and
+    calibration images from each experiment into a single flat directory with
+    collision-free filenames. Also writes a setup_config.toml.
 
     Args:
         project_dir: Path to the generated structured project
         flat_dir: Path for the flat output folder
-        cameras: Camera dict from build_cameras()
-        trial_name: Original trial name used in generation
+        cam_names: Ordered list of camera names
+        experiments: List of dicts with keys "name", "trial_name", "num_frames"
         strategy: Naming strategy — "number", "datestamp", or "datestamp_simple"
-        experiment_name: Experiment name used when generating the project
         calib_keyword: Keyword used to tag calibration files
         charuco_config: Charuco board config dict (optional, for setup_config.toml)
 
@@ -258,61 +242,65 @@ def write_flat_folder(
         Path to the flat folder
     """
     flat_dir.mkdir(parents=True, exist_ok=True)
-    cam_names = list(cameras.keys())
-    experiment_dir = project_dir / "experiments" / experiment_name
 
-    # Base timestamp for datestamp strategies (14:21:07 = 51667 seconds)
     base_time = 51667.519576
-    time_offset_per_cam = 0.003  # 3ms offset between cameras
+    time_offset_per_cam = 0.003
 
-    # --- Copy data videos with new names ---
-    video_dir = experiment_dir / "videos"
-    for ci, cam_name in enumerate(cam_names):
-        src = video_dir / f"{cam_name}_{trial_name}.mp4"
-        if src.exists():
-            new_name = _make_flat_filename(
-                cam_name, 0, strategy, "mp4",
-                base_time_sec=base_time,
-                time_offset_per_cam=time_offset_per_cam,
-                cam_index=ci,
-            )
-            shutil.copy2(str(src), str(flat_dir / new_name))
-
-    # --- Copy SLP files with matching names ---
-    slp_dir = project_dir / "slp"
-    if slp_dir.exists():
+    # --- Copy videos with new names (one trial per experiment, indexed globally) ---
+    for trial_idx, exp in enumerate(experiments):
+        exp_name = exp["name"]
+        trial_name = exp["trial_name"]
+        video_dir = project_dir / "experiments" / exp_name / "videos"
         for ci, cam_name in enumerate(cam_names):
-            src = slp_dir / f"{cam_name}_{trial_name}.slp"
+            src = video_dir / f"{cam_name}_{exp_name}_{trial_name}.mp4"
             if src.exists():
                 new_name = _make_flat_filename(
-                    cam_name, 0, strategy, "slp",
+                    cam_name, exp_name, trial_idx, strategy, "mp4",
                     base_time_sec=base_time,
                     time_offset_per_cam=time_offset_per_cam,
                     cam_index=ci,
                 )
                 shutil.copy2(str(src), str(flat_dir / new_name))
 
-    # --- Copy calibration files with calib keyword in name ---
-    calib_dir = experiment_dir / "calibration"
-    if calib_dir.exists():
+    # --- Copy single per-camera .slp files ---
+    slp_dir = project_dir / "slp"
+    if slp_dir.exists():
         for cam_name in cam_names:
-            cam_calib = calib_dir / cam_name
-            if cam_calib.is_dir():
-                for img in sorted(cam_calib.iterdir()):
-                    if img.is_file():
-                        # Prefix with calib keyword and camera name
-                        new_name = f"{calib_keyword}_{cam_name}_{img.name}"
-                        shutil.copy2(str(img), str(flat_dir / new_name))
+            src = slp_dir / f"{cam_name}.slp"
+            if src.exists():
+                shutil.copy2(str(src), str(flat_dir / f"{cam_name}.slp"))
+
+    # --- Copy calibration images from each experiment, prefixed with exp name ---
+    for exp in experiments:
+        exp_name = exp["name"]
+        calib_dir = project_dir / "experiments" / exp_name / "calibration"
+        if calib_dir.exists():
+            for cam_name in cam_names:
+                cam_calib = calib_dir / cam_name
+                if cam_calib.is_dir():
+                    for img in sorted(cam_calib.iterdir()):
+                        if img.is_file():
+                            new_name = f"{calib_keyword}_{exp_name}_{cam_name}_{img.name}"
+                            shutil.copy2(str(img), str(flat_dir / new_name))
 
     # --- Write setup_config.toml ---
+    exp_names = [e["name"] for e in experiments]
     datestamp_window = time_offset_per_cam * len(cam_names) * 2
-    setup_config = {
+
+    if strategy == "number":
+        # Experiment name is embedded; keyword matching identifies each experiment
+        match_strategy = "keyword"
+    else:
+        match_strategy = "datestamp"
+
+    setup_config: dict = {
         "setup": {
             "source_dir": str(flat_dir),
             "output_dir": str(flat_dir.parent / f"{flat_dir.name}_project"),
             "camera_names": cam_names,
             "calib_keyword": calib_keyword,
-            "match_strategy": strategy if strategy != "datestamp_simple" else "datestamp",
+            "experiment_keywords": exp_names,
+            "match_strategy": match_strategy,
             "datestamp_window_sec": datestamp_window if "datestamp" in strategy else 0.0,
         },
         "project": {
@@ -320,7 +308,6 @@ def write_flat_folder(
         },
     }
     if charuco_config:
-        # Extract just the board params (not placement/rendering)
         setup_config["charuco"] = {
             k: charuco_config[k]
             for k in ("squares_x", "squares_y", "square_length",

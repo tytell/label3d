@@ -13,8 +13,9 @@ Generates:
     ├── skeleton.json
     ├── project.toml
     ├── slp/
-    │   ├── cam0_trial1.slp
-    │   └── cam1_trial1.slp
+    │   ├── cam1.slp          (all experiments & trials for cam1)
+    │   ├── cam2.slp
+    │   └── cam3.slp
     └── experiments/
         └── <experiment_name>/
             ├── calibration/         (if [charuco] section present)
@@ -23,22 +24,23 @@ Generates:
             ├── calibration.toml
             ├── points.csv
             └── videos/
-                ├── cam0_trial1.mp4
-                └── cam1_trial1.mp4
+                ├── cam1_<exp>_trial1.mp4
+                └── ...
 
 With --flat, also generates flat folder(s) for testing setup_project:
     <output_dir>_flat_<strategy>/
-    ├── cam1_trial001.mp4         (number strategy)
-    ├── cam1Y20260116H142107.519576000.mp4  (datestamp strategy)
-    ├── calib_cam1_board_000.png  (calibration files)
-    ├── cam1_trial001.slp
-    └── setup_config.toml         (config for setup_project_cli.py)
+    ├── cam1_exp1_trial001.mp4        (number strategy — exp name in filename)
+    ├── cam1Y20260116H142107....mp4   (datestamp strategy)
+    ├── calib_exp1_cam1_board_000.png (calibration — exp name prefixed)
+    ├── cam1.slp                      (single .slp per camera)
+    └── setup_config.toml             (config for setup_project_cli.py)
 
 Dependencies: numpy, opencv-python, pandas, toml
 Optional:     sleap-io (for .slp file generation)
 """
 
 import argparse
+import copy
 import logging
 from pathlib import Path
 
@@ -61,6 +63,18 @@ from synthetic import (
     write_trials_csv,
     write_videos,
 )
+
+
+def _apply_camera_offsets(base_config: dict, offsets: dict) -> dict:
+    """Return a deep-copied config with per-camera position deltas applied."""
+    cfg = copy.deepcopy(base_config)
+    for cam_name, delta in offsets.items():
+        if cam_name in cfg["cameras"]:
+            pos = list(cfg["cameras"][cam_name]["position"])
+            cfg["cameras"][cam_name]["position"] = [
+                pos[i] + delta[i] for i in range(3)
+            ]
+    return cfg
 
 
 def main():
@@ -93,12 +107,9 @@ def main():
 
     config = load_config(args.config)
 
-    # ── Unpack config ────────────────────────────────────────────────────
+    # ── Unpack shared config ─────────────────────────────────────────────
     project_cfg = config["project"]
     output_dir = Path(project_cfg["output_dir"])
-    experiment_name = project_cfg.get("experiment_name", "default")
-    trial_name = project_cfg["trial_name"]
-    num_frames = project_cfg["num_frames"]
 
     skel_cfg = config["skeleton"]
     node_names = list(skel_cfg["nodes"].keys())
@@ -110,65 +121,123 @@ def main():
     edges = [tuple(e) for e in skel_cfg["edges"]]
 
     render_cfg = config.get("rendering", {})
+    charuco_cfg = config.get("charuco")
 
-    # ── Build cameras ────────────────────────────────────────────────────
-    cameras = build_cameras(config)
+    cam_names = list(config["cameras"].keys())
 
-    # ── Compute motion ───────────────────────────────────────────────────
-    poses = compute_body_poses(config["motion"], num_frames)
-    all_pts_3d = compute_world_points(poses, node_names, node_offsets)
+    # Accumulate data across experiments for global outputs
+    all_trial_rows: list[dict] = []
+    # cam_trial_data[cam_name] = [(video_path, [frame_pts, ...]), ...]
+    cam_trial_data: dict[str, list[tuple[Path, list[np.ndarray]]]] = {
+        cn: [] for cn in cam_names
+    }
+    experiment_infos: list[dict] = []  # for flat folder generation
 
-    # ── Project into each camera ─────────────────────────────────────────
-    all_projected = project_all_frames(all_pts_3d, cameras)
+    # ── Per-experiment loop ──────────────────────────────────────────────
+    for exp_name, exp_cfg in config["experiments"].items():
+        trial_name = exp_cfg["trial_name"]
+        num_frames = exp_cfg["num_frames"]
 
-    # ── Verify all points are within image bounds ────────────────────────
-    for cam_name, cam in cameras.items():
-        w, h = cam["resolution"]
-        for fi, proj in enumerate(all_projected[cam_name]):
-            for bi, (px, py) in enumerate(proj):
-                if not (0 <= px < w and 0 <= py < h):
-                    print(
-                        f"  WARNING: {node_names[bi]} in {cam_name} frame {fi} "
-                        f"is outside image at ({px:.1f}, {py:.1f})"
-                    )
+        print(f"\n=== Experiment: {exp_name} / trial: {trial_name} ===")
 
-    # ── Create output directories ────────────────────────────────────────
-    experiment_dir = output_dir / "experiments" / experiment_name
-    video_dir = experiment_dir / "videos"
-    video_dir.mkdir(parents=True, exist_ok=True)
+        # Build cameras with per-experiment position offsets applied
+        offsets = exp_cfg.get("camera_offsets", {})
+        exp_config = _apply_camera_offsets(config, offsets)
+        cameras = build_cameras(exp_config)
 
-    # ── Write outputs ────────────────────────────────────────────────────
-    print("Writing videos...")
-    write_videos(
-        cameras, all_projected,
-        node_names, node_colors, edges,
-        render_cfg, trial_name, num_frames, video_dir,
-    )
+        # Compute motion and 3D points
+        poses = compute_body_poses(exp_cfg["motion"], num_frames)
+        all_pts_3d = compute_world_points(poses, node_names, node_offsets)
+        all_projected = project_all_frames(all_pts_3d, cameras)
 
-    print("Writing calibration.toml...")
-    write_calibration_toml(cameras, experiment_dir / "calibration.toml")
-    print(f"  {experiment_dir / 'calibration.toml'}")
+        # Verify all points are within image bounds
+        for cam_name, cam in cameras.items():
+            w, h = cam["resolution"]
+            for fi, proj in enumerate(all_projected[cam_name]):
+                for bi, (px, py) in enumerate(proj):
+                    if not (0 <= px < w and 0 <= py < h):
+                        print(
+                            f"  WARNING: {node_names[bi]} in {cam_name} frame {fi} "
+                            f"is outside image at ({px:.1f}, {py:.1f})"
+                        )
 
-    print("Writing trials.csv...")
+        # Create experiment output directory
+        experiment_dir = output_dir / "experiments" / exp_name
+        video_dir = experiment_dir / "videos"
+        video_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write per-experiment outputs
+        print("  Writing videos...")
+        write_videos(
+            cameras, all_projected,
+            node_names, node_colors, edges,
+            render_cfg, trial_name, num_frames, video_dir,
+            experiment_name=exp_name,
+        )
+
+        print("  Writing calibration.toml...")
+        write_calibration_toml(cameras, experiment_dir / "calibration.toml")
+        print(f"    {experiment_dir / 'calibration.toml'}")
+
+        print("  Writing points.csv...")
+        points_csv_path = experiment_dir / "points.csv"
+        write_points_csv(
+            all_pts_3d, all_projected, cameras,
+            node_names, trial_name, num_frames,
+            points_csv_path,
+            exp_name,
+        )
+        print(f"    {points_csv_path}")
+
+        # Charuco calibration images (per-experiment since cameras differ)
+        if charuco_cfg and not args.no_charuco:
+            print("  Generating Charuco calibration images...")
+            generate_charuco_images(charuco_cfg, cameras, experiment_dir)
+
+        # Sanity checks
+        run_sanity_checks(cameras, all_pts_3d, all_projected, node_names, experiment_dir)
+
+        # Accumulate trial row for global trials.csv
+        trial_row: dict = {"experiment": exp_name, "trial": trial_name}
+        for cam_name in cam_names:
+            trial_row[cam_name] = f"{cam_name}_{exp_name}_{trial_name}.mp4"
+            trial_row[f"{cam_name}_start"] = 0
+            trial_row[f"{cam_name}_end"] = num_frames - 1
+        all_trial_rows.append(trial_row)
+
+        # Accumulate per-camera labeled frames for unified .slp files
+        for cam_name in cam_names:
+            video_path = (video_dir / f"{cam_name}_{exp_name}_{trial_name}.mp4").resolve()
+            frame_arrays = [all_projected[cam_name][fi] for fi in range(num_frames)]
+            cam_trial_data[cam_name].append((video_path, frame_arrays))
+
+        experiment_infos.append({
+            "name": exp_name,
+            "trial_name": trial_name,
+            "num_frames": num_frames,
+        })
+
+        # Per-experiment summary
+        print(f"\n  Cameras: {list(cameras.keys())}")
+        for cam_name, cam in cameras.items():
+            dist_cm = np.linalg.norm(
+                cam["position"] - np.array(exp_config["cameras"][cam_name]["target"])
+            )
+            print(
+                f"    {cam_name}: f={cam['K'][0,0]:.1f}px, "
+                f"distance={dist_cm:.1f}cm"
+            )
+
+    # ── Global outputs (written once after all experiments) ──────────────
+    print("\nWriting trials.csv...")
     trials_csv_path = output_dir / "trials.csv"
-    write_trials_csv(cameras, trial_name, num_frames, trials_csv_path, experiment_name)
+    write_trials_csv(all_trial_rows, trials_csv_path)
     print(f"  {trials_csv_path}")
-
-    print("Writing points.csv...")
-    points_csv_path = experiment_dir / "points.csv"
-    write_points_csv(
-        all_pts_3d, all_projected, cameras,
-        node_names, trial_name, num_frames,
-        points_csv_path,
-        experiment_name,
-    )
-    print(f"  {points_csv_path}")
 
     print("Writing skeleton.json...")
     write_skeleton_json(node_names, edges, node_offsets, output_dir / "skeleton.json")
 
     print("Writing project.toml...")
-    charuco_cfg = config.get("charuco")
     charuco_board = (
         {k: charuco_cfg[k] for k in
          ("squares_x", "squares_y", "square_length", "marker_length", "marker_bits", "dict_size")
@@ -178,32 +247,12 @@ def main():
     write_project_toml(output_dir / "project.toml", project_cfg.get("name", output_dir.name), charuco_board)
 
     print("Writing .slp files...")
-    write_slp_files(
-        all_projected, cameras, node_names, edges,
-        trial_name, num_frames, video_dir, output_dir / "slp",
-    )
+    write_slp_files(cam_trial_data, node_names, edges, output_dir / "slp")
 
-    # ── Charuco calibration images ───────────────────────────────────────
-    if "charuco" in config and not args.no_charuco:
-        print("\nGenerating Charuco calibration images...")
-        generate_charuco_images(config["charuco"], cameras, experiment_dir)
-
-    # ── Summary ──────────────────────────────────────────────────────────
     print(f"\nDone. Output: {output_dir}/")
-    print(f"  Experiment: {experiment_name}")
-    print(f"  Cameras:   {list(cameras.keys())}")
-    print(f"  Frames:    {num_frames}")
-    print(f"  Bodyparts: {node_names}")
-    for cam_name, cam in cameras.items():
-        dist_cm = np.linalg.norm(cam["position"] - np.array(config["cameras"][cam_name]["target"]))
-        print(
-            f"  {cam_name}: f={cam['K'][0,0]:.1f}px, "
-            f"distance={dist_cm:.1f}cm, "
-            f"hFOV at target={config['cameras'][cam_name]['fov_at_target']}cm"
-        )
-
-    # ── Sanity checks ────────────────────────────────────────────────────
-    run_sanity_checks(cameras, all_pts_3d, all_projected, node_names, experiment_dir)
+    print(f"  Experiments: {[e['name'] for e in experiment_infos]}")
+    print(f"  Cameras:     {cam_names}")
+    print(f"  Bodyparts:   {node_names}")
 
     # ── Flat folder output ────────────────────────────────────────────────
     if args.flat:
@@ -218,10 +267,9 @@ def main():
             write_flat_folder(
                 project_dir=output_dir,
                 flat_dir=flat_dir,
-                cameras=cameras,
-                trial_name=trial_name,
+                cam_names=cam_names,
+                experiments=experiment_infos,
                 strategy=strategy,
-                experiment_name=experiment_name,
                 calib_keyword="calib",
                 charuco_config=charuco_cfg,
             )
