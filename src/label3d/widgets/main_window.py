@@ -36,6 +36,7 @@ class MainWindow(QMainWindow):
         self._project = project
         self._state = state
         self._frame_provider = FrameProvider()
+        self._experiment_positions: dict[str, tuple[str, int]] = {}
 
         self.setWindowTitle(f"label3d — {project.root.name}")
         self.resize(1200, 800)
@@ -228,6 +229,14 @@ class MainWindow(QMainWindow):
 
     def _on_experiment_state_changed(self, name: str):
         """Reload everything after an experiment switch."""
+        # Save current (trial, frame) before the project switches
+        old_exp = self._project.active_experiment
+        if old_exp and self._state.current_trial:
+            self._experiment_positions[old_exp] = (
+                self._state.current_trial,
+                self._state.current_frame,
+            )
+
         self._project.set_experiment(name)
         self._state.points_store = self._project.points
         self._label_view.reload_for_experiment()
@@ -241,8 +250,15 @@ class MainWindow(QMainWindow):
         self._trial_combo.blockSignals(False)
 
         if self._project.trial_names():
-            self._load_trial(self._project.trial_names()[0])
-            self._trial_combo.setCurrentIndex(0)
+            trial_names = self._project.trial_names()
+            saved = self._experiment_positions.get(name)
+            if saved and saved[0] in trial_names:
+                saved_trial, saved_frame = saved
+                self._load_trial(saved_trial, start_frame=saved_frame)
+                self._trial_combo.setCurrentText(saved_trial)
+            else:
+                self._load_trial(trial_names[0])
+                self._trial_combo.setCurrentIndex(0)
 
     # -- Tab switching -------------------------------------------------------
 
@@ -262,7 +278,7 @@ class MainWindow(QMainWindow):
 
     # -- Trial loading -------------------------------------------------------
 
-    def _load_trial(self, trial_name: str):
+    def _load_trial(self, trial_name: str, start_frame: int = 0):
         """Open video readers for a trial and set up frame range."""
         trial = self._project.get_trial(trial_name)
 
@@ -281,12 +297,16 @@ class MainWindow(QMainWindow):
         self._state.max_frame = max_frame
         self._frame_controls.set_range(max_frame)
 
-        # Set state (this triggers frame_changed -> display)
-        self._state._current_trial = trial_name
-        self._state.current_frame = 0
+        frame = max(0, min(start_frame, max_frame))
 
-        # Force first frame display
-        self._camera_grid.update_frame(0)
+        # Set state; always force-emit frame_changed so overlays refresh even
+        # when switching experiments with frame already at 0.
+        self._state._current_trial = trial_name
+        self._state._current_frame = frame
+        self._state.frame_changed.emit(frame)
+
+        # Force first frame display (direct call covers pre-signal-connection startup)
+        self._camera_grid.update_frame(frame)
 
         self._status_bar.showMessage(
             f"Trial: {trial_name} — {length} frames, "
