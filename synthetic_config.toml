@@ -89,7 +89,7 @@ cam2 = [-1.5, 0.5, 0.0]
 cam3 = [0.5, 0.0, 1.0]
 
 [experiments.exp2.motion]
-start_position = [0.0, 0.0, 0.0]
+start_position = [-1.0, 0.0, 0.0]
 total_translation = [8.0, 2.0, 1.5]
 total_rotation_deg = [5.0, 15.0, 0.0]
 
