@@ -14,6 +14,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QSplitter, QWidget
 
+import logging
+logger = logging.getLogger(__name__)
+
 from label3d.geometry import (
     EpipolarCache,
     load_cameras,
@@ -53,10 +56,9 @@ class LabelView(QWidget):
         self._tri_worker = None  # TriangulationWorker (batch)
 
         # Load calibration for epipolar geometry and triangulation
-        calib_path = project.root / "calibration.toml"
+        calib_path = project.calibration_path()
         if calib_path.exists():
-            from label3d.geometry import load_cameras as _load_cams
-            self._cameras = _load_cams(calib_path)
+            self._cameras = load_cameras(calib_path)
             self._epipolar_cache = EpipolarCache(self._cameras)
 
         # Layout: sidebar | camera grid | 3D view
