@@ -7,7 +7,7 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QFileDialog
 
 from label3d.project import Project
 from label3d.state import ProjectState
@@ -36,7 +36,15 @@ def run(project_dir: str | Path | None = None):
     app = QApplication.instance() or QApplication(sys.argv)
 
     if project_dir is None:
-        project_dir = args.project_dir if args.project_dir is not None else Path.cwd()
+        if args.project_dir is not None:
+            project_dir = args.project_dir
+        elif args.project_dir is None:
+            project_dir = QFileDialog.getExistingDirectory(
+                None, "Select Project Directory", str(Path.cwd())
+            )
+            if not project_dir:
+                print("No project directory selected. Exiting.", file=sys.stderr)
+                sys.exit(1)
 
     project_dir = Path(project_dir)
 
