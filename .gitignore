@@ -19,6 +19,7 @@ test_project_flat_number/
 test_sleap_project/
 test_sleap_project_flat/
 test_project_old/
+test_project_flat_number_project/
 
 # Scratch/temporary files
 scratch/
@@ -26,4 +27,5 @@ scratch/
 # Claude local settings (machine-specific permissions)
 .claude/settings.local.json
 .vscode/launch.json
+
 

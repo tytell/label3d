@@ -152,6 +152,10 @@ class CalibFrameProvider:
         self._cam_media: dict[str, list[Path]] = {}
         self._video_readers: dict[tuple, VideoReader] = {}
 
+    @property
+    def merged_rows(self) -> list[dict]:
+        return self._merged
+
     def setup(
         self,
         merged_rows: list[dict],
@@ -293,6 +297,7 @@ class CalibrationView(QWidget):
         self._skip_spin.setValue(20)
         self._skip_spin.setToolTip("For video: process every Nth frame")
         form.addRow("Video skip (frames):", self._skip_spin)
+        self._skip_spin.valueChanged.connect(self._on_skip_changed)
 
         left_layout.addWidget(board_group)
 
@@ -353,7 +358,7 @@ class CalibrationView(QWidget):
         self._prev_btn = QPushButton("<")
         self._frame_label = QLabel("—")
         self._frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._frame_label.setMinimumWidth(80)
+        self._frame_label.setMinimumWidth(200)
         self._next_btn = QPushButton(">")
         self._last_btn = QPushButton(">|")
 
@@ -710,9 +715,96 @@ class CalibrationView(QWidget):
         self._next_btn.setEnabled(has_frames and self._current_frame < n - 1)
         self._last_btn.setEnabled(has_frames and self._current_frame < n - 1)
         if has_frames:
-            self._frame_label.setText(f"{self._current_frame + 1} / {n}")
+            label, anchor = self._representative_frame_info(self._current_frame)
+            if anchor is not None:
+                self._frame_label.setText(f"{label}  ({self._current_frame + 1}/{n})")
+            else:
+                self._frame_label.setText(f"{label} / {n}")
         else:
             self._frame_label.setText("—")
+
+    def _representative_frame_info(
+        self, frame_idx: int
+    ) -> tuple[str, tuple[int, int] | None]:
+        """Return (display_label, (video_idx, frame_in_video)) for frame_idx.
+
+        Falls back to the provider's raw rows when no corners are detected yet.
+        Returns ("—", None) when frame_idx is out of range.
+        For image-based calibration returns ("Image N", None).
+        For single-video: ("Frame N", (0, N)).
+        For multi-video: ("{stem}, frame N", (vi, N)).
+        """
+        rows = self._merged_rows if self._merged_rows else self._calib_provider.merged_rows
+        if not rows or frame_idx < 0 or frame_idx >= len(rows):
+            return "—", None
+
+        merged_row = rows[frame_idx]
+        for cam in self._project.cameras:
+            if cam not in merged_row:
+                continue
+            row = merged_row[cam]
+
+            if row.get("fname") is not None:
+                return f"Image {frame_idx + 1}", None
+
+            framenum = row.get("framenum")
+            if framenum is not None:
+                vi, fi = framenum if isinstance(framenum, tuple) else (0, int(framenum))
+                cam_files = self._cam_media.get(cam, [])
+                if len(cam_files) > 1 and vi < len(cam_files):
+                    stem = cam_files[vi].stem
+                    return f"{stem}, frame {fi}", (vi, fi)
+                return f"Frame {fi}", (vi, fi)
+
+        return f"{frame_idx + 1}", None
+
+    def _on_skip_changed(self, new_skip: int):
+        if self._all_rows is not None:
+            self._log_msg("Note: re-run detection to apply the new skip value.")
+            return
+
+        # Save anchor from current provider position before rebuilding
+        anchor: tuple[int, int] | None = None
+        provider_rows = self._calib_provider.merged_rows
+        if provider_rows and 0 <= self._current_frame < len(provider_rows):
+            for cam in self._project.cameras:
+                if cam in provider_rows[self._current_frame]:
+                    fn = provider_rows[self._current_frame][cam].get("framenum")
+                    if fn is not None:
+                        anchor = fn if isinstance(fn, tuple) else (0, int(fn))
+                    break
+
+        raw_merged, raw_sizes, raw_media = _scan_raw_media(
+            self._project.root,
+            self._project.active_experiment,
+            self._project.cameras,
+            new_skip,
+        )
+        self._cam_sizes = raw_sizes
+        self._cam_media = raw_media
+        self._calib_provider.setup(raw_merged, raw_sizes, raw_media)
+
+        # Seek to the nearest original frame; strong penalty for crossing video boundary
+        if anchor is not None and raw_merged:
+            target_vi, target_fi = anchor
+            best_idx, best_dist = 0, float("inf")
+            for i, row in enumerate(raw_merged):
+                for cam in self._project.cameras:
+                    if cam in row:
+                        fn = row[cam].get("framenum")
+                        if fn is not None:
+                            vi, fi = fn if isinstance(fn, tuple) else (0, int(fn))
+                            dist = abs(vi - target_vi) * 10**8 + abs(fi - target_fi)
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_idx = i
+                        break
+            self._current_frame = best_idx
+        else:
+            self._current_frame = min(self._current_frame, len(raw_merged) - 1) if raw_merged else 0
+
+        self._show_frame(self._current_frame)
+        self._update_frame_nav()
 
     # ── Corner selection + epipolar lines ─────────────────────────────────
 
