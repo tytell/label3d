@@ -63,6 +63,7 @@ class DetectionWorker(QThread):
     Emits:
         progress(str)                         — log message
         camera_done(cam, n)              — camera name, detection count
+        frame_progress(label, current, total)  — label text, frames processed in current video
         finished(all_rows, cam_sizes, cam_media)
             all_rows:  dict[cam_name, list[row]]  — raw detection rows per camera
             cam_sizes: dict[cam_name, (w, h)]     — image size per camera
@@ -72,6 +73,7 @@ class DetectionWorker(QThread):
 
     progress = Signal(str)
     camera_done = Signal(str, int)      # cam_name, n_dets
+    frame_progress = Signal(str, int, int)  # label, current_frame, total_frames
     finished = Signal(dict, dict, dict)         # all_rows, cam_sizes, cam_media
     error_occurred = Signal(str)
 
@@ -147,12 +149,8 @@ class DetectionWorker(QThread):
                     self.progress.emit(
                         f"  {cam_name}: detecting corners in {len(video_files)} video(s)..."
                     )
-                    # Use prefix=vi so framenum = (video_idx, frame_in_video),
-                    # enabling correct video lookup in CalibFrameProvider.
                     for vi, vpath in enumerate(video_files):
-                        v_rows = board.detect_video(
-                            str(vpath), prefix=vi, skip=self._skip
-                        )
+                        v_rows = self._detect_video(board, vpath, vi)
                         rows.extend(v_rows)
 
                 all_rows[cam_name] = rows
@@ -163,6 +161,43 @@ class DetectionWorker(QThread):
 
         except Exception as exc:
             self.error_occurred.emit(str(exc))
+
+    def _detect_video(self, board, vpath: Path, vi: int) -> list:
+        """Detect Charuco corners in a single video, emitting frame_progress."""
+        cap = cv2.VideoCapture(str(vpath))
+        if not cap.isOpened():
+            raise FileNotFoundError(f'missing video file "{vpath}"')
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total < 10:
+            total = 0  # unknown length
+        update_every = max(1, total // 200) if total else 30
+        label = f"Detecting corners: {vpath.name}"
+
+        self.frame_progress.emit(label, 0, total)
+
+        v_rows: list = []
+        go = int(self._skip / 2)
+        framenum = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if framenum % update_every == 0:
+                self.frame_progress.emit(label, framenum, total)
+            if framenum % self._skip != 0 and go <= 0:
+                framenum += 1
+                continue
+            corners, ids = board.detect_image(frame)
+            if corners is not None and len(corners) > 0:
+                go = int(self._skip / 2)
+                v_rows.append({'framenum': (vi, framenum), 'corners': corners, 'ids': ids})
+            go = max(0, go - 1)
+            framenum += 1
+
+        cap.release()
+        end = total or framenum
+        self.frame_progress.emit(label, end, end)
+        return board.fill_points_rows(v_rows)
 
 
 class CalibrationWorker(QThread):

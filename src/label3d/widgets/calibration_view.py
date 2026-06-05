@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -319,6 +320,16 @@ class CalibrationView(QWidget):
         self._error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         left_layout.addWidget(self._error_label)
 
+        # Progress bar + label
+        self._progress_label = QLabel()
+        self._progress_label.setVisible(False)
+        left_layout.addWidget(self._progress_label)
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setVisible(False)
+        left_layout.addWidget(self._progress_bar)
+
         # Progress log
         left_layout.addWidget(QLabel("Log:"))
         self._log = QPlainTextEdit()
@@ -453,14 +464,26 @@ class CalibrationView(QWidget):
         )
         self._detection_worker.progress.connect(self._log_msg)
         self._detection_worker.camera_done.connect(self._on_camera_done)
+        self._detection_worker.frame_progress.connect(self._on_frame_progress)
         self._detection_worker.finished.connect(self._on_detect_finished)
         self._detection_worker.error_occurred.connect(self._on_error)
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setVisible(True)
+        self._progress_label.setVisible(True)
         self._detection_worker.start()
 
     def _on_camera_done(self, cam_name: str, n_dets: int):
         lbl = self._cam_count_labels.get(cam_name)
         if lbl:
             lbl.setText(str(n_dets))
+
+    def _on_frame_progress(self, label: str, current: int, total: int):
+        self._progress_label.setText(label)
+        if total > 0:
+            self._progress_bar.setValue(int(current * 100 / total))
+        else:
+            self._progress_bar.setValue(0)
 
     def _on_detect_finished(
         self, all_rows: dict, cam_sizes: dict, cam_media: dict
@@ -499,6 +522,8 @@ class CalibrationView(QWidget):
         self._update_frame_nav()
         self._show_frame(0)
 
+        self._progress_bar.setVisible(False)
+        self._progress_label.setVisible(False)
         self._detect_btn.setEnabled(True)
         has_rows = any(len(v) > 0 for v in all_rows.values())
         self._calibrate_btn.setEnabled(has_rows)
@@ -522,9 +547,14 @@ class CalibrationView(QWidget):
         self._calibration_worker.progress.connect(self._log_msg)
         self._calibration_worker.finished.connect(self._on_calibrate_finished)
         self._calibration_worker.error_occurred.connect(self._on_error)
+        self._progress_bar.setRange(0, 0)  # indeterminate spinner
+        self._progress_bar.setVisible(True)
         self._calibration_worker.start()
 
     def _on_calibrate_finished(self, cgroup, mean_error: float, frame_errors: dict):
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setVisible(False)
+        self._progress_label.setVisible(False)
         self._frame_errors = frame_errors
         self._error_label.setText(f"Reprojection error: {mean_error:.3f} px")
         self._apply_calibration(cgroup)
@@ -829,5 +859,8 @@ class CalibrationView(QWidget):
 
     def _on_error(self, msg: str):
         self._log_msg(f"ERROR: {msg}")
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setVisible(False)
+        self._progress_label.setVisible(False)
         self._detect_btn.setEnabled(True)
         self._calibrate_btn.setEnabled(self._all_rows is not None)
