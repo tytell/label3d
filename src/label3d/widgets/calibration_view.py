@@ -232,6 +232,7 @@ class CalibrationView(QWidget):
         self._project = project
 
         # ── State ────────────────────────────────────────────────────────
+        self._skip: int = 1  # aniposelib detect_video ignores skip; extract frames in setup_project instead
         self._all_rows: dict[str, list] | None = None
         self._cam_sizes: dict[str, tuple[int, int]] = {}
         self._cam_media: dict[str, list[Path]] = {}
@@ -291,13 +292,6 @@ class CalibrationView(QWidget):
         form.addRow("Marker length (mm):", self._mk_len)
         form.addRow("Marker bits:", self._mk_bits)
         form.addRow("Dict size:", self._dict_size)
-
-        self._skip_spin = QSpinBox()
-        self._skip_spin.setRange(1, 100)
-        self._skip_spin.setValue(20)
-        self._skip_spin.setToolTip("For video: process every Nth frame")
-        form.addRow("Video skip (frames):", self._skip_spin)
-        self._skip_spin.valueChanged.connect(self._on_skip_changed)
 
         left_layout.addWidget(board_group)
 
@@ -405,7 +399,7 @@ class CalibrationView(QWidget):
 
         # Pre-populate frame provider so images appear before corner detection
         raw_merged, raw_sizes, raw_media = _scan_raw_media(
-            project.root, project.active_experiment, project.cameras, self._skip_spin.value()
+            project.root, project.active_experiment, project.cameras, self._skip
         )
         if raw_merged:
             self._cam_sizes = raw_sizes
@@ -455,7 +449,7 @@ class CalibrationView(QWidget):
             cam_names=self._project.cameras,
             board_params=self._board_params(),
             active_experiment=self._project.active_experiment,
-            skip=self._skip_spin.value(),
+            skip=self._skip,
         )
         self._detection_worker.progress.connect(self._log_msg)
         self._detection_worker.camera_done.connect(self._on_camera_done)
@@ -603,7 +597,7 @@ class CalibrationView(QWidget):
             self._project.root,
             self._project.active_experiment,
             self._project.cameras,
-            self._skip_spin.value(),
+            self._skip,
         )
         self._cam_sizes = raw_sizes
         self._cam_media = raw_media
@@ -757,54 +751,6 @@ class CalibrationView(QWidget):
                 return f"Frame {fi}", (vi, fi)
 
         return f"{frame_idx + 1}", None
-
-    def _on_skip_changed(self, new_skip: int):
-        if self._all_rows is not None:
-            self._log_msg("Note: re-run detection to apply the new skip value.")
-            return
-
-        # Save anchor from current provider position before rebuilding
-        anchor: tuple[int, int] | None = None
-        provider_rows = self._calib_provider.merged_rows
-        if provider_rows and 0 <= self._current_frame < len(provider_rows):
-            for cam in self._project.cameras:
-                if cam in provider_rows[self._current_frame]:
-                    fn = provider_rows[self._current_frame][cam].get("framenum")
-                    if fn is not None:
-                        anchor = fn if isinstance(fn, tuple) else (0, int(fn))
-                    break
-
-        raw_merged, raw_sizes, raw_media = _scan_raw_media(
-            self._project.root,
-            self._project.active_experiment,
-            self._project.cameras,
-            new_skip,
-        )
-        self._cam_sizes = raw_sizes
-        self._cam_media = raw_media
-        self._calib_provider.setup(raw_merged, raw_sizes, raw_media)
-
-        # Seek to the nearest original frame; strong penalty for crossing video boundary
-        if anchor is not None and raw_merged:
-            target_vi, target_fi = anchor
-            best_idx, best_dist = 0, float("inf")
-            for i, row in enumerate(raw_merged):
-                for cam in self._project.cameras:
-                    if cam in row:
-                        fn = row[cam].get("framenum")
-                        if fn is not None:
-                            vi, fi = fn if isinstance(fn, tuple) else (0, int(fn))
-                            dist = abs(vi - target_vi) * 10**8 + abs(fi - target_fi)
-                            if dist < best_dist:
-                                best_dist = dist
-                                best_idx = i
-                        break
-            self._current_frame = best_idx
-        else:
-            self._current_frame = min(self._current_frame, len(raw_merged) - 1) if raw_merged else 0
-
-        self._show_frame(self._current_frame)
-        self._update_frame_nav()
 
     # ── Corner selection + epipolar lines ─────────────────────────────────
 
