@@ -1439,6 +1439,7 @@ The calibration code was implemented targeting the flat layout during Phase 4 an
   - *App-level* (`~/.config/label3d/label3d.ini` or platform equivalent): window geometry, splitter proportions, toolbar positions, last-opened project path
   - *Project-level* (`.label3d_session.ini` in the project root, gitignored): current trial, current frame, active camera layout, per-camera zoom/pan state — restored on next open
   - Save app-level settings on `closeEvent`; save project-level settings on trial/frame change (debounced) and on close
+- [ ] **Calibration frame extraction**: `setup_project` accepts a `--calibration_skip N` argument and extracts every Nth frame from each calibration video into `experiments/{name}/calibration/{cam}/` as image stills, so the calibration view works on a manageable subset without relying on aniposelib's per-frame skip support (which is currently ignored by `detect_video`)
 - [ ] **Toolbar and zoom UX**:
   - `QToolBar` with standard actions: Open Project, Save, Zoom In, Zoom Out, Fit View, Zoom to Instance, Zoom to Point
   - **Drag-box zoom**: rubber-band rectangle drawn with right-click-drag (or `Z`+drag) in any `CameraPanel` → `fitInView(rubber_band_rect)`
