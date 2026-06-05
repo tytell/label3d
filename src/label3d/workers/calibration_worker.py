@@ -62,7 +62,7 @@ class DetectionWorker(QThread):
 
     Emits:
         progress(str)                         — log message
-        camera_done(cam, n, img)              — camera name, detection count, sample BGR image
+        camera_done(cam, n)              — camera name, detection count
         finished(all_rows, cam_sizes, cam_media)
             all_rows:  dict[cam_name, list[row]]  — raw detection rows per camera
             cam_sizes: dict[cam_name, (w, h)]     — image size per camera
@@ -71,7 +71,7 @@ class DetectionWorker(QThread):
     """
 
     progress = Signal(str)
-    camera_done = Signal(str, int, object)      # cam_name, n_dets, sample_image
+    camera_done = Signal(str, int)      # cam_name, n_dets
     finished = Signal(dict, dict, dict)         # all_rows, cam_sizes, cam_media
     error_occurred = Signal(str)
 
@@ -132,7 +132,6 @@ class DetectionWorker(QThread):
                     cam_sizes[cam_name] = size
 
                 rows: list = []
-                sample_img: np.ndarray | None = None
 
                 if image_files:
                     cam_media[cam_name] = image_files
@@ -142,25 +141,6 @@ class DetectionWorker(QThread):
                     image_paths = [str(f) for f in image_files]
                     rows = board.detect_images(image_paths)
 
-                    # Build sample image from the detection with the most corners
-                    best_row = None
-                    best_count = 0
-                    for row in rows:
-                        pts = row.get("filled", np.array([]))
-                        valid = int(np.sum(~np.any(np.isnan(pts.reshape(-1, 2)), axis=1)))
-                        if valid > best_count:
-                            best_count = valid
-                            best_row = row
-                    if best_row is not None:
-                        fname = best_row.get("fname")
-                        if fname:
-                            img = cv2.imread(str(fname))
-                            if img is not None:
-                                sample_img = _draw_corners(img, best_row["filled"])
-                    if sample_img is None and image_files:
-                        img = cv2.imread(str(image_files[0]))
-                        if img is not None:
-                            sample_img = img
 
                 elif video_files:
                     cam_media[cam_name] = video_files
@@ -175,18 +155,9 @@ class DetectionWorker(QThread):
                         )
                         rows.extend(v_rows)
 
-                    # Sample: first frame of first video
-                    cap = cv2.VideoCapture(str(video_files[0]))
-                    ret, img = cap.read()
-                    cap.release()
-                    if ret and rows:
-                        sample_img = _draw_corners(img, rows[0]["filled"])
-                    elif ret:
-                        sample_img = img
-
                 all_rows[cam_name] = rows
                 self.progress.emit(f"  {cam_name}: {len(rows)} detections")
-                self.camera_done.emit(cam_name, len(rows), sample_img)
+                self.camera_done.emit(cam_name, len(rows))
 
             self.finished.emit(all_rows, cam_sizes, cam_media)
 

@@ -463,7 +463,7 @@ class CalibrationView(QWidget):
         self._detection_worker.error_occurred.connect(self._on_error)
         self._detection_worker.start()
 
-    def _on_camera_done(self, cam_name: str, n_dets: int, _sample_img):
+    def _on_camera_done(self, cam_name: str, n_dets: int):
         lbl = self._cam_count_labels.get(cam_name)
         if lbl:
             lbl.setText(str(n_dets))
