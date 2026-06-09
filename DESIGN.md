@@ -632,9 +632,12 @@ Implemented as a `pyqtgraph.opengl.GLViewWidget`. Camera frustums derived from `
   - Quit
 
 > File
-  - New project...   # set up a new project directory
-  - Open project...  # open an existing project directory
-  - Export points...  # export all points to the file
+  - New project...              # set up a new project directory
+  - Open project...             # open an existing project directory
+  - Import from SLP files...    # re-merge predictions from project/slp/ into PointsStore (merge mode)
+  - ---
+  - Save                Ctrl+S  # flush points.csv + write current labels back to project/slp/*.slp
+  - Export points...            # export via adapter (SLEAP / future formats) to an arbitrary output dir
   
 > View
   - Cameras
@@ -1364,7 +1367,90 @@ The calibration code was implemented targeting the flat layout during Phase 4 an
 
 ---
 
-### Phase 7 — Axis Alignment (optional calibration step)
+### Phase 7 — SLP import
+
+**Goal**: Import predicted instances from `project/slp/` into `PointsStore` and persist via `points.csv` at project open; expose re-import at any time via File > Import from SLP files.
+
+**Design principle**: `points.csv` is always the primary (working) store. SLP files are source material for seeding predicted instances. The CSV is updated immediately and auto-saved; SLP files are only read during import, never mutated.
+
+#### 7.1 `PointsStore.merge_from_df(adapter_df: pd.DataFrame) -> int` (`points.py`)
+
+New method that incorporates external adapter data without overwriting user work. Returns the number of rows actually added.
+
+**Merge rule per (experiment, trial, frame, instance, bodypart) row:**
+
+| Existing state in ANY camera | Incoming state | Action |
+|---|---|---|
+| `set` or `not_visible` (user data) | any | **Skip** — user data always wins |
+| `predicted` in all cameras | `predicted` | Replace with incoming (newer prediction wins) |
+| `not_set` in all cameras | `predicted` or `set` | Insert/update |
+| Row absent in `self._df` | any | Insert |
+
+Implementation notes:
+- Iterate rows of `adapter_df` grouped by `(experiment, trial, frame, instance)` to minimize index lookups
+- Call `_mark_dirty()` once at the end (not per-row); emit `changed` once
+
+#### 7.2 `Project.import_from_slp(experiment: str | None = None) -> int` (`project.py`)
+
+```python
+def import_from_slp(self, experiment: str | None = None) -> int:
+    """Load SLP files from project/slp/ and merge into the active PointsStore.
+
+    If experiment is None, uses self.active_experiment.
+    Returns the number of new rows imported.
+    """
+```
+
+Steps:
+1. Collect all `*.slp` files in `self.slp_dir`; return 0 if none found
+2. `SleapAdapter().load(slp_files, self.trials_df, self.cameras)` → full DataFrame
+3. Filter rows to `experiment == (experiment or self.active_experiment)`
+4. Call `self.points.merge_from_df(filtered_df)`; return the count
+
+#### 7.3 Auto-import on first open (`project.py`, `main_window.py`)
+
+In `Project.load()`, after loading `points.csv`, set a flag:
+
+```python
+self.slp_import_available: bool = (
+    len(self.points.df) == 0 and any(self.slp_dir.glob("*.slp"))
+)
+```
+
+In `MainWindow.__init__()`, after loading the first trial, if `project.slp_import_available`:
+
+```python
+reply = QMessageBox.question(
+    self, "Import SLP predictions?",
+    f"Found SLP files in {project.slp_dir.name}/.\n"
+    "Import predicted instances into the project?",
+    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+)
+if reply == QMessageBox.StandardButton.Yes:
+    self._do_import_slp()
+```
+
+This is non-blocking (user can decline) and only fires when `points.csv` is genuinely empty.
+
+#### 7.4 `_do_import_slp()` in `MainWindow` (`main_window.py`)
+
+```python
+def _do_import_slp(self) -> None:
+    """Run SLP import, show progress, refresh the UI."""
+```
+
+- Show a `QProgressDialog("Importing SLP files…", "Cancel", 0, 0, self)` (indeterminate, since sleap_io load time is variable)
+- Run `self._project.import_from_slp()` in a `QThread` (so the UI stays responsive)
+- On completion: `self._update_slider_marks()`, status bar message "Imported N predicted instances from M SLP files"
+- Connect to **File > Import from SLP files…** menu action for explicit re-import at any time
+
+#### 7.5 Experiment switch — per-experiment import check (`main_window.py`)
+
+In `_on_experiment_state_changed()`, after switching the PointsStore, apply the same empty-CSV check and offer the import dialog for the newly-loaded experiment.
+
+---
+
+### Phase 8 — Axis Alignment (optional calibration step)
 
 **Goal**: Let the user re-orient the world coordinate system to a physical reference by clicking points in trial video frames.
 
@@ -1375,12 +1461,12 @@ The calibration code was implemented targeting the flat layout during Phase 4 an
 - `widgets/axis_alignment_widget.py` — **not yet created**
 - `widgets/calibration_view.py` — not yet modified to add alignment tab
 
-#### 7.1 `load_cameras()` fix (`geometry.py`)
+#### 8.1 `load_cameras()` fix (`geometry.py`)
 
 - [ ] Check whether `load_cameras()` already skips `"alignment"` sections — the calibration file schema section documents this behavior but the actual skip list in `geometry.py` may only include `"metadata"`; add `"alignment"` to the skip list if not already present
 - [ ] Add `load_alignment(path) -> tuple[np.ndarray, np.ndarray] | None` — reads `R_align` and `origin` from `[alignment]` section; returns `None` if absent
 
-#### 7.2 Axis alignment widget (`widgets/axis_alignment_widget.py`)
+#### 8.2 Axis alignment widget (`widgets/axis_alignment_widget.py`)
 
 - [ ] `AxisAlignmentWidget(QWidget)`:
   - Trial selector `QComboBox` + frame navigation (prev/next buttons + frame spinbox)
@@ -1402,7 +1488,7 @@ The calibration code was implemented targeting the flat layout during Phase 4 an
     1. Write `[alignment]` section to `calibration.toml` (`save_aligned_calibration()`)
     2. Emit `alignment_saved` signal so `CalibrationView` / `LabelView` can reload calibration
 
-#### 7.3 Integrate into calibration view (`widgets/calibration_view.py`)
+#### 8.3 Integrate into calibration view (`widgets/calibration_view.py`)
 
 - [ ] Add "Axis Alignment" as a second tab in `CalibrationView` (alongside the existing board detection / calibration tab)
 - [ ] Instantiate `AxisAlignmentWidget` in the new tab
@@ -1410,11 +1496,11 @@ The calibration code was implemented targeting the flat layout during Phase 4 an
 
 ---
 
-### Phase 8 — Export
+### Phase 9 — Export
 
 **Goal**: Export labeled data back to external formats.
 
-#### 8.1 Export view (`widgets/export_view.py`)
+#### 9.1 Export view (`widgets/export_view.py`)
 - [ ] Format dropdown (populated from adapter registry)
 - [ ] Trial selector (all / specific)
 - [ ] Instance type checkboxes (user / predicted)
@@ -1427,7 +1513,103 @@ The calibration code was implemented targeting the flat layout during Phase 4 an
 
 ---
 
-### Phase 9 — Polish and robustness
+### Phase 10 — SLP write-back
+
+**Goal**: Write current labels from `PointsStore`/`points.csv` back to SLP files in `project/slp/` on explicit save; prompt on close if dirty.
+
+**Design principle**: SLP files are synchronized copies updated on demand. Auto-save (every 30 s) writes only `points.csv`. SLP write-back happens only on explicit **File > Save** to avoid expensive sleap_io serialization on every keystroke.
+
+#### 10.1 `Project.sync_slp_files()` (`project.py`)
+
+```python
+def sync_slp_files(self) -> int:
+    """Flush points.csv and write current labels back to project/slp/*.slp.
+
+    Aggregates all experiments' data (reads each experiment's points.csv
+    from disk if not loaded) and passes to SleapAdapter.save().
+    Returns the number of SLP files written.
+    """
+```
+
+Steps:
+1. `self.points.save_if_dirty()` — flush active experiment's CSV first
+2. Load all experiments' DataFrames via `PointsStore.load_all_experiments(self)` (reads each `experiments/{name}/points.csv` from disk)
+3. `all_df = pd.concat([store.df for store in all_stores])` — aggregate across experiments
+4. `SleapAdapter().save(all_df, self.slp_dir, self.cameras, skeleton=self.skeleton, trials_df=self.trials_df)`
+5. Return count of files written
+
+**File naming convention (canonical):** `{cam}_{trial_name}.slp`, written to `project/slp/`. On first write-back, original imported files (e.g. `my_model.slp`) remain alongside the new canonical files and can be deleted manually. Subsequent saves always overwrite canonical-named files.
+
+**Note**: `SleapAdapter.save()` already exists; this step only wires it to `sync_slp_files()` with the correct arguments (`trials_df` included so Video filename references are correct in the output SLP files).
+
+#### 10.2 File > Save (`main_window.py`)
+
+Enable the **File > Save** menu action (currently a disabled stub):
+
+```python
+save_action.setShortcut(QKeySequence.StandardKey.Save)
+save_action.triggered.connect(self._do_save)
+```
+
+- Run `self._project.sync_slp_files()` in a `QThread` (SLP serialization is slow for large projects)
+- Show a `QProgressDialog` during the write
+- Status bar on success: "Saved — wrote {n} SLP files to {slp_dir}"
+
+#### 10.3 On close — dirty prompt (`main_window.py`)
+
+Extend `closeEvent()`:
+
+```python
+if self._state.points_store and self._state.points_store.dirty:
+    reply = QMessageBox.question(
+        self, "Save before closing?",
+        "You have unsaved changes. Save and update SLP files before closing?",
+        QMessageBox.StandardButton.Save
+        | QMessageBox.StandardButton.Discard
+        | QMessageBox.StandardButton.Cancel,
+    )
+    if reply == QMessageBox.StandardButton.Save:
+        self._project.sync_slp_files()
+    elif reply == QMessageBox.StandardButton.Cancel:
+        event.ignore()
+        return
+```
+
+#### Data flow
+
+```
+Project open
+  ↓  points.csv exists and non-empty? → load into PointsStore
+  ↓  points.csv empty AND slp/ has *.slp files?
+       → QMessageBox("Import SLP predictions?")
+       → [Yes] SleapAdapter.load() → PointsStore.merge_from_df() → mark dirty
+       → auto-save timer writes points.csv within 30 s
+
+[User labels frames; every edit mutates PointsStore]
+  ↓  auto-save every 30 s (points.csv only — no SLP write)
+
+File > Save (Ctrl+S)
+  ↓  points_store.save_if_dirty()  →  write points.csv
+  ↓  PointsStore.load_all_experiments()  →  aggregate all experiments
+  ↓  SleapAdapter.save()  →  write project/slp/{cam}_{trial}.slp  (one per cam×trial)
+
+App close (dirty)
+  ↓  QMessageBox("Save before closing?")
+  ↓  [Save]   → same as File > Save
+  ↓  [Discard] → close without SLP write (points.csv already auto-saved)
+  ↓  [Cancel]  → abort close
+```
+
+#### Scope notes
+
+- **3D data in CSV**: `points.csv` already stores triangulated 3D coordinates in the `(3d, x/y/z)` columns. After SLP import and triangulation, these columns are populated automatically. No separate 3D export file is needed — `points.csv` is the authoritative 3D record.
+- **SLP 3D support**: SLEAP `.slp` files are a 2D format; `SleapAdapter.save()` writes only `(x, y)` per camera. The 3D data lives exclusively in `points.csv`.
+- **Conflict resolution**: Re-running File > Import from SLP files never overwrites `set` or `not_visible` points. Only `predicted` and `not_set` rows are replaced by incoming data.
+- **`load_all_experiments()`**: Declared as a planned method under Phase 6.6. Must be implemented as part of this phase if not already present.
+
+---
+
+### Phase 11 — Polish and robustness
 
 - [ ] **Undo/redo**: Command pattern — each point edit creates an `UndoCommand(trial, frame, instance, bodypart, camera, old_value, new_value)` on `QUndoStack`; `Ctrl+Z`/`Ctrl+Shift+Z`
 - [ ] **Auto-save**: `PointsStore` writes `points.csv` every 30s if dirty + on app close; backup to `.points.csv.bak` before overwriting
@@ -1511,14 +1693,22 @@ The calibration code was implemented targeting the flat layout during Phase 4 an
                                   ▼
                    6.7 setup_project.py (two-level classification) ✅
                                   ▼
-         7.1–7.3 axis alignment (calibration_view tab)
+              7.1–7.5 SLP import (PointsStore.merge_from_df + Project.import_from_slp
+                              + auto-import prompt on open + File > Import from SLP files…)
+                                  │
+                                  │  ★ MILESTONE: predicted instances visible from project open
+                                  ▼
+         8.1–8.3 axis alignment (calibration_view tab)
                        │
                        ▼
-              8.1 export view
+              9.1 export view
                        │
-                       │  ★ MILESTONE: complete app
                        ▼
-                  9.* polish
+              10.1–10.3 SLP write-back (Project.sync_slp_files + File > Save + closeEvent dirty prompt)
+                       │
+                       │  ★ MILESTONE: full SLP round-trip — import → label → save → SLP updated
+                       ▼
+                  11.* polish
 ```
 
 ---
