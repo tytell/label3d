@@ -9,6 +9,9 @@ import cv2
 import pandas as pd
 import toml
 
+import logging
+logger = logging.getLogger(__name__)
+
 from label3d.points import PointsStore
 from label3d.skeleton import Skeleton
 

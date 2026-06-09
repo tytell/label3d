@@ -7,6 +7,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+import logging
+logger = logging.getLogger(__name__)
+
 from label3d.adapters.base import PoseAdapter
 from label3d.points import CAM_COORDS, INDEX_NAMES, THREE_D_COORDS
 
@@ -41,9 +44,12 @@ class SleapAdapter(PoseAdapter):
         rows: list[dict] = []
 
         for slp_path in files:
+            logger.debug(f"Loading SLEAP file: {slp_path}")
             labels = sio.load_file(str(slp_path))
             node_names = [n.name for n in labels.skeleton.nodes]
+            logger.debug(f"{node_names=}")
 
+            logger.debug(f"{len(labels.labeled_frames)} labeled frames")
             for lf in labels.labeled_frames:
                 # Match video to (trial, camera)
                 video_basename = Path(lf.video.filename).name

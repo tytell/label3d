@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 import toml
@@ -24,12 +25,42 @@ from label3d.setup_project import (
 )
 
 
+# --- Helpers ---
+
+
+def _make_slp_file(
+    path: Path,
+    video_filenames: list[str],
+    node_names: list[str] | None = None,
+) -> None:
+    """Write a minimal valid .slp file referencing the given video filenames."""
+    import sleap_io as sio
+
+    if node_names is None:
+        node_names = ["nose", "tail"]
+
+    skeleton = sio.Skeleton(name="test")
+    for name in node_names:
+        skeleton.add_node(name)
+
+    labeled_frames = []
+    for vf in video_filenames:
+        video = sio.Video(filename=vf)
+        pts = np.full((len(node_names), 2), 100.0, dtype=np.float32)
+        inst = sio.Instance.from_numpy(pts, skeleton=skeleton)
+        lf = sio.LabeledFrame(video=video, frame_idx=0, instances=[inst])
+        labeled_frames.append(lf)
+
+    labels = sio.Labels(labeled_frames=labeled_frames)
+    sio.save_file(labels, str(path))
+
+
 # --- Fixtures ---
 
 
 @pytest.fixture
 def source_dir(tmp_path: Path) -> Path:
-    """Create a flat source directory with test video files."""
+    """Create a flat source directory with test video and SLP files."""
     src = tmp_path / "source"
     src.mkdir()
     # Data videos: 2 cameras, 2 trials
@@ -39,9 +70,9 @@ def source_dir(tmp_path: Path) -> Path:
     # Calibration videos
     (src / "calib_left.mp4").write_bytes(b"\x00" * 100)
     (src / "calib_right.mp4").write_bytes(b"\x00" * 100)
-    # SLP files
-    (src / "left_trial001.slp").write_bytes(b"\x00" * 100)
-    (src / "right_trial001.slp").write_bytes(b"\x00" * 100)
+    # SLP files: one per camera for trial001, referencing the actual video filenames
+    _make_slp_file(src / "left_trial001.slp", ["left_trial001.mp4"])
+    _make_slp_file(src / "right_trial001.slp", ["right_trial001.mp4"])
     return src
 
 
@@ -185,10 +216,14 @@ class TestClassifyFiles:
         assert len(assignment.calibration["left"]) == 1
         assert len(assignment.calibration["right"]) == 1
 
-        # Should have SLP files
+        # SLP files matched to trial_001 via embedded video names
         assert "trial_001" in assignment.slp_files
+        assert "left" in assignment.slp_files["trial_001"]
+        assert "right" in assignment.slp_files["trial_001"]
+        # trial_002 has no SLP files (we only created SLP for trial001)
+        assert "trial_002" not in assignment.slp_files
 
-        # No unmatched files
+        # No unmatched video/slp files
         assert len(assignment.unmatched) == 0
 
     def test_unmatched_files(self, basic_config, source_dir):
@@ -429,6 +464,35 @@ class TestExecuteSetup:
         assert config_data["charuco"]["squares_x"] == 6
         assert config_data["charuco"]["marker_bits"] == 4
 
+    def test_skeleton_json_written(self, basic_config):
+        assignment = classify_files(basic_config)
+        execute_setup(basic_config, assignment)
+
+        skel_path = basic_config.output_dir / "skeleton.json"
+        assert skel_path.is_file()
+        import json
+        data = json.loads(skel_path.read_text())
+        assert data["nodes"] == ["nose", "tail"]
+        assert data["edges"] == []
+        assert data["symmetries"] == []
+
+    def test_no_skeleton_json_without_slp(self, tmp_path):
+        """When no SLP files are present, skeleton.json should not be written."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "left_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "right_001.mp4").write_bytes(b"\x00" * 100)
+        config = SetupConfig(
+            source_dir=src,
+            output_dir=tmp_path / "out",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="number",
+        )
+        assignment = classify_files(config)
+        execute_setup(config, assignment)
+        assert not (tmp_path / "out" / "skeleton.json").exists()
+
     def test_output_exists_error(self, basic_config):
         basic_config.output_dir.mkdir(parents=True)
         assignment = classify_files(basic_config)
@@ -509,9 +573,10 @@ class TestExtractTrialPrefix:
         )
 
     def test_number_strategy(self):
+        # Prefix must not contain digits; "18" in "PS18" would be found first
         assert (
-            _extract_trial_prefix("PS18_001_left.mp4", ["left", "right"], "number")
-            == "PS18"
+            _extract_trial_prefix("PS_001_left.mp4", ["left", "right"], "number")
+            == "PS"
         )
 
     def test_datestamp_strategy(self):
@@ -641,3 +706,189 @@ class TestSplitDetection:
         assert "Multiple calibration groups detected" in text
         assert "PS18" in text
         assert "PS19" in text
+
+
+# --- Unit tests: SLP matching ---
+
+
+class TestSlpMatching:
+    def test_slp_matched_via_video_content(self, tmp_path):
+        """SLP file is matched to trial by the video it references, not by filename."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "left_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "right_001.mp4").write_bytes(b"\x00" * 100)
+        # SLP file has an arbitrary name but references left_001.mp4
+        _make_slp_file(src / "tracking_results.slp", ["left_001.mp4"])
+
+        config = SetupConfig(
+            source_dir=src,
+            output_dir=tmp_path / "out",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="number",
+        )
+        assignment = classify_files(config)
+        assert "trial_001" in assignment.slp_files
+        assert "left" in assignment.slp_files["trial_001"]
+        assert "right" not in assignment.slp_files["trial_001"]
+
+    def test_slp_unmatched_video_warns(self, tmp_path):
+        """SLP referencing a video not in the folder produces a warning."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "left_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "right_001.mp4").write_bytes(b"\x00" * 100)
+        _make_slp_file(src / "tracking.slp", ["ghost_camera_001.mp4"])
+
+        config = SetupConfig(
+            source_dir=src,
+            output_dir=tmp_path / "out",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="number",
+        )
+        assignment = classify_files(config)
+        assert any("ghost_camera_001.mp4" in w for w in assignment.warnings)
+
+    def test_uncovered_video_warns(self, tmp_path):
+        """Videos with no corresponding SLP file produce a warning."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "left_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "right_001.mp4").write_bytes(b"\x00" * 100)
+        # SLP only covers left camera
+        _make_slp_file(src / "tracking.slp", ["left_001.mp4"])
+
+        config = SetupConfig(
+            source_dir=src,
+            output_dir=tmp_path / "out",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="number",
+        )
+        assignment = classify_files(config)
+        assert any("right_001.mp4" in w for w in assignment.warnings)
+
+    def test_skeleton_extracted(self, tmp_path):
+        """Skeleton is extracted from SLP files and stored in assignment."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "left_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "right_001.mp4").write_bytes(b"\x00" * 100)
+        _make_slp_file(src / "tracking.slp", ["left_001.mp4"], node_names=["head", "spine", "tail"])
+
+        config = SetupConfig(
+            source_dir=src,
+            output_dir=tmp_path / "out",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="number",
+        )
+        assignment = classify_files(config)
+        assert assignment.skeleton is not None
+        assert assignment.skeleton["nodes"] == ["head", "spine", "tail"]
+
+    def test_consistent_skeletons_ok(self, tmp_path):
+        """Two SLP files with identical skeletons should not raise."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "left_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "right_001.mp4").write_bytes(b"\x00" * 100)
+        _make_slp_file(src / "left.slp", ["left_001.mp4"], node_names=["nose", "tail"])
+        _make_slp_file(src / "right.slp", ["right_001.mp4"], node_names=["nose", "tail"])
+
+        config = SetupConfig(
+            source_dir=src,
+            output_dir=tmp_path / "out",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="number",
+        )
+        assignment = classify_files(config)
+        assert assignment.skeleton is not None
+        assert assignment.skeleton["nodes"] == ["nose", "tail"]
+
+    def test_inconsistent_skeletons_error(self, tmp_path):
+        """Two SLP files with different skeletons must raise ValueError."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "left_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "right_001.mp4").write_bytes(b"\x00" * 100)
+        _make_slp_file(src / "left.slp", ["left_001.mp4"], node_names=["nose", "tail"])
+        _make_slp_file(src / "right.slp", ["right_001.mp4"], node_names=["head", "body"])
+
+        config = SetupConfig(
+            source_dir=src,
+            output_dir=tmp_path / "out",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="number",
+        )
+        with pytest.raises(ValueError, match="inconsistent skeletons"):
+            classify_files(config)
+
+    def test_single_slp_covers_multiple_cameras(self, tmp_path):
+        """One SLP file referencing videos for two cameras maps to both."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "left_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "right_001.mp4").write_bytes(b"\x00" * 100)
+        _make_slp_file(src / "both.slp", ["left_001.mp4", "right_001.mp4"])
+
+        config = SetupConfig(
+            source_dir=src,
+            output_dir=tmp_path / "out",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="number",
+        )
+        assignment = classify_files(config)
+        assert "trial_001" in assignment.slp_files
+        assert "left" in assignment.slp_files["trial_001"]
+        assert "right" in assignment.slp_files["trial_001"]
+        # The same slp file is referenced for both cameras
+        assert (
+            assignment.slp_files["trial_001"]["left"]
+            == assignment.slp_files["trial_001"]["right"]
+        )
+
+    def test_single_slp_deduped_on_move(self, tmp_path):
+        """A single SLP covering both cameras should only be moved once."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "left_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "right_001.mp4").write_bytes(b"\x00" * 100)
+        _make_slp_file(src / "both.slp", ["left_001.mp4", "right_001.mp4"])
+
+        config = SetupConfig(
+            source_dir=src,
+            output_dir=tmp_path / "out",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="number",
+        )
+        assignment = classify_files(config)
+        execute_setup(config, assignment)
+
+        slp_files = list((tmp_path / "out" / "slp").iterdir())
+        assert len(slp_files) == 1
+        assert slp_files[0].name == "both.slp"
+
+    def test_corrupt_slp_warns(self, tmp_path):
+        """A file with .slp extension that can't be parsed produces a warning."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "left_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "right_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "corrupt.slp").write_bytes(b"\x00" * 50)
+
+        config = SetupConfig(
+            source_dir=src,
+            output_dir=tmp_path / "out",
+            camera_names=["left", "right"],
+            calib_keyword="calib",
+            match_strategy="number",
+        )
+        assignment = classify_files(config)
+        assert any("corrupt.slp" in w for w in assignment.warnings)
