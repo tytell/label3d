@@ -2,9 +2,10 @@
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSlider, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 from label3d.state import ProjectState
+from label3d.widgets.frame_slider import FrameSlider
 
 
 class FrameControls(QWidget):
@@ -38,10 +39,8 @@ class FrameControls(QWidget):
         self._frame_label.setMinimumWidth(100)
         layout.addWidget(self._frame_label)
 
-        # Seekbar
-        self._slider = QSlider(Qt.Orientation.Horizontal)
-        self._slider.setMinimum(0)
-        self._slider.setMaximum(0)
+        # Seekbar with per-camera label indicators
+        self._slider = FrameSlider()
         layout.addWidget(self._slider, stretch=1)
 
         # Connect buttons
@@ -53,7 +52,7 @@ class FrameControls(QWidget):
         self._btn_next_big.clicked.connect(lambda: state.step_frame(4))
 
         # Connect slider
-        self._slider.valueChanged.connect(self._on_slider_changed)
+        self._slider.frame_changed.connect(self._on_slider_changed)
 
         # Connect state signals
         state.frame_changed.connect(self._on_frame_changed)
@@ -61,15 +60,21 @@ class FrameControls(QWidget):
         # Keyboard shortcuts (registered on parent window via shortcut context)
         self._setup_shortcuts()
 
-    def set_range(self, max_frame: int):
+    def set_cameras(self, cameras: list[str]) -> None:
+        """Inform the slider of the ordered camera list (sets up rows)."""
+        self._slider.set_cameras(cameras)
+
+    def set_range(self, max_frame: int) -> None:
         """Set the valid frame range."""
-        self._slider.setMaximum(max_frame)
+        self._slider.set_range(max_frame)
         self._update_label()
 
+    def update_marks(self, marks: dict[str, dict[int, str]]) -> None:
+        """Update labeled-frame tick marks on the slider."""
+        self._slider.set_marks(marks)
+
     def _on_frame_changed(self, frame: int):
-        self._slider.blockSignals(True)
-        self._slider.setValue(frame)
-        self._slider.blockSignals(False)
+        self._slider.set_value(frame)
         self._update_label()
 
     def _on_slider_changed(self, value: int):

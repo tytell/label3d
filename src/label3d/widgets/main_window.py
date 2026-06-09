@@ -131,6 +131,7 @@ class MainWindow(QMainWindow):
 
         # Frame controls (bottom) — only relevant in Label tab
         self._frame_controls = FrameControls(state)
+        self._frame_controls.set_cameras(project.cameras)
         main_layout.addWidget(self._frame_controls)
 
         # Connect tab switching
@@ -143,6 +144,10 @@ class MainWindow(QMainWindow):
 
         # Menus
         self._setup_menus()
+
+        # Track the currently-connected PointsStore for marks updates
+        self._connected_store = None
+        self._connect_store(project.points)
 
         # Connect state signals
         state.experiment_changed.connect(self._on_experiment_state_changed)
@@ -173,6 +178,15 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         export_action = file_menu.addAction("Export points...")
         export_action.setEnabled(False)
+
+        # Navigate menu
+        nav_menu = menu_bar.addMenu("Navigate")
+        prev_labeled = nav_menu.addAction("Previous labeled frame")
+        prev_labeled.setShortcut(QKeySequence("["))
+        prev_labeled.triggered.connect(self._state.jump_to_prev_labeled)
+        next_labeled = nav_menu.addAction("Next labeled frame")
+        next_labeled.setShortcut(QKeySequence("]"))
+        next_labeled.triggered.connect(self._state.jump_to_next_labeled)
 
         # View menu
         view_menu = menu_bar.addMenu("View")
@@ -219,6 +233,28 @@ class MainWindow(QMainWindow):
 
         self._layout_actions[LayoutMode.GRID].setChecked(True)
 
+    # -- Slider marks ----------------------------------------------------------
+
+    def _connect_store(self, store) -> None:
+        """Wire PointsStore.changed → slider marks refresh, replacing any old connection."""
+        if self._connected_store is not None:
+            try:
+                self._connected_store.changed.disconnect(self._update_slider_marks)
+            except RuntimeError:
+                pass
+        self._connected_store = store
+        if store is not None:
+            store.changed.connect(self._update_slider_marks)
+
+    def _update_slider_marks(self) -> None:
+        store = self._state.points_store
+        trial = self._state.current_trial
+        if store is None or not trial:
+            self._frame_controls.update_marks({})
+            return
+        marks = store.get_labeled_frames_by_camera(trial)
+        self._frame_controls.update_marks(marks)
+
     # -- Experiment switching ------------------------------------------------
 
     def _on_experiment_combo_changed(self, name: str):
@@ -239,6 +275,7 @@ class MainWindow(QMainWindow):
 
         self._project.set_experiment(name)
         self._state.points_store = self._project.points
+        self._connect_store(self._project.points)
         self._label_view.reload_for_experiment()
         self._calibration_view.reload_for_experiment()
 
@@ -307,6 +344,8 @@ class MainWindow(QMainWindow):
 
         # Force first frame display (direct call covers pre-signal-connection startup)
         self._camera_grid.update_frame(frame)
+
+        self._update_slider_marks()
 
         self._status_bar.showMessage(
             f"Trial: {trial_name} — {length} frames, "

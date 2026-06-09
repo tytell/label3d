@@ -198,3 +198,17 @@ class ProjectState(QObject):
 
     def go_to_end(self):
         self.current_frame = self._max_frame
+
+    def jump_to_next_labeled(self):
+        if self._points_store is None or not self._current_trial:
+            return
+        f = self._points_store.get_next_labeled_frame(self._current_trial, self._current_frame)
+        if f is not None:
+            self.current_frame = f
+
+    def jump_to_prev_labeled(self):
+        if self._points_store is None or not self._current_trial:
+            return
+        f = self._points_store.get_prev_labeled_frame(self._current_trial, self._current_frame)
+        if f is not None:
+            self.current_frame = f

@@ -352,6 +352,54 @@ class PointsStore(QObject):
         self._df.at[idx, (camera, "yr")] = yr
         self._mark_dirty()
 
+    # -- Labeled-frame queries -------------------------------------------------
+
+    def get_labeled_frames_by_camera(self, trial: str) -> dict[str, dict[int, str]]:
+        """Return which frames have labels, keyed by camera then frame index.
+
+        Each frame maps to 'user' (state 'set' or 'not_visible') or 'predicted'.
+        Frames with only 'not_set' states are omitted.
+        """
+        result: dict[str, dict[int, str]] = {cam: {} for cam in self.cameras}
+        try:
+            trial_df = self._df.loc[(self._experiment_name, trial)]
+        except KeyError:
+            return result
+
+        for cam in self.cameras:
+            if (cam, "state") not in trial_df.columns:
+                continue
+            states = trial_df[(cam, "state")]
+            for frame_idx, group in states.groupby(level="frame"):
+                vals = group.values
+                if any(s in ("set", "not_visible") for s in vals):
+                    result[cam][int(frame_idx)] = "user"
+                elif any(s == "predicted" for s in vals):
+                    result[cam][int(frame_idx)] = "predicted"
+
+        return result
+
+    def _all_labeled_frame_indices(self, trial: str) -> list[int]:
+        by_cam = self.get_labeled_frames_by_camera(trial)
+        frames: set[int] = set()
+        for cam_marks in by_cam.values():
+            frames.update(cam_marks.keys())
+        return sorted(frames)
+
+    def get_next_labeled_frame(self, trial: str, current_frame: int) -> int | None:
+        """Return the smallest labeled frame index > current_frame, or None."""
+        for f in self._all_labeled_frame_indices(trial):
+            if f > current_frame:
+                return f
+        return None
+
+    def get_prev_labeled_frame(self, trial: str, current_frame: int) -> int | None:
+        """Return the largest labeled frame index < current_frame, or None."""
+        for f in reversed(self._all_labeled_frame_indices(trial)):
+            if f < current_frame:
+                return f
+        return None
+
     # -- Internal --------------------------------------------------------------
 
     def _ensure_row(self, idx: tuple) -> None:
