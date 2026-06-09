@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
+import sleap_io as sio
 import toml
+
+logger = logging.getLogger(__name__)
 
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".cine"}
 SLP_EXTENSION = ".slp"
@@ -52,6 +57,14 @@ class FileAssignment:
     unmatched: list[Path] = field(default_factory=list)
     # warnings generated during classification
     warnings: list[str] = field(default_factory=list)
+    # skeleton extracted from .slp files (nodes/edges/symmetries); None if no SLP files present
+    skeleton: dict | None = None
+    # split detection: True when multiple calibration groups (prefixes) are found
+    needs_split: bool = False
+    # prefix -> {camera_name: [calib files]}
+    calibration_groups: dict[str, dict[str, list[Path]]] = field(default_factory=dict)
+    # trial_name -> calibration-group prefix
+    trial_prefix: dict[str, str] = field(default_factory=dict)
 
 
 def classify_files(config: SetupConfig) -> FileAssignment:
@@ -65,7 +78,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
     # Collect all relevant files
     all_files = sorted(source.iterdir())
     video_files: list[Path] = []
-    slp_files: list[Path] = []
+    slp_paths: list[Path] = []
     image_files: list[Path] = []
 
     for f in all_files:
@@ -75,7 +88,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         if ext in VIDEO_EXTENSIONS:
             video_files.append(f)
         elif ext == SLP_EXTENSION:
-            slp_files.append(f)
+            slp_paths.append(f)
         elif ext in IMAGE_EXTENSIONS:
             image_files.append(f)
 
@@ -86,7 +99,6 @@ def classify_files(config: SetupConfig) -> FileAssignment:
     calib_videos: list[tuple[str, Path]] = []  # (camera, path)
     calib_images: list[tuple[str, Path]] = []
     data_videos: list[tuple[str, Path]] = []
-    data_slps: list[tuple[str, Path]] = []
 
     for f in video_files:
         camera = _identify_camera(f.name, config.camera_names)
@@ -110,16 +122,6 @@ def classify_files(config: SetupConfig) -> FileAssignment:
             calib_images.append((camera, f))
         else:
             assignment.unmatched.append(f)
-
-    for f in slp_files:
-        camera = _identify_camera(f.name, config.camera_names)
-        if camera is None:
-            assignment.unmatched.append(f)
-            assignment.warnings.append(
-                f"SLP file '{f.name}' does not match any camera name"
-            )
-            continue
-        data_slps.append((camera, f))
 
     # Build calibration dict
     for camera, f in calib_videos:
@@ -147,22 +149,70 @@ def classify_files(config: SetupConfig) -> FileAssignment:
     else:
         raise ValueError(f"Unknown match strategy: {config.match_strategy}")
 
-    # Match SLP files to trials using the same strategy
-    if data_slps:
-        if config.match_strategy == "number":
-            assignment.slp_files = _match_by_number(data_slps, config.camera_names)
-        elif config.match_strategy == "keyword":
-            assignment.slp_files = _match_by_keyword(data_slps, config.trial_keyword)
-        elif config.match_strategy == "regex":
-            assignment.slp_files = _match_by_regex(data_slps, config.trial_regex)
-        elif config.match_strategy == "datestamp":
-            assignment.slp_files = _match_by_datestamp(
-                data_slps, config.camera_names, config.datestamp_window_sec
+    # Match SLP files to trials via their embedded video references
+    if slp_paths:
+        # Build lookup: video_basename -> (trial_name, camera_name)
+        video_to_trial_cam: dict[str, tuple[str, str]] = {}
+        for trial_name, cam_files in assignment.trials.items():
+            for cam, fp in cam_files.items():
+                video_to_trial_cam[fp.name] = (trial_name, cam)
+
+        covered: set[tuple[str, str]] = set()
+        skeleton_dicts: list[dict] = []
+
+        logger.debug("Trial video lookup: %s", sorted(video_to_trial_cam))
+
+        for slp_path in slp_paths:
+            try:
+                video_basenames, skeleton_dict = _read_slp_info(slp_path)
+            except Exception as e:
+                assignment.warnings.append(
+                    f"Could not read SLP file '{slp_path.name}': {e}"
+                )
+                continue
+
+            logger.debug(
+                "SLP '%s' contains videos: %s", slp_path.name, sorted(video_basenames)
             )
-        elif config.match_strategy == "mtime":
-            assignment.slp_files = _match_by_mtime(
-                data_slps, config.camera_names, config.mtime_window_sec
-            )
+
+            skeleton_dicts.append(skeleton_dict)
+
+            if not video_basenames:
+                assignment.warnings.append(
+                    f"SLP file '{slp_path.name}' has no labeled frames"
+                )
+                continue
+
+            for vb in video_basenames:
+                if vb in video_to_trial_cam:
+                    trial_name, cam = video_to_trial_cam[vb]
+                    assignment.slp_files.setdefault(trial_name, {})[cam] = slp_path
+                    covered.add((trial_name, cam))
+                else:
+                    assignment.warnings.append(
+                        f"SLP file '{slp_path.name}' references video '{vb}'"
+                        " not found in source folder"
+                    )
+
+        # Warn about videos not covered by any SLP file
+        for trial_name, cam_files in assignment.trials.items():
+            for cam, fp in cam_files.items():
+                if (trial_name, cam) not in covered:
+                    assignment.warnings.append(
+                        f"No SLP file covers video '{fp.name}'"
+                        f" (trial '{trial_name}', camera '{cam}')"
+                    )
+
+        # Check skeleton consistency; error on mismatch
+        if skeleton_dicts:
+            first = set(skeleton_dicts[0]['nodes'])
+            for sd in skeleton_dicts[1:]:
+                if set(sd['nodes']) != first:
+                    raise ValueError(
+                        "SLP files have inconsistent skeletons — "
+                        "all .slp files must share the same skeleton."
+                    )
+            assignment.skeleton = skeleton_dicts[0]
 
     # Warn about incomplete trials
     for trial_name, cam_files in assignment.trials.items():
@@ -193,6 +243,25 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         for camera, filepath in all_calib:
             assignment.exp_calibration.setdefault("default", {}).setdefault(camera, []).append(filepath)
 
+    # Detect calibration groups for multi-group split detection
+    prefix_to_calib: dict[str, dict[str, list[Path]]] = {}
+    for cam, fp in all_calib:
+        prefix = _extract_calib_prefix(fp.name, config.camera_names, config.calib_keyword)
+        prefix_to_calib.setdefault(prefix, {}).setdefault(cam, []).append(fp)
+
+    if len(prefix_to_calib) > 1:
+        assignment.needs_split = True
+        assignment.calibration_groups = prefix_to_calib
+        for trial_name, cam_files in assignment.trials.items():
+            if cam_files:
+                first_file = next(iter(cam_files.values()))
+                assignment.trial_prefix[trial_name] = _extract_trial_prefix(
+                    first_file.name,
+                    config.camera_names,
+                    config.match_strategy,
+                    trial_keyword=config.trial_keyword,
+                )
+
     # Warn for experiments that are missing calibration for one or more cameras
     experiments_with_trials = (
         set(assignment.trial_experiment.values()) if assignment.trial_experiment else {"default"}
@@ -211,6 +280,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
 def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
     """Return a human-readable summary of the file assignment."""
     lines = []
+
     lines.append(f"Project: {config.project_name or config.output_dir.name}")
     lines.append(f"Output:  {config.output_dir}")
     lines.append(f"Experiments: {', '.join(config.experiment_keywords) if config.experiment_keywords else '(default)'}")
@@ -308,7 +378,8 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     Output layout:
       project/
         project.toml
-        trials.csv               ← experiment + trial columns
+        skeleton.json            <- written if SLP files provided a skeleton
+        trials.csv               <- experiment + trial columns
         slp/
         experiments/
           default/
@@ -369,19 +440,75 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         df = pd.DataFrame(trials_rows, columns=columns)
         df.to_csv(out / "trials.csv", index=False)
 
-    # Move/copy SLP files
+    # Move/copy SLP files (deduplicate: one slp_path may cover multiple trial+camera pairs)
     if assignment.slp_files:
         slp_dir = out / "slp"
         slp_dir.mkdir(parents=True, exist_ok=True)
+        seen: set[Path] = set()
         for trial_name, cam_files in assignment.slp_files.items():
             for cam, f in cam_files.items():
-                transfer(str(f), str(slp_dir / f.name))
+                if f not in seen:
+                    seen.add(f)
+                    transfer(str(f), str(slp_dir / f.name))
 
     # Write project.toml
     write_project_toml(out, config.project_name or out.name, config.charuco)
 
+    # Write skeleton.json if a skeleton was extracted from SLP files
+    if assignment.skeleton:
+        with open(out / "skeleton.json", "w") as fh:
+            json.dump(assignment.skeleton, fh, indent=2)
+
     return out
 
+
+def split_project_groups(
+    config: SetupConfig, assignment: FileAssignment
+) -> dict[str, tuple[SetupConfig, FileAssignment]]:
+    """Split a multi-calibration-group assignment into per-prefix sub-configs/assignments.
+
+    Returns a dict mapping each calibration prefix to a (SetupConfig, FileAssignment) pair
+    ready to pass to execute_setup.  Returns an empty dict if needs_split is False.
+    """
+    if not assignment.needs_split:
+        return {}
+
+    result: dict[str, tuple[SetupConfig, FileAssignment]] = {}
+
+    for prefix, cam_calib_dict in assignment.calibration_groups.items():
+        sub_config = SetupConfig(
+            source_dir=config.source_dir,
+            output_dir=config.output_dir.parent / prefix,
+            camera_names=config.camera_names,
+            calib_keyword=config.calib_keyword,
+            match_strategy=config.match_strategy,
+            mtime_window_sec=config.mtime_window_sec,
+            datestamp_window_sec=config.datestamp_window_sec,
+            charuco=config.charuco,
+            project_name=prefix,
+            copy_files=config.copy_files,
+            trial_keyword=config.trial_keyword,
+            trial_regex=config.trial_regex,
+            experiment_keywords=config.experiment_keywords,
+        )
+
+        sub_trials = {
+            t: cams
+            for t, cams in assignment.trials.items()
+            if assignment.trial_prefix.get(t) == prefix
+        }
+        sub_calibration = {cam: list(files) for cam, files in cam_calib_dict.items()}
+        sub_assignment = FileAssignment(
+            trials=sub_trials,
+            calibration=sub_calibration,
+            exp_calibration={"default": sub_calibration},
+            unmatched=list(assignment.unmatched),
+            skeleton=assignment.skeleton,
+        )
+
+        result[prefix] = (sub_config, sub_assignment)
+
+    return result
 
 
 def write_project_toml(
@@ -403,6 +530,21 @@ def write_project_toml(
 
 
 # --- Internal helpers ---
+
+
+def _read_slp_info(slp_path: Path) -> tuple[set[str], dict]:
+    """Open a .slp file; return (video_basenames, skeleton_dict).
+
+    skeleton_dict has keys: nodes (list[str]), edges (list[tuple]),
+    symmetries (list[tuple]).
+    """
+    labels = sio.load_file(str(slp_path))
+    video_basenames = {Path(lf.video.filename).name for lf in labels.labeled_frames}
+    sk = labels.skeleton
+    nodes = [n.name for n in sk.nodes]
+    edges = [(e.source.name, e.destination.name) for e in sk.edges]
+    symmetries = [(s[0].name, s[1].name) for s in sk.symmetries]
+    return video_basenames, {"nodes": nodes, "edges": edges, "symmetries": symmetries}
 
 
 def _identify_experiment(filename: str, experiment_keywords: list[str]) -> str:
@@ -437,6 +579,64 @@ def _identify_camera(filename: str, camera_names: list[str]) -> str | None:
         # Truly ambiguous
         return None
     return None
+
+
+def _extract_calib_prefix(
+    filename: str, camera_names: list[str], calib_keyword: str
+) -> str:
+    """Extract the experiment prefix from a calibration filename.
+
+    Removes the camera name and calibration keyword from the stem, then
+    returns the cleaned-up leading portion as the prefix.
+    """
+    stem = Path(filename).stem
+    for cam in camera_names:
+        stem = re.sub(re.escape(cam), "", stem, flags=re.IGNORECASE)
+    if calib_keyword:
+        stem = re.sub(re.escape(calib_keyword), "", stem, flags=re.IGNORECASE)
+    return stem.strip("_- ")
+
+
+def _extract_trial_prefix(
+    filename: str,
+    camera_names: list[str],
+    match_strategy: str,
+    trial_keyword: str = "",
+    trial_regex: str = "",
+) -> str:
+    """Extract the experiment prefix from a trial filename.
+
+    Removes the camera name and the trial-identifying portion (number,
+    keyword+number, datestamp, etc.) and returns what remains as the prefix.
+    """
+    stem = Path(filename).stem
+    for cam in camera_names:
+        stem = re.sub(re.escape(cam), "", stem, flags=re.IGNORECASE)
+    stem = stem.strip("_- ")
+
+    if match_strategy == "number":
+        m = re.search(r"\d+", stem)
+        if m:
+            return stem[: m.start()].strip("_- ")
+        return stem
+
+    if match_strategy == "keyword":
+        if trial_keyword:
+            m = re.search(re.escape(trial_keyword) + r"\d*", stem, re.IGNORECASE)
+            if m:
+                return stem[: m.start()].strip("_- ")
+        return stem
+
+    if match_strategy == "datestamp":
+        for regex, _, _ in _DATESTAMP_PATTERNS:
+            m = regex.search(stem)
+            if m:
+                return stem[: m.start()].strip("_- ")
+        return stem
+
+    # mtime / regex / unknown — fall back to first underscore-delimited token
+    parts = re.split(r"[_\-\s]+", stem)
+    return parts[0] if parts else ""
 
 
 def _extract_trial_key_number(
@@ -504,7 +704,7 @@ def _extract_trial_key_datestamp(
     for regex, has_time, _is_yh_format in _DATESTAMP_PATTERNS:
         m = regex.search(stem)
         if m:
-            groups = m.groups()
+            groups = list(m.groups())
             date_str = f"{groups[0]}{groups[1]}{groups[2]}"
             if has_time:
                 hh, mm, ss = int(groups[3]), int(groups[4]), int(groups[5])
@@ -520,7 +720,6 @@ def _extract_trial_key_datestamp(
                     label=date_str, timestamp=0.0, date_str=date_str
                 )
     return None
-
 
 
 def _match_by_keyword(
@@ -720,5 +919,3 @@ def _match_by_mtime(
         result[trial_name] = cam_files
 
     return result
-
-

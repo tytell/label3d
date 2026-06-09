@@ -32,6 +32,7 @@ Config file format (TOML):
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -334,7 +335,15 @@ def main() -> None:
         default=False,
         help="Show what would be done without moving or copying any files",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Enable debug logging",
+    )
     args = parser.parse_args()
+
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.WARNING)
 
     if args.config:
         config_path = Path(args.config)
