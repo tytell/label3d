@@ -12,12 +12,16 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
+    QProgressDialog,
     QStackedWidget,
     QStatusBar,
     QTabBar,
     QVBoxLayout,
     QWidget,
 )
+
+from label3d.workers.import_worker import ImportWorker
 
 from label3d.project import Project
 from label3d.state import ProjectState
@@ -158,6 +162,9 @@ class MainWindow(QMainWindow):
         if project.trial_names():
             self._load_trial(project.trial_names()[0])
 
+        # Offer SLP import if points.csv is empty
+        self._maybe_offer_slp_import()
+
     # -- Menus ---------------------------------------------------------------
 
     def _setup_menus(self):
@@ -175,6 +182,9 @@ class MainWindow(QMainWindow):
         new_action.setEnabled(False)
         open_action = file_menu.addAction("Open project...")
         open_action.setEnabled(False)
+        file_menu.addSeparator()
+        import_slp_action = file_menu.addAction("Import from SLP files…")
+        import_slp_action.triggered.connect(self._do_import_slp)
         file_menu.addSeparator()
         export_action = file_menu.addAction("Export points...")
         export_action.setEnabled(False)
@@ -297,6 +307,8 @@ class MainWindow(QMainWindow):
                 self._load_trial(trial_names[0])
                 self._trial_combo.setCurrentIndex(0)
 
+        self._maybe_offer_slp_import()
+
     # -- Tab switching -------------------------------------------------------
 
     def _on_tab_changed(self, index: int):
@@ -395,6 +407,63 @@ class MainWindow(QMainWindow):
             self._status_bar.showMessage(
                 f"Trial: {trial} — frame {frame} — reprojection error: {mean_err:.2f} px"
             )
+
+    # -- SLP import ----------------------------------------------------------
+
+    def _maybe_offer_slp_import(self) -> None:
+        """Prompt the user to import SLP predictions if points.csv is empty."""
+        if not self._project.slp_import_available:
+            return
+        slp_count = len(list(self._project.slp_dir.glob("*.slp")))
+        reply = QMessageBox.question(
+            self,
+            "Import SLP predictions?",
+            f"Found {slp_count} SLP file(s) in {self._project.slp_dir.name}/\n"
+            "and the project has no labeled points yet.\n\n"
+            "Import predicted instances now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._do_import_slp()
+
+    def _do_import_slp(self) -> None:
+        """Run SLP import in a background thread with a progress dialog."""
+        progress = QProgressDialog(
+            "Importing SLP files…", "Cancel", 0, 0, self
+        )
+        progress.setWindowTitle("Importing")
+        progress.setMinimumDuration(0)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setValue(0)
+
+        self._import_worker = ImportWorker(self._project, parent=self)
+        self._import_worker.finished.connect(
+            lambda count: self._on_import_finished(count, progress)
+        )
+        self._import_worker.error.connect(
+            lambda msg: self._on_import_error(msg, progress)
+        )
+        progress.canceled.connect(self._import_worker.requestInterruption)
+        self._import_worker.start()
+
+    def _on_import_finished(self, count: int, progress: QProgressDialog) -> None:
+        progress.close()
+        slp_count = len(list(self._project.slp_dir.glob("*.slp")))
+
+        # Wire the new PointsStore into state so the label view picks it up
+        if self._state.points_store is not self._project.points:
+            self._state.points_store = self._project.points
+            self._connect_store(self._project.points)
+            self._label_view.reload_for_experiment()
+
+        self._update_slider_marks()
+        self._status_bar.showMessage(
+            f"Imported {count} rows from {slp_count} SLP file(s)"
+        )
+
+    def _on_import_error(self, msg: str, progress: QProgressDialog) -> None:
+        progress.close()
+        QMessageBox.critical(self, "Import failed", f"SLP import error:\n{msg}")
 
     def showEvent(self, event):
         super().showEvent(event)

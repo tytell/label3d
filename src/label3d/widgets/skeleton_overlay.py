@@ -112,6 +112,9 @@ class SkeletonOverlay:
                     state=pt.state,
                     x=x,
                     y=y,
+                    camera=cam,
+                    xr=pt.xr if not math.isnan(pt.xr) else None,
+                    yr=pt.yr if not math.isnan(pt.yr) else None,
                     error=error,
                     selected=is_selected,
                 )

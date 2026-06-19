@@ -177,6 +177,60 @@ class Project:
     def trials_csv_path(self) -> Path:
         return self.root / "trials.csv"
 
+    @property
+    def slp_import_available(self) -> bool:
+        """True when points.csv is empty and slp/ contains .slp files."""
+        if not self.slp_dir.exists():
+            return False
+        if not any(self.slp_dir.glob("*.slp")):
+            return False
+        return self.points is None or len(self.points.df) == 0
+
+    def import_from_slp(self, experiment: str | None = None) -> int:
+        """Load all *.slp files from slp/ and merge into the active PointsStore.
+
+        Returns the number of rows added or updated.
+        """
+        from label3d.adapters.sleap_adapter import SleapAdapter
+
+        slp_files = list(self.slp_dir.glob("*.slp"))
+        if not slp_files:
+            return 0
+        if self.trials_df is None:
+            return 0
+
+        target_experiment = experiment or self.active_experiment
+
+        adapter_df = SleapAdapter().load(slp_files, self.trials_df, self.cameras)
+        logger.debug(f"SleapAdapter loaded {len(adapter_df)} rows")
+
+        # Filter to the target experiment using a boolean mask so the result is
+        # always a DataFrame (not a Series) and all index levels are preserved.
+        if not adapter_df.empty and "experiment" in adapter_df.index.names:
+            mask = adapter_df.index.get_level_values("experiment") == target_experiment
+            adapter_df = adapter_df[mask]
+            if adapter_df.empty:
+                logger.debug(f"No rows for experiment {target_experiment} in SLP import")
+                return 0
+
+        if adapter_df.empty:
+            return 0
+
+        # Create PointsStore if not yet initialized
+        if self.points is None:
+            exp = self.experiments[target_experiment]
+            points_path = exp.root / "points.csv"
+            self.points = PointsStore.create_empty(
+                cameras=self.cameras,
+                bodyparts=[],
+                experiment_name=target_experiment,
+            )
+            self.points._save_path = points_path
+
+        added = self.points.merge_from_df(adapter_df)
+        logger.debug(f"Merged {added} rows into PointsStore")
+        return added
+
     def set_experiment(self, name: str) -> None:
         """Switch active experiment, updating cameras/trials/calibration/points."""
         if name not in self.experiments:

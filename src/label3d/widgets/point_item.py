@@ -48,8 +48,11 @@ class PointItem(QGraphicsEllipseItem):
         super().__init__(-r, -r, 2 * r, 2 * r, parent)
         self._bodypart: str = ""
         self._instance: int = 0
+        self._camera: str = ""
         self._state: str = "not_set"
         self._error: float | None = None
+        self._xr: float | None = None
+        self._yr: float | None = None
         self._selected: bool = False
 
         # Constant screen size regardless of zoom
@@ -78,14 +81,20 @@ class PointItem(QGraphicsEllipseItem):
         state: str,
         x: float,
         y: float,
+        camera: str = "",
+        xr: float | None = None,
+        yr: float | None = None,
         error: float | None = None,
         selected: bool = False,
     ):
         """Update all properties and reposition."""
         self._bodypart = bodypart
         self._instance = instance
+        self._camera = camera
         self._state = state
         self._error = error
+        self._xr = xr
+        self._yr = yr
         self._selected = selected
         self.setPos(x, y)
         self._apply_style()
@@ -130,11 +139,22 @@ class PointItem(QGraphicsEllipseItem):
 
     def hoverEnterEvent(self, event):
         """Show tooltip with point info."""
-        lines = [f"{self._bodypart} (inst {self._instance})"]
-        lines.append(f"State: {self._state}")
+        cam_label = f"  —  {self._camera}" if self._camera else ""
+        lines = [f"{self._bodypart}{cam_label}"]
+
+        if self._state == "predicted":
+            lines.append("Source: Predicted (external tracker)")
+        elif self._state == "set":
+            lines.append("Source: User labeled")
+        elif self._state == "not_visible":
+            lines.append("Source: Marked not visible")
+
         pos = self.pos()
-        lines.append(f"Pos: ({pos.x():.1f}, {pos.y():.1f})")
+        lines.append(f"Clicked:     ({pos.x():.1f}, {pos.y():.1f})")
+        if self._xr is not None and self._yr is not None:
+            lines.append(f"Reprojected: ({self._xr:.1f}, {self._yr:.1f})")
         if self._error is not None:
-            lines.append(f"Error: {self._error:.2f}px")
+            lines.append(f"Error:        {self._error:.2f} px")
+
         self.setToolTip("\n".join(lines))
         super().hoverEnterEvent(event)
