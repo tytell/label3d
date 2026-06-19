@@ -427,7 +427,26 @@ class MainWindow(QMainWindow):
             self._do_import_slp()
 
     def _do_import_slp(self) -> None:
-        """Run SLP import in a background thread with a progress dialog."""
+        """Load SLP files in a background thread; merge into PointsStore on main thread.
+
+        The worker only does the I/O-heavy SleapAdapter.load() call.  All
+        PointsStore creation and mutation (QTimer-bearing objects) stays on the
+        main thread to avoid "Timers cannot be stopped from another thread".
+        """
+        # Ensure PointsStore exists in the main thread before the worker starts.
+        # This avoids creating QTimer-bearing objects in the background thread.
+        if self._project.points is None:
+            exp = self._project.experiments[self._project.active_experiment]
+            from label3d.points import PointsStore
+            self._project.points = PointsStore.create_empty(
+                cameras=self._project.cameras,
+                bodyparts=[],
+                experiment_name=self._project.active_experiment,
+            )
+            self._project.points._save_path = exp.root / "points.csv"
+            self._state.points_store = self._project.points
+            self._connect_store(self._project.points)
+
         progress = QProgressDialog(
             "Importing SLP files…", "Cancel", 0, 0, self
         )
@@ -437,8 +456,9 @@ class MainWindow(QMainWindow):
         progress.setValue(0)
 
         self._import_worker = ImportWorker(self._project, parent=self)
-        self._import_worker.finished.connect(
-            lambda count: self._on_import_finished(count, progress)
+        # `loaded` delivers the raw DataFrame to the main thread for merging.
+        self._import_worker.loaded.connect(
+            lambda df: self._on_import_loaded(df, progress)
         )
         self._import_worker.error.connect(
             lambda msg: self._on_import_error(msg, progress)
@@ -446,11 +466,15 @@ class MainWindow(QMainWindow):
         progress.canceled.connect(self._import_worker.requestInterruption)
         self._import_worker.start()
 
-    def _on_import_finished(self, count: int, progress: QProgressDialog) -> None:
+    def _on_import_loaded(self, adapter_df, progress: QProgressDialog) -> None:
+        """Receive the adapter DataFrame in the main thread and merge into PointsStore."""
         progress.close()
+
+        # All PointsStore mutation happens here, on the main thread.
+        count = self._project.merge_slp_adapter_df(adapter_df)
         slp_count = len(list(self._project.slp_dir.glob("*.slp")))
 
-        # Wire the new PointsStore into state so the label view picks it up
+        # Wire the store into state if it was newly created.
         if self._state.points_store is not self._project.points:
             self._state.points_store = self._project.points
             self._connect_store(self._project.points)
