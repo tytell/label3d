@@ -355,6 +355,19 @@ class CameraPanel(QGraphicsView):
         else:
             self.fit_view()
 
+    def get_scene_rect(self) -> QRectF | None:
+        """Return current visible scene rect; falls back to saved rect for hidden panels."""
+        if self._fitted and self.isVisible():
+            return QRectF(self.mapToScene(self.viewport().rect()).boundingRect())
+        return self._saved_scene_rect
+
+    def set_scene_rect(self, rect: QRectF) -> None:
+        """Apply a scene rect (zoom/pan). If not yet shown, stores for deferred restore."""
+        if self._fitted and self.isVisible():
+            self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+        else:
+            self._saved_scene_rect = QRectF(rect)
+
     def set_frame(self, frame: np.ndarray):
         """Update the displayed frame from a BGR numpy array."""
         # BGR -> RGB

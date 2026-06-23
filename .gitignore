@@ -23,4 +23,7 @@ scratch/
 .claude/settings.local.json
 .vscode/launch.json
 
+# Per-project session state (trial/frame/zoom)
+.label3d_session.ini
+
 

@@ -107,7 +107,7 @@ App close (dirty)
 - [ ] **Suggested frames**: uniformly spaced unlabeled frames shown as ticks; `Space`/`Shift+Space` navigate to them
 - [ ] **Progress indicators**: "42% of frames labeled" per trial
 - [ ] **Frame pre-caching**: on step to frame N, pre-decode N+1 through N+3 in a background thread
-- [ ] **Settings persistence** (`QSettings`, INI format):
+- [x] **Settings persistence** (`QSettings`, INI format):
   - App-level (`~/.config/label3d/label3d.ini`): window geometry, last-opened project path
   - Project-level (`.label3d_session.ini` in project root, gitignored): current trial/frame, camera layout, per-camera zoom/pan
 - [ ] **Calibration frame extraction**: `setup_project` extracts every Nth frame from calibration videos as image stills

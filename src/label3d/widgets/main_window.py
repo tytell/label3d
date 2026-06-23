@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRectF, QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
@@ -41,6 +41,7 @@ class MainWindow(QMainWindow):
         self._state = state
         self._frame_provider = FrameProvider()
         self._experiment_positions: dict[str, tuple[str, int]] = {}
+        self._pending_session: tuple[int, dict[str, QRectF], list[int], list[list[int]]] | None = None
 
         self.setWindowTitle(f"label3d — {project.root.name}")
         self.resize(1200, 800)
@@ -158,9 +159,8 @@ class MainWindow(QMainWindow):
         state.frame_changed.connect(self._on_frame_changed)
         state.points_changed.connect(self._on_points_changed_status)
 
-        # Load first trial
-        if project.trial_names():
-            self._load_trial(project.trial_names()[0])
+        # Load first trial (or restore from session)
+        self._restore_and_apply_session()
 
         # Offer SLP import if points.csv is empty
         self._maybe_offer_slp_import()
@@ -484,6 +484,159 @@ class MainWindow(QMainWindow):
                 f"Trial: {trial} — frame {frame} — reprojection error: {mean_err:.2f} px"
             )
 
+    # -- Settings persistence ------------------------------------------------
+
+    @staticmethod
+    def _app_settings() -> QSettings:
+        return QSettings(
+            QSettings.Format.IniFormat,
+            QSettings.Scope.UserScope,
+            "label3d",
+            "label3d",
+        )
+
+    def _save_app_settings(self) -> None:
+        s = self._app_settings()
+        s.setValue("geometry", self.saveGeometry())
+
+    def _restore_app_settings(self) -> None:
+        s = self._app_settings()
+        geom = s.value("geometry")
+        if geom is not None:
+            self.restoreGeometry(geom)
+
+    def _save_session_settings(self) -> None:
+        ini_path = self._project.root / ".label3d_session.ini"
+        s = QSettings(str(ini_path), QSettings.Format.IniFormat)
+
+        s.beginGroup("session")
+        s.setValue("trial", self._state.current_trial or "")
+        s.setValue("frame", self._state.current_frame)
+        s.setValue("layout_mode", self._camera_grid.layout_mode.value)
+        s.setValue("view_index", self._view_combo.currentIndex())
+        s.endGroup()
+
+        splitter_sizes = self._camera_grid.get_grid_splitter_sizes()
+        if splitter_sizes is not None:
+            v_sizes, row_sizes = splitter_sizes
+            s.beginGroup("splitter")
+            s.setValue("v", ",".join(str(x) for x in v_sizes))
+            for i, row in enumerate(row_sizes):
+                s.setValue(f"row_{i}", ",".join(str(x) for x in row))
+            s.endGroup()
+
+        s.beginGroup("zoom")
+        for cam, rect in self._camera_grid.get_all_scene_rects().items():
+            cam_key = cam.replace("/", "_")
+            s.beginGroup(cam_key)
+            s.setValue("x", rect.x())
+            s.setValue("y", rect.y())
+            s.setValue("w", rect.width())
+            s.setValue("h", rect.height())
+            s.endGroup()
+        s.endGroup()
+
+    def _restore_and_apply_session(self) -> None:
+        """Read .label3d_session.ini and apply trial/frame/layout immediately.
+
+        View-combo and per-camera zoom are deferred to showEvent via
+        _pending_session because panels need their final sizes first.
+        """
+        ini_path = self._project.root / ".label3d_session.ini"
+        trial_names = self._project.trial_names()
+
+        if not ini_path.exists():
+            if trial_names:
+                self._load_trial(trial_names[0])
+            return
+
+        s = QSettings(str(ini_path), QSettings.Format.IniFormat)
+
+        s.beginGroup("session")
+        saved_trial = s.value("trial", "")
+        saved_frame = int(s.value("frame", 0) or 0)
+        layout_val = s.value("layout_mode", "grid")
+        view_index = int(s.value("view_index", 0) or 0)
+        s.endGroup()
+
+        # Apply layout mode
+        try:
+            mode = LayoutMode(layout_val)
+        except ValueError:
+            mode = LayoutMode.GRID
+        self._camera_grid.set_layout_mode(mode)
+        self._layout_actions[mode].setChecked(True)
+
+        # Load saved trial/frame
+        if saved_trial and saved_trial in trial_names:
+            self._trial_combo.setCurrentText(saved_trial)
+            self._load_trial(saved_trial, start_frame=saved_frame)
+        elif trial_names:
+            self._load_trial(trial_names[0])
+
+        # Read zoom rects for deferred restore
+        zoom_rects: dict[str, QRectF] = {}
+        s.beginGroup("zoom")
+        for cam_key in s.childGroups():
+            s.beginGroup(cam_key)
+            x, y, w, h = s.value("x"), s.value("y"), s.value("w"), s.value("h")
+            s.endGroup()
+            if all(v is not None for v in (x, y, w, h)):
+                cam = next(
+                    (c for c in self._project.cameras if c.replace("/", "_") == cam_key),
+                    cam_key,
+                )
+                try:
+                    zoom_rects[cam] = QRectF(float(x), float(y), float(w), float(h))
+                except (TypeError, ValueError):
+                    pass
+        s.endGroup()
+
+        # Read splitter sizes for deferred restore
+        v_sizes: list[int] = []
+        row_sizes: list[list[int]] = []
+        s.beginGroup("splitter")
+        v_str = s.value("v", "")
+        if v_str:
+            try:
+                v_sizes = [int(x) for x in str(v_str).split(",") if x.strip()]
+            except ValueError:
+                pass
+        i = 0
+        while True:
+            row_str = s.value(f"row_{i}")
+            if row_str is None:
+                break
+            try:
+                row_sizes.append([int(x) for x in str(row_str).split(",") if x.strip()])
+            except ValueError:
+                pass
+            i += 1
+        s.endGroup()
+
+        self._pending_session = (view_index, zoom_rects, v_sizes, row_sizes)
+
+    def _apply_deferred_session(self) -> None:
+        """Apply splitters, view-combo, and per-camera zoom once the window is fully shown."""
+        if self._pending_session is None:
+            return
+        view_index, zoom_rects, v_sizes, row_sizes = self._pending_session
+        self._pending_session = None
+
+        # Restore all-cameras splitter sizes first, while all panels are visible.
+        # If view_index then switches to solo mode, show_single_camera() will snapshot
+        # these sizes so they survive the round-trip back to all-cameras view.
+        if v_sizes and row_sizes:
+            self._camera_grid.set_grid_splitter_sizes(v_sizes, row_sizes)
+
+        # Restore view combo (show_single_camera runs processEvents internally)
+        if 0 <= view_index < self._view_combo.count():
+            self._view_combo.setCurrentIndex(view_index)
+
+        # Restore zoom after any view change has settled
+        if zoom_rects:
+            self._camera_grid.set_all_scene_rects(zoom_rects)
+
     # -- SLP import ----------------------------------------------------------
 
     def _maybe_offer_slp_import(self) -> None:
@@ -567,13 +720,16 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Force first frame display now that widgets have their final sizes
         if not event.spontaneous():
             self._camera_grid.update_frame(self._state.current_frame)
+            self._restore_app_settings()
+            if self._pending_session is not None:
+                QTimer.singleShot(0, self._apply_deferred_session)
 
     def closeEvent(self, event):
-        # Save points if dirty
         if self._state.points_store is not None:
             self._state.points_store.save_if_dirty()
+        self._save_session_settings()
+        self._save_app_settings()
         self._frame_provider.close()
         super().closeEvent(event)

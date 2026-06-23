@@ -5,7 +5,7 @@ from __future__ import annotations
 import enum
 import math
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QRectF
 from PySide6.QtWidgets import QApplication, QSplitter, QVBoxLayout, QWidget
 
 from label3d.video import FrameProvider
@@ -258,3 +258,40 @@ class CameraGrid(QWidget):
 
     def get_panel(self, camera: str) -> CameraPanel | None:
         return self._panels.get(camera)
+
+    def get_grid_splitter_sizes(self) -> tuple[list[int], list[list[int]]] | None:
+        """Return all-cameras splitter sizes.
+
+        In solo mode the live splitter reflects only the visible row, so we
+        return the snapshot taken when solo mode was entered instead.
+        Returns None if no meaningful sizes are available yet.
+        """
+        if self._solo_camera is not None:
+            if self._saved_v_sizes and self._saved_row_sizes:
+                return list(self._saved_v_sizes), [list(s) for s in self._saved_row_sizes]
+            return None
+        v = list(self._v_splitter.sizes())
+        rows = [list(sp.sizes()) for sp in self._row_splitters]
+        return v, rows
+
+    def set_grid_splitter_sizes(self, v_sizes: list[int], row_sizes: list[list[int]]) -> None:
+        """Restore splitter sizes. Must be called while all cameras are visible."""
+        if len(v_sizes) == self._v_splitter.count():
+            self._v_splitter.setSizes(v_sizes)
+        for sp, sizes in zip(self._row_splitters, row_sizes):
+            if len(sizes) == sp.count():
+                sp.setSizes(sizes)
+
+    def get_all_scene_rects(self) -> dict[str, QRectF]:
+        """Return per-camera visible scene rects (excludes cameras with no saved rect)."""
+        return {
+            cam: r
+            for cam, panel in self._panels.items()
+            if (r := panel.get_scene_rect()) is not None
+        }
+
+    def set_all_scene_rects(self, rects: dict[str, QRectF]) -> None:
+        """Restore per-camera scene rects. Hidden panels store rect for later apply."""
+        for cam, rect in rects.items():
+            if (panel := self._panels.get(cam)) is not None:
+                panel.set_scene_rect(rect)
