@@ -14,12 +14,7 @@ sleap/
 aniposelib/
 
 # Generated test/output data
-test_project/
-test_project_flat_number/
-test_sleap_project/
-test_sleap_project_flat/
-test_project_old/
-test_project_flat_number_project/
+projects/
 
 # Scratch/temporary files
 scratch/

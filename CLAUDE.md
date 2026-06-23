@@ -2,13 +2,14 @@
 
 ## What this project is
 
-A PySide6 desktop app for 3D point labeling across multiple synchronized calibrated video streams. It interfaces with sleap.ai but lives in a separate repository. Full design specification in [DESIGN.md](DESIGN.md).
+A PySide6 desktop app for 3D point labeling across multiple synchronized calibrated video streams. It interfaces with sleap.ai but lives in a separate repository. Design index in [DESIGN.md](DESIGN.md); detailed docs in [docs/](docs/).
 
-## Three-step workflow
+## Iterative Workflow
 
 1. **Calibrate** — detect Charuco board corners across cameras, run bundle adjustment via aniposelib
 2. **Label** — display synchronized video frames, click to place skeleton keypoints, view epipolar lines and 3D reconstruction in real time
 3. **Export** — write per-camera `.slp` files for SLEAP training/inference
+4. **Re-import** — train a SLEAP model on the exported `.slp` files, run inference, drop the resulting `.slp` predictions back into `project/slp/`, then import again. Repeat from step 2 to review, correct, and add more ground-truth labels
 
 ## Key conventions
 
@@ -42,11 +43,11 @@ project/
 
 ## Synthetic test data
 
+See [docs/synthetic_data.md](docs/synthetic_data.md). Quick start:
+
 ```
 uv run python generate_synthetic.py synthetic_config.toml
 ```
-
-Writes `test_project/` with two synthetic camera views in `experiments/default/`, known-correct ground truth (`points.csv` with 5-level row index), calibration, and `.slp` files at project root. Sanity checks (triangulation, epipolar, reprojection) should all pass at machine precision.
 
 ## Development
 
@@ -57,4 +58,4 @@ uv run python <script>  # run any script in the project venv
 
 ## Implementation phases
 
-See `DESIGN.md §Implementation Plan`. Current status: Phases 1–6 complete. Phase 7 (axis alignment) partially implemented — geometry helpers and CameraPanel pick mode done, UI widget not yet created.
+Phases 1–7 complete. Phase 8 (axis alignment) next — geometry helpers and CameraPanel pick mode done, UI widget not yet created. See [docs/phases/phase_8.md](docs/phases/phase_8.md) for the current phase spec, [docs/phases/phase_9_11.md](docs/phases/phase_9_11.md) for upcoming work.
