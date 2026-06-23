@@ -110,6 +110,8 @@ class CameraPanel(QGraphicsView):
     point_dragged = Signal(str, int, str, float, float)
     # (camera_name, instance, bodypart) — right-click on point
     point_right_clicked = Signal(str, int, str)
+    # (camera_name, scene_x, scene_y) — right-click on empty space (no point hit)
+    empty_right_clicked = Signal(str, float, float)
     # clicked on empty space
     deselect_requested = Signal()
     # (camera_name, x, y) — raw pixel click in pick mode
@@ -448,6 +450,10 @@ class CameraPanel(QGraphicsView):
             if hit is not None:
                 inst, bp = hit
                 self.point_right_clicked.emit(self._camera_name, inst, bp)
+            else:
+                self.empty_right_clicked.emit(
+                    self._camera_name, scene_pos.x(), scene_pos.y()
+                )
             event.accept()
 
         elif event.button() == Qt.MouseButton.MiddleButton:

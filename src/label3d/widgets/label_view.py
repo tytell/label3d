@@ -11,8 +11,8 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QHBoxLayout, QSplitter, QWidget
+from PySide6.QtGui import QCursor, QKeySequence, QShortcut
+from PySide6.QtWidgets import QHBoxLayout, QMenu, QSplitter, QWidget
 
 import logging
 logger = logging.getLogger(__name__)
@@ -22,6 +22,12 @@ from label3d.geometry import (
     load_cameras,
     triangulate_all_instances,
     triangulate_frame,
+)
+from label3d.instance_init import (
+    available_strategies,
+    init_average,
+    init_random,
+    init_reprojected,
 )
 from label3d.project import Project
 from label3d.state import ProjectState
@@ -96,6 +102,7 @@ class LabelView(QWidget):
             panel.point_clicked.connect(self._on_point_clicked)
             panel.point_dragged.connect(self._on_point_dragged)
             panel.point_right_clicked.connect(self._on_point_right_clicked)
+            panel.empty_right_clicked.connect(self._on_empty_right_clicked)
             panel.deselect_requested.connect(self._state.deselect)
             # Set up colored legend showing other cameras (fixed in viewport)
             panel.setup_legend(camera_grid.camera_names)
@@ -291,7 +298,7 @@ class LabelView(QWidget):
     # -- Keyboard shortcuts ----------------------------------------------------
 
     def _setup_shortcuts(self):
-        """Register all keyboard shortcuts."""
+        """Register keyboard shortcuts not already handled by menu QActions."""
         shortcuts = [
             # Bodypart cycling
             (Qt.Key.Key_Down, self._state.select_next_bodypart),
@@ -308,20 +315,18 @@ class LabelView(QWidget):
             (Qt.Key.Key_Escape, self._state.deselect),
             # Delete selected point
             (Qt.Key.Key_Backspace, self._delete_selected_point),
-            # Instance management
-            (QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_I), self._add_instance),
-            (QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Backspace), self._delete_instance),
             # Toggle non-selected instance visibility
             (Qt.Key.Key_H, self._toggle_instance_visibility),
             # Triangulation
             (Qt.Key.Key_T, self._triangulate_current_frame),
             (
-                QKeySequence(
-                    Qt.Modifier.CTRL | Qt.Modifier.SHIFT | Qt.Key.Key_T
-                ),
+                QKeySequence(Qt.Modifier.CTRL | Qt.Modifier.SHIFT | Qt.Key.Key_T),
                 self._triangulate_all_frames,
             ),
         ]
+        # Ctrl+I, Ctrl+Shift+I and Ctrl+Backspace are registered as QAction
+        # shortcuts in MainWindow's Instances menu, not as QShortcuts here,
+        # to avoid double-firing.
 
         for key, callback in shortcuts:
             shortcut = QShortcut(key, self)
@@ -345,22 +350,6 @@ class LabelView(QWidget):
         for cam in self._camera_grid.camera_names:
             store.delete_point(trial, frame, inst, bp, cam)
         self._state.points_changed.emit(trial, frame, inst, bp)
-
-    def _add_instance(self):
-        """Add a new empty instance."""
-        store = self._state.points_store
-        skeleton = self._state.skeleton
-        if store is None or skeleton is None:
-            return
-
-        trial = self._state.current_trial
-        frame = self._state.current_frame
-        new_idx = store.add_instance(trial, frame, skeleton.nodes)
-
-        # Select the new instance
-        bp = self._state.selected_bodypart or skeleton.nodes[0]
-        self._state.select(new_idx, bp)
-        self._state.points_changed.emit(trial, frame, new_idx, bp)
 
     def _delete_instance(self):
         """Delete the selected instance."""
@@ -386,3 +375,245 @@ class LabelView(QWidget):
                 overlay = panel.skeleton_overlay
                 overlay.show_non_selected = not overlay.show_non_selected
         self._update_all_overlays()
+
+    # -- Instance initialisation (right-click context menu + shortcuts) --------
+
+    def _show_status(self, msg: str, timeout: int = 3000) -> None:
+        """Show msg in the main window's status bar, if available."""
+        win = self.window()
+        if hasattr(win, "statusBar") and callable(win.statusBar):
+            try:
+                win.statusBar().showMessage(msg, timeout)
+            except Exception:
+                pass
+
+    def _on_empty_right_clicked(
+        self, camera_name: str, scene_x: float, scene_y: float
+    ) -> None:
+        """Show 'Add instance' context menu when right-clicking on empty space."""
+        store = self._state.points_store
+        if store is None:
+            return
+
+        strats = available_strategies(
+            store,
+            store.experiment_name,
+            self._state.current_trial,
+            self._state.current_frame,
+            self._state.selected_instance if self._state.selected_instance >= 0 else None,
+            camera_name,
+        )
+
+        menu = QMenu(self)
+        add_menu = menu.addMenu("Add instance")
+
+        random_act = add_menu.addAction("Random")
+        random_act.triggered.connect(
+            lambda: self._do_add_instance_single_camera(
+                camera_name, "random", (scene_x, scene_y)
+            )
+        )
+
+        avg_act = add_menu.addAction("Average")
+        avg_act.setEnabled("average" in strats)
+        if "average" not in strats:
+            avg_act.setToolTip("No labeled instances to average")
+        avg_act.triggered.connect(
+            lambda: self._do_add_instance_single_camera(
+                camera_name, "average", (scene_x, scene_y)
+            )
+        )
+
+        repr_act = add_menu.addAction("Reprojected")
+        repr_act.setEnabled("reprojected" in strats)
+        if "reprojected" not in strats:
+            repr_act.setToolTip(
+                "Select an instance labeled in ≥2 other cameras first"
+            )
+        repr_act.triggered.connect(
+            lambda: self._do_add_instance_single_camera(
+                camera_name, "reprojected", (scene_x, scene_y)
+            )
+        )
+
+        menu.exec(QCursor.pos())
+
+    def _do_add_instance_single_camera(
+        self,
+        camera_name: str,
+        strategy: str,
+        center_px: tuple[float, float] | None,
+    ) -> None:
+        """Execute an add-instance strategy writing into one specific camera.
+
+        random/average  — create a new instance; write coordinates for camera_name.
+        reprojected     — fill missing bodyparts in camera_name for the selected
+                          instance; no new instance is created.
+        """
+        store = self._state.points_store
+        skeleton = self._state.skeleton
+        if store is None or skeleton is None:
+            return
+
+        trial = self._state.current_trial
+        frame = self._state.current_frame
+        cam = self._cameras.get(camera_name)
+        frame_size = cam.size if cam is not None and cam.size[0] > 0 else (10000, 10000)
+
+        if strategy == "reprojected":
+            instance = self._state.selected_instance
+            if instance < 0 or not self._cameras:
+                return
+            coords = init_reprojected(
+                store,
+                store.experiment_name,
+                trial,
+                frame,
+                instance,
+                camera_name,
+                self._cameras,
+            )
+            if not coords:
+                self._show_status("Reprojected init: insufficient data")
+                return
+            for bp, (x, y) in coords.items():
+                pt = store.get_point(trial, frame, instance, bp, camera_name)
+                if pt.state == "not_set":
+                    store.set_point(
+                        trial, frame, instance, bp, camera_name, x, y, state="set"
+                    )
+            self._state.points_changed.emit(trial, frame, instance, "")
+            return
+
+        # random or average → new instance
+        new_instance = store.add_instance(trial, frame, skeleton.nodes)
+
+        if strategy == "average":
+            coords, used_fallback = init_average(
+                store,
+                store.experiment_name,
+                trial,
+                camera_name,
+                skeleton,
+                center_px,
+                frame_size,
+            )
+            if used_fallback:
+                self._show_status(
+                    "Not enough labeled instances to compute average"
+                    " — used random placement"
+                )
+        else:
+            coords = init_random(
+                skeleton, camera_name, self._cameras, center_px, frame_size
+            )
+
+        for bp, (x, y) in coords.items():
+            store.set_point(
+                trial, frame, new_instance, bp, camera_name, x, y, state="set"
+            )
+
+        bp0 = skeleton.nodes[0] if skeleton.nodes else ""
+        self._state.select(new_instance, bp0)
+        self._state.points_changed.emit(trial, frame, new_instance, "")
+
+    def _do_add_instance_all_cameras(self, strategy: str) -> None:
+        """Add a new instance across every camera using strategy.
+
+        Used by Ctrl+I (average), Ctrl+Shift+I (random), and the Instances menu.
+        Each camera's coordinates are computed independently.
+        """
+        store = self._state.points_store
+        skeleton = self._state.skeleton
+        if store is None or skeleton is None:
+            return
+
+        trial = self._state.current_trial
+        frame = self._state.current_frame
+        cam_names = self._camera_grid.camera_names
+
+        new_instance = store.add_instance(trial, frame, skeleton.nodes)
+
+        any_fallback = False
+        for cam_name in cam_names:
+            cam = self._cameras.get(cam_name)
+            frame_size = (
+                cam.size if cam is not None and cam.size[0] > 0 else (10000, 10000)
+            )
+
+            if strategy == "average":
+                coords, used_fallback = init_average(
+                    store,
+                    store.experiment_name,
+                    trial,
+                    cam_name,
+                    skeleton,
+                    None,       # center_px=None → frame centre
+                    frame_size,
+                )
+                if used_fallback:
+                    any_fallback = True
+            else:
+                coords = init_random(
+                    skeleton, cam_name, self._cameras, None, frame_size
+                )
+
+            for bp, (x, y) in coords.items():
+                store.set_point(
+                    trial, frame, new_instance, bp, cam_name, x, y, state="set"
+                )
+
+        if any_fallback:
+            self._show_status(
+                "Not enough labeled instances to compute average"
+                " — used random placement for some cameras"
+            )
+
+        bp0 = skeleton.nodes[0] if skeleton.nodes else ""
+        self._state.select(new_instance, bp0)
+        self._state.points_changed.emit(trial, frame, new_instance, "")
+
+    def _do_reprojected_all_cameras(self) -> None:
+        """Fill all cameras that are missing data for the selected instance.
+
+        Used by Instances > Add > Reprojected when triggered from the menu
+        (no single camera context).
+        """
+        store = self._state.points_store
+        if store is None or not self._cameras:
+            return
+
+        instance = self._state.selected_instance
+        if instance < 0:
+            return
+
+        trial = self._state.current_trial
+        frame = self._state.current_frame
+        filled_any = False
+
+        for cam_name in self._camera_grid.camera_names:
+            coords = init_reprojected(
+                store,
+                store.experiment_name,
+                trial,
+                frame,
+                instance,
+                cam_name,
+                self._cameras,
+            )
+            if not coords:
+                continue
+            for bp, (x, y) in coords.items():
+                pt = store.get_point(trial, frame, instance, bp, cam_name)
+                if pt.state == "not_set":
+                    store.set_point(
+                        trial, frame, instance, bp, cam_name, x, y, state="set"
+                    )
+                    filled_any = True
+
+        if filled_any:
+            self._state.points_changed.emit(trial, frame, instance, "")
+        else:
+            self._show_status(
+                "Reprojected: insufficient camera data to fill any bodyparts"
+            )

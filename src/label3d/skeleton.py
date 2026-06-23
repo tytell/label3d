@@ -14,6 +14,9 @@ class Skeleton:
     nodes: list[str]
     edges: list[tuple[str, str]] = field(default_factory=list)
     symmetries: list[tuple[str, str]] = field(default_factory=list)
+    # Optional per-node cm offsets from body centre used by init_random.
+    # Keys are node names; values are [dx, dy, dz] in cm.
+    node_offsets_cm: dict[str, list[float]] = field(default_factory=dict)
 
     def node_index(self, name: str) -> int:
         """Return the index of a node by name."""
@@ -40,6 +43,7 @@ class Skeleton:
             nodes=data["nodes"],
             edges=[tuple(e) for e in data.get("edges", [])],
             symmetries=[tuple(s) for s in data.get("symmetries", [])],
+            node_offsets_cm=data.get("node_offsets_cm", {}),
         )
 
     def to_json(self, path: Path) -> None:
@@ -49,6 +53,8 @@ class Skeleton:
             "edges": [list(e) for e in self.edges],
             "symmetries": [list(s) for s in self.symmetries],
         }
+        if self.node_offsets_cm:
+            data["node_offsets_cm"] = self.node_offsets_cm
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
 

@@ -243,6 +243,82 @@ class MainWindow(QMainWindow):
 
         self._layout_actions[LayoutMode.GRID].setChecked(True)
 
+        # Instances menu
+        inst_menu = menu_bar.addMenu("Instances")
+
+        add_menu = inst_menu.addMenu("Add")
+        add_menu.aboutToShow.connect(self._update_instances_menu)
+
+        self._action_add_average = add_menu.addAction("Average / Random")
+        self._action_add_average.setShortcut(
+            QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_I)
+        )
+        self._action_add_average.triggered.connect(
+            lambda: self._label_view._do_add_instance_all_cameras("average")
+        )
+
+        self._action_add_random = add_menu.addAction("Random")
+        self._action_add_random.setShortcut(
+            QKeySequence(Qt.Modifier.CTRL | Qt.Modifier.SHIFT | Qt.Key.Key_I)
+        )
+        self._action_add_random.triggered.connect(
+            lambda: self._label_view._do_add_instance_all_cameras("random")
+        )
+
+        self._action_add_reprojected = add_menu.addAction("Reprojected")
+        self._action_add_reprojected.setEnabled(False)
+        self._action_add_reprojected.triggered.connect(
+            self._label_view._do_reprojected_all_cameras
+        )
+
+        inst_menu.addSeparator()
+
+        self._action_delete_instance = inst_menu.addAction("Delete instance")
+        self._action_delete_instance.setShortcut(
+            QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Backspace)
+        )
+        self._action_delete_instance.triggered.connect(
+            self._label_view._delete_instance
+        )
+
+    def _update_instances_menu(self) -> None:
+        """Enable/disable menu items based on current labeling state."""
+        store = self._state.points_store
+        instance = self._state.selected_instance
+        trial = self._state.current_trial
+        frame = self._state.current_frame
+
+        # "Average" is available when any labeled point exists in this trial
+        avg_available = False
+        if store is not None and trial:
+            try:
+                trial_df = store.df.loc[(store.experiment_name, trial)]
+                for cam in store.cameras:
+                    if (cam, "state") in trial_df.columns:
+                        if trial_df[(cam, "state")].isin(["set", "predicted"]).any():
+                            avg_available = True
+                            break
+            except KeyError:
+                pass
+
+        # "Reprojected" is available when selected instance has ≥2 cameras with data
+        repr_available = False
+        if store is not None and trial and instance >= 0:
+            try:
+                inst_df = store.df.loc[(store.experiment_name, trial, frame, instance)]
+                n_cams = 0
+                for cam in store.cameras:
+                    if (cam, "state") in inst_df.columns:
+                        if inst_df[(cam, "state")].isin(["set", "predicted"]).any():
+                            n_cams += 1
+                if n_cams >= 2:
+                    repr_available = True
+            except KeyError:
+                pass
+
+        self._action_add_average.setEnabled(avg_available)
+        self._action_add_reprojected.setEnabled(repr_available)
+
     # -- Slider marks ----------------------------------------------------------
 
     def _connect_store(self, store) -> None:
