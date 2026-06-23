@@ -735,7 +735,7 @@ An instance is "user type" if any view has state `set`, `not_set`, or `occluded`
 
 | Key | Action |
 |---|---|
-| `Ctrl+I` | Add new user instance |
+| `Ctrl+I` | Add instance (average if possible, random otherwise) — see Phase 7.8 |
 | `Ctrl+Backspace` | Delete selected instance |
 | `Ctrl+C` / `Ctrl+V` | Copy / paste instance |
 | `Ctrl+T` | Transpose instance tracks |
@@ -1119,7 +1119,7 @@ label3d/
 - [x] Register `QShortcut`s for all keys from the keyboard shortcut tables
 - [x] Frame navigation → update `ProjectState.current_frame`
 - [x] Selection → update `ProjectState.selected_bodypart` / `selected_instance`
-- [x] Instance management: `Ctrl+I` → `add_instance()`, `Ctrl+Backspace` → `delete_instance()`
+- [x] Instance management: `Ctrl+I` → `add_instance()` (Phase 3 implementation; repurposed in Phase 7.8), `Ctrl+Backspace` → `delete_instance()`
 - [x] Point manipulation: `Backspace` → `delete_point()`, etc.
 
 #### 3.7 Bodypart list sidebar (`widgets/bodypart_list.py`)
@@ -1448,6 +1448,149 @@ def _do_import_slp(self) -> None:
 
 In `_on_experiment_state_changed()`, after switching the PointsStore, apply the same empty-CSV check and offer the import dialog for the newly-loaded experiment.
 
+#### 7.6 Instance initialization strategies (`label3d/instance_init.py`)
+
+New module providing three strategies for pre-populating a newly created instance's 2D keypoints. All functions return `dict[str, tuple[float, float]]` mapping bodypart name → `(x, y)` pixel coordinates; callers write the coordinates via `PointsStore.set_point()`.
+
+**Random** — scatter points around a center:
+- `center_px`: right-clicked pixel in this camera; falls back to frame center when called from a menu (no click position)
+- If `skeleton.node_offsets_cm` is present: project each bodypart's 3D cm offset through the camera at a nominal depth (mean distance of existing triangulated points, or 50 cm if none), convert to a pixel delta, add to `center_px`, then add independent Gaussian jitter with σ = 10% of the projected bounding-box span
+- If `node_offsets_cm` is absent: draw each bodypart offset independently from a 2D isotropic Gaussian with σ = `min(frame_width, frame_height) / 8`
+- State applied by caller: `set` for all placed points
+
+```python
+def init_random(
+    skeleton: Skeleton,
+    camera_name: str,
+    cameras: CameraGroup,
+    center_px: tuple[float, float] | None,
+    frame_size: tuple[int, int],          # (width, height) in pixels
+    rng: np.random.Generator | None = None,
+) -> dict[str, tuple[float, float]]:
+```
+
+**Average** — use mean relative positions from labeled instances in this experiment:
+- Collect all instances in the current experiment and trial that have state `set` or `predicted` in ≥ half the skeleton's bodyparts in the target camera
+- For each qualifying instance: compute the 2D centroid of its labeled points in this camera; compute per-bodypart offset relative to that centroid
+- Average the per-bodypart offsets across all qualifying instances
+- Place the new instance centered at `center_px` (right-clicked point or frame center)
+- Falls back to **random** if fewer than 2 qualifying instances exist; that fallback is surfaced to the caller as a return value flag so the UI can show a warning
+
+```python
+def init_average(
+    points_store: PointsStore,
+    experiment: str,
+    trial: str,
+    camera_name: str,
+    skeleton: Skeleton,
+    center_px: tuple[float, float] | None,
+    frame_size: tuple[int, int],
+) -> tuple[dict[str, tuple[float, float]], bool]:
+    """Returns (coords, used_fallback). used_fallback=True if <2 instances were found."""
+```
+
+**Reprojected** — fill in one camera's view for an existing partially-labeled instance:
+
+Unlike random/average, this strategy does **not** create a new instance — it fills in the target camera's points for the **currently selected** instance, which must already have labeled points in ≥2 other cameras.
+
+- Triangulate the selected instance from its existing cameras using `triangulate_frame()` (or a direct DLT call for the current frame)
+- Project the triangulated 3D positions into `target_camera` via `camera.project()`
+- Clip projected coordinates to frame bounds; omit bodyparts whose 3D position is behind the camera (z ≤ 0 in camera space)
+- State applied by caller: `set` — the user explicitly requested these positions, so they count as user-placed ground truth
+- Returns `None` if the selected instance has labeled points in fewer than 2 cameras other than `target_camera`
+
+```python
+def init_reprojected(
+    points_store: PointsStore,
+    experiment: str,
+    trial: str,
+    frame: int,
+    instance: int,
+    target_camera: str,
+    cameras: CameraGroup,
+) -> dict[str, tuple[float, float]] | None:
+```
+
+**Availability check** — called before opening a menu or dialog to determine which items to enable:
+
+```python
+def available_strategies(
+    points_store: PointsStore,
+    experiment: str,
+    trial: str,
+    frame: int,
+    instance: int | None,          # currently selected instance, or None
+    camera_name: str,              # camera the user right-clicked in
+) -> set[Literal["random", "average", "reprojected"]]:
+    """Return the set of strategies currently usable.
+
+    "random"      — always available.
+    "average"     — available if ≥1 instance exists in this trial+camera with
+                    ≥ half the skeleton bodyparts labeled (set or predicted).
+    "reprojected" — available if instance is not None and that instance has
+                    labeled points in ≥2 cameras other than camera_name in
+                    this frame (i.e. triangulation is possible and there is
+                    at least one camera view to fill in).
+    """
+```
+
+#### 7.7 "Instances" menu and right-click UI (`widgets/main_window.py`, `widgets/camera_panel.py`, `widgets/label_view.py`)
+
+**Main menu bar — new "Instances" menu** (added to `main_window.py` between "View" and any future menus):
+
+```
+> Instances
+  > Add
+    - Average / Random  Ctrl+I  (average if ≥2 reference instances available; random otherwise)
+    - Random            Ctrl+Shift+I
+    - Reprojected       (greyed when unavailable; tooltip explains why)
+  ---
+  - Delete instance     Ctrl+Backspace
+```
+
+`QAction.setEnabled()` for "Reprojected" is driven by `available_strategies()`, evaluated each time the menu is opened (`aboutToShow` signal on the "Add" sub-menu). "Average / Random" and "Random" are always enabled.
+
+**Right-click context menu in `CameraPanel`** — extended behavior for right-click on empty space (no point under cursor):
+
+```
+Add instance
+  ├─ Random
+  ├─ Average          (greyed + tooltip if unavailable)
+  └─ Reprojected      (greyed + tooltip if unavailable)
+```
+
+(Existing right-click-on-point behavior — toggle occluded — is unchanged.)
+
+`CameraPanel` emits a new signal when the user selects a strategy from the context menu:
+
+```python
+add_instance_requested = Signal(str, str, float, float)
+# (camera_name, strategy, center_x, center_y)
+# center_x/y are the right-click scene coordinates
+```
+
+`LabelView` connects to `add_instance_requested` from every `CameraPanel` and dispatches via `_on_add_instance_requested(camera, strategy, center_px)`:
+
+1. Re-check `available_strategies()` for safety (state may have changed between menu open and item selection)
+2. **Random or Average**: allocate `new_instance = points_store.add_instance(trial, frame)`, call the corresponding init function, write each `(bodypart, x, y)` via `points_store.set_point(..., state="set")`
+3. **Reprojected**: use `state.selected_instance` (no new instance allocated), call `init_reprojected()`, write each `(bodypart, x, y)` via `points_store.set_point(..., state="set")`; only target-camera rows that are currently `not_set` are filled — existing `set` or `predicted` points in any camera are left unchanged
+4. Set `state.selected_instance = new_instance` (random/average) or leave unchanged (reprojected)
+5. Auto-triangulate current frame if `state.auto_triangulate` is on
+6. Emit `points_changed` to refresh overlays
+
+**Menu item "Instances > Add > Average"** — if `init_average()` returns `used_fallback=True`, show a transient status-bar message: "Not enough labeled instances to compute average — used random placement instead."
+
+#### 7.8 Keyboard shortcut table update
+
+`Ctrl+I` is repurposed from "add blank instance" (Phase 3 behavior) to "add average-or-random instance":
+
+| Key | Action |
+|---|---|
+| `Ctrl+I` | Add instance: **average** if ≥2 reference instances available, otherwise **random** (center = frame center) |
+| `Ctrl+Shift+I` | Add instance: **random** unconditionally (center = frame center) |
+
+Both shortcuts trigger `_on_add_instance_requested` with `center_px=None`. The old "blank instance" path (`add_instance()` with no points) is removed — there is no longer a shortcut or menu item that creates an empty instance.
+
 ---
 
 ### Phase 8 — Axis Alignment (optional calibration step)
@@ -1575,6 +1718,25 @@ if self._state.points_store and self._state.points_store.dirty:
         return
 ```
 
+#### 10.4 Export of user-added instances (`adapters/sleap_adapter.py`, `tests/test_adapters.py`)
+
+Instances created via Phase 7.6–7.8 ("Add Instance: Random / Average / Reprojected") live in `points.csv` exactly like any other user instance — no special marker distinguishes them from instances originally imported from SLP files. `sync_slp_files()` therefore includes them automatically. This step makes the behaviour explicit and adds a targeted test.
+
+**State mapping in `SleapAdapter.save()`** (existing logic, confirmed correct for new instances):
+
+| Per-camera states in the instance | Exported SLEAP type |
+|---|---|
+| Any camera has state `set` or `not_visible` | `Instance` (user-ground-truth) |
+| All cameras have state `predicted` | `PredictedInstance` |
+| All cameras have state `not_set` | Instance omitted (no coordinates to write) |
+
+Consequences for each init strategy:
+- **Random / Average / Reprojected**: all placed points get state `set` → all three strategies produce `Instance` (user-ground-truth) on export; no special handling needed
+
+**Verification**:
+- [ ] Confirm `SleapAdapter.save()` does not filter instances based on origin — it reads from the aggregated DataFrame, so any row present in `points.csv` is included regardless of how it was created
+- [ ] Add a unit test in `tests/test_adapters.py`: create a `PointsStore` with a user-added instance that was never imported from an SLP file (created via random/average/reprojected init); call `SleapAdapter.save()`; reload the written file via `sleap_io.load_file()`; assert the instance appears as `Instance` type with the correct coordinates
+
 #### Data flow
 
 ```
@@ -1698,15 +1860,23 @@ App close (dirty)
                                   │
                                   │  ★ MILESTONE: predicted instances visible from project open
                                   ▼
+              7.6 instance_init.py (random / average / reprojected strategies)
+                                  │
+                                  ▼
+              7.7–7.8 Instances menu + right-click UI + keyboard shortcuts
+                                  │
+                                  │  ★ MILESTONE: user can add instances with pre-populated points
+                                  ▼
          8.1–8.3 axis alignment (calibration_view tab)
                        │
                        ▼
               9.1 export view
                        │
                        ▼
-              10.1–10.3 SLP write-back (Project.sync_slp_files + File > Save + closeEvent dirty prompt)
+              10.1–10.4 SLP write-back (Project.sync_slp_files + File > Save + closeEvent dirty prompt
+                                        + export verification for user-added instances)
                        │
-                       │  ★ MILESTONE: full SLP round-trip — import → label → save → SLP updated
+                       │  ★ MILESTONE: full SLP round-trip — import → label → add instances → save → SLP updated
                        ▼
                   11.* polish
 ```
