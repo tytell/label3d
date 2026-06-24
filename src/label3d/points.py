@@ -267,6 +267,24 @@ class PointsStore(QObject):
         except KeyError:
             return []
 
+    def get_instances_for_camera(
+        self, trial: str, frame: int, camera: str
+    ) -> list[int]:
+        """Return instance indices that have any labeled point in the given camera.
+
+        A point counts as labeled if its state is 'set', 'predicted', or 'not_visible'.
+        """
+        try:
+            frame_df = self._df.loc[(self._experiment_name, trial, frame)]
+        except KeyError:
+            return []
+        if (camera, "state") not in frame_df.columns:
+            return []
+        has_data = frame_df[(camera, "state")].isin(["set", "predicted", "not_visible"])
+        return sorted(
+            frame_df[has_data].index.get_level_values("instance").unique().tolist()
+        )
+
     # -- Instance-level API ----------------------------------------------------
 
     def add_instance(self, trial: str, frame: int, bodyparts: list[str]) -> int:

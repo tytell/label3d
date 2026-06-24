@@ -179,6 +179,7 @@ class LabelView(QWidget):
     def _on_points_changed(self, trial: str, frame: int, instance: int, bodypart: str):
         """Refresh overlays after a point edit; auto-triangulate if enabled."""
         if trial == self._state.current_trial and frame == self._state.current_frame:
+            logger.debug(f"Points changed: {self._state.auto_triangulate=}, cameras={list(self._cameras.keys())}")
             if self._state.auto_triangulate and self._cameras:
                 self._triangulate_current_frame()
             self._update_all_overlays()
@@ -256,6 +257,7 @@ class LabelView(QWidget):
         trial = self._state.current_trial
         frame = self._state.current_frame
         instances = store.get_instances(trial, frame)
+        logger.debug(f"Triangulating frame {frame} in trial {trial}: instances={instances}")
         for inst in instances:
             triangulate_frame(self._cameras, store, trial, frame, inst)
         # Invalidate the frame cache after bulk 3D writes, then redraw directly.
@@ -395,11 +397,21 @@ class LabelView(QWidget):
         if store is None:
             return
 
+        trial = self._state.current_trial
+        frame = self._state.current_frame
+
+        if bool(store.get_instances_for_camera(trial, frame, camera_name)):
+            menu = QMenu(self)
+            add_menu = menu.addMenu("Add instance")
+            add_menu.setEnabled(False)
+            menu.exec(QCursor.pos())
+            return
+
         strats = available_strategies(
             store,
             store.experiment_name,
-            self._state.current_trial,
-            self._state.current_frame,
+            trial,
+            frame,
             self._state.selected_instance if self._state.selected_instance >= 0 else None,
             camera_name,
         )
@@ -485,8 +497,12 @@ class LabelView(QWidget):
             self._state.points_changed.emit(trial, frame, instance, "")
             return
 
-        # random or average → new instance
-        new_instance = store.add_instance(trial, frame, skeleton.nodes)
+        # Reuse instance 0 if it already exists in another camera; otherwise create it.
+        existing = store.get_instances(trial, frame)
+        if existing:
+            new_instance = existing[0]
+        else:
+            new_instance = store.add_instance(trial, frame, skeleton.nodes)
 
         if strategy == "average":
             coords, used_fallback = init_average(
@@ -532,7 +548,8 @@ class LabelView(QWidget):
         frame = self._state.current_frame
         cam_names = self._camera_grid.camera_names
 
-        new_instance = store.add_instance(trial, frame, skeleton.nodes)
+        existing = store.get_instances(trial, frame)
+        new_instance = existing[0] if existing else store.add_instance(trial, frame, skeleton.nodes)
 
         any_fallback = False
         for cam_name in cam_names:

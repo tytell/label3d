@@ -288,9 +288,18 @@ class MainWindow(QMainWindow):
         trial = self._state.current_trial
         frame = self._state.current_frame
 
+        # Disable add actions only when every camera already has an instance.
+        all_cameras_have_instance = (
+            store is not None
+            and bool(store.get_instances(trial, frame))
+            and all(
+                bool(store.get_instances_for_camera(trial, frame, cam))
+                for cam in store.cameras
+            )
+        )
         # "Average" is available when any labeled point exists in this trial
         avg_available = False
-        if store is not None and trial:
+        if store is not None and trial and not all_cameras_have_instance:
             try:
                 trial_df = store.df.loc[(store.experiment_name, trial)]
                 for cam in store.cameras:
@@ -316,8 +325,9 @@ class MainWindow(QMainWindow):
             except KeyError:
                 pass
 
-        self._action_add_average.setEnabled(avg_available)
-        self._action_add_reprojected.setEnabled(repr_available)
+        self._action_add_average.setEnabled(avg_available and not all_cameras_have_instance)
+        self._action_add_random.setEnabled(not all_cameras_have_instance)
+        self._action_add_reprojected.setEnabled(repr_available and not all_cameras_have_instance)
 
     # -- Slider marks ----------------------------------------------------------
 
