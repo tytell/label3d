@@ -103,19 +103,49 @@ class SleapAdapter(PoseAdapter):
 
         return _rows_to_dataframe(rows, cameras)
 
+    def build_file_map(
+        self,
+        files: list[Path],
+        trials_df: pd.DataFrame,
+        cameras: list[str],
+    ) -> dict[tuple[str, str, str], Path]:
+        """Return a mapping of (experiment, trial, camera) -> source .slp file path.
+
+        Reads the video references embedded in each SLP file and matches them
+        against trials_df using the same basename lookup used during load.
+        """
+        import sleap_io as sio
+
+        basename_to_trial_cam = _build_basename_lookup(trials_df, cameras)
+        file_map: dict[tuple[str, str, str], Path] = {}
+        for slp_path in files:
+            labels = sio.load_file(str(slp_path))
+            for video in labels.videos:
+                basename = Path(video.filename).name
+                for key in basename_to_trial_cam.get(basename, []):
+                    file_map[key] = slp_path
+        return file_map
+
     def save(
         self,
         df: pd.DataFrame,
-        output_dir: Path,
         cameras: list[str],
         skeleton=None,
         trials_df: pd.DataFrame | None = None,
+        file_map: dict[tuple[str, str, str], Path] | None = None,
+        output_dir: Path | None = None,
         **kwargs,
-    ) -> None:
-        """Write per-(trial, camera) .slp files from the points DataFrame."""
+    ) -> int:
+        """Write per-(trial, camera) .slp files from the points DataFrame.
+
+        When file_map is provided, writes back to the original source paths.
+        When output_dir is provided (Phase 10 export), generates new filenames.
+        Returns the number of files written.
+        """
         import sleap_io as sio
 
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if output_dir is not None:
+            output_dir.mkdir(parents=True, exist_ok=True)
 
         # Build sleap skeleton
         if skeleton is None:
@@ -130,6 +160,9 @@ class SleapAdapter(PoseAdapter):
             for src, dst in skeleton.edges:
                 sio_skeleton.add_edge(src, dst)
 
+        node_names = [n.name for n in sio_skeleton.nodes]
+        files_written = 0
+
         # Group by (experiment, trial)
         for experiment_name in df.index.get_level_values("experiment").unique():
             exp_df = df.loc[experiment_name]
@@ -140,6 +173,18 @@ class SleapAdapter(PoseAdapter):
                     if cam not in df.columns.get_level_values(0):
                         continue
 
+                    # Resolve output path
+                    key = (str(experiment_name), str(trial_name), cam)
+                    if file_map is not None:
+                        if key not in file_map:
+                            logger.warning(f"No SLP file found for {key}, skipping")
+                            continue
+                        slp_path = file_map[key]
+                    elif output_dir is not None:
+                        slp_path = output_dir / f"{cam}_{trial_name}.slp"
+                    else:
+                        raise ValueError("Either file_map or output_dir must be provided")
+
                     # Resolve video path for the Video reference
                     video_filename = ""
                     if trials_df is not None:
@@ -148,7 +193,6 @@ class SleapAdapter(PoseAdapter):
                             video_filename = str(trial_row.iloc[0][cam])
 
                     video = sio.Video(filename=video_filename)
-                    node_names = [n.name for n in sio_skeleton.nodes]
 
                     labeled_frames = []
                     for frame_idx in trial_df.index.get_level_values("frame").unique():
@@ -159,8 +203,9 @@ class SleapAdapter(PoseAdapter):
                             inst_df = frame_df.loc[inst_idx]
                             pts = np.full((len(node_names), 2), np.nan, dtype=np.float32)
 
-                            any_set = False
-                            all_predicted = True
+                            has_user = False
+                            has_predicted = False
+                            has_data = False
                             for bp_idx, bp in enumerate(node_names):
                                 if bp in inst_df.index:
                                     row = inst_df.loc[bp]
@@ -169,18 +214,20 @@ class SleapAdapter(PoseAdapter):
                                     state = row.get((cam, "state"), "not_set")
                                     if pd.notna(x) and pd.notna(y):
                                         pts[bp_idx] = [float(x), float(y)]
-                                    if state in ("set", "occluded", "not_set"):
-                                        all_predicted = False
-                                    if state == "set":
-                                        any_set = True
+                                    if state in ("set", "not_visible"):
+                                        has_user = True
+                                        has_data = True
+                                    elif state == "predicted":
+                                        has_predicted = True
+                                        has_data = True
 
-                            if all_predicted:
+                            if not has_data:
+                                continue  # all not_set — omit this instance
+                            elif has_user:
+                                inst = sio.Instance.from_numpy(pts, skeleton=sio_skeleton)
+                            else:
                                 inst = sio.PredictedInstance.from_numpy(
                                     pts, skeleton=sio_skeleton, score=1.0
-                                )
-                            else:
-                                inst = sio.Instance.from_numpy(
-                                    pts, skeleton=sio_skeleton
                                 )
                             instances.append(inst)
 
@@ -192,8 +239,10 @@ class SleapAdapter(PoseAdapter):
 
                     if labeled_frames:
                         labels = sio.Labels(labeled_frames=labeled_frames)
-                        slp_path = output_dir / f"{cam}_{trial_name}.slp"
                         sio.save_file(labels, str(slp_path))
+                        files_written += 1
+
+        return files_written
 
 
 def _build_basename_lookup(
