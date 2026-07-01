@@ -1,45 +1,97 @@
-# Phase 8 — Axis Alignment
+# Phase 8 — SLP Write-back
 
-**Goal**: Let the user re-orient the world coordinate system to a physical reference by clicking points in trial video frames.
+**Goal**: Write current labels from `PointsStore`/`points.csv` back to the original SLP files in `project/slp/` on explicit save; prompt on close if there are unsaved changes.
 
-**Status**: Partially implemented — geometry helpers and CameraPanel pick mode done; UI widget not yet created.
+**Design principle**: SLP files are synchronized copies updated on demand. Auto-save (every 30 s) writes only `points.csv`. SLP write-back happens only on explicit **File > Save**. User-added instances (Phase 7.6–7.8) live in `points.csv` like any other user instance and are included automatically — no special handling needed.
 
-## Current state
+## 8.1 `SleapAdapter.build_file_map()` (`adapters/sleap_adapter.py`)
 
-- `geometry.py`: `triangulate_point()`, `compute_axis_alignment()`, `apply_alignment_to_cameras()`, `save_aligned_calibration()` — implemented; not yet connected to UI
-- `widgets/camera_panel.py`: `raw_clicked = Signal(str, float, float)` signal and `set_pick_mode(bool)` method — implemented
-- `widgets/axis_alignment_widget.py` — **not yet created**
-- `widgets/calibration_view.py` — not yet modified to add alignment tab
+New stateless method: given `files: list[Path]`, `trials_df`, and `cameras`, reads each SLP file's embedded video path, matches via the existing `_build_basename_lookup()` logic, and returns a `dict[tuple[str, str, str], Path]` mapping `(experiment, trial, camera) → file_path`. Called at save time — nothing needs to be tracked at load time.
 
-## 8.1 `load_cameras()` fix (`geometry.py`)
+Also update `SleapAdapter.save()`:
+- Add `file_map: dict[tuple, Path] | None = None` parameter
+- When provided, route each `(experiment, trial, camera)` group back to its original path instead of generating `{camera}_{trial_name}.slp` names
+- Make `output_dir` optional (kept for Phase 10 Export, which will still generate new names)
+- Return `int` (count of files written) instead of `None`
 
-- [ ] Check whether `load_cameras()` already skips `"alignment"` sections — the skip list may only include `"metadata"`; add `"alignment"` to the skip list if not already present
-- [ ] Add `load_alignment(path) -> tuple[np.ndarray, np.ndarray] | None` — reads `R_align` and `origin` from `[alignment]` section; returns `None` if absent
+## 8.2 `PointsStore.load_all_experiments()` (`points.py`)
 
-## 8.2 Axis alignment widget (`widgets/axis_alignment_widget.py`)
+New classmethod:
+```python
+@classmethod
+def load_all_experiments(cls, project: Project) -> list[PointsStore]:
+```
+Iterates `project.experiments`, loads each experiment's `points.csv` if it exists, returns the list of stores (skips experiments with no CSV).
 
-- [ ] `AxisAlignmentWidget(QWidget)`:
-  - Trial selector `QComboBox` + frame navigation (prev/next buttons + frame spinbox)
-  - Reuses the existing `CameraGrid` + `FrameProvider` to display trial video frames
-  - Right-side panel: 7 `QPushButton` pick targets (Origin, X near, X far, Y near, Y far, Z near, Z far), a `QTableWidget` showing pick status (✓ / –) per target, and three "Flip" `QCheckBox`es for x/y/z
-  - "Compute" button — runs `compute_axis_alignment()`; shows preview (axis vectors + R_align) in a text area
-  - "Apply & Save" button — calls `save_aligned_calibration()`, writes `[alignment]` section to `calibration.toml`
-  - Pick workflow:
-    1. User clicks a pick-target button → button stays pressed (checked), all `CameraPanel`s enter pick mode (`set_pick_mode(True)`)
-    2. User clicks in any camera panel → `raw_clicked(cam, x, y)` received; stored in a `dict[target, dict[cam, (x, y)]]`
-    3. Each target accumulates clicks across cameras (≥2 cameras needed for triangulation); table cell updated
-    4. Clicking the same button again or pressing Escape cancels pick mode
-  - Frame navigation updates `FrameProvider` and `CameraGrid` directly (no `ProjectState` shared state)
-  - On "Compute":
-    1. For each pick target with ≥2 camera picks: call `triangulate_point(cameras, picks)`
-    2. Pass triangulated points to `compute_axis_alignment(..., flip_x, flip_y, flip_z)`
-    3. Show resulting `R_align` and `origin` in a read-only text area
-  - On "Apply & Save":
-    1. Write `[alignment]` section to `calibration.toml` (`save_aligned_calibration()`)
-    2. Emit `alignment_saved` signal so `CalibrationView` / `LabelView` can reload calibration
+## 8.3 `Project.sync_slp_files()` (`project.py`)
 
-## 8.3 Integrate into calibration view (`widgets/calibration_view.py`)
+```python
+def sync_slp_files(self) -> int:
+    """Flush points.csv and write current labels back to the SLP files in project/slp/.
 
-- [ ] Add "Axis Alignment" as a second tab in `CalibrationView` (alongside the existing board detection / calibration tab)
-- [ ] Instantiate `AxisAlignmentWidget` in the new tab
-- [ ] Connect `AxisAlignmentWidget.alignment_saved` → reload cameras in `LabelView` (via `ProjectState` or a direct callback)
+    Returns the number of SLP files written.
+    """
+```
+
+Steps:
+1. `self.points.save_if_dirty()` — flush active experiment's CSV first
+2. `slp_files = list(self.slp_dir.glob("*.slp"))`
+3. `file_map = SleapAdapter().build_file_map(slp_files, self.trials_df, self.cameras)`
+4. `all_stores = PointsStore.load_all_experiments(self)`
+5. `all_df = pd.concat([s.df for s in all_stores])`
+6. `return SleapAdapter().save(all_df, cameras=self.cameras, skeleton=self.skeleton, trials_df=self.trials_df, file_map=file_map)`
+
+**State mapping in `SleapAdapter.save()`:**
+
+| Per-camera states | Exported SLEAP type |
+|---|---|
+| Any camera has `set` or `not_visible` | `Instance` (user-ground-truth) |
+| All cameras have `predicted` | `PredictedInstance` |
+| All cameras have `not_set` | Instance omitted |
+
+- [ ] Add unit test: create `PointsStore` with user-added instance; call `SleapAdapter.save()`; reload via `sleap_io.load_file()`; assert appears as `Instance` with correct coordinates
+
+## 8.4 File > Save (`main_window.py`)
+
+Add **File > Save** menu action (Ctrl+S):
+- Enabled only when `points_store` is not None and `slp_dir` contains `.slp` files
+- Run `self._project.sync_slp_files()` in a `SaveWorker(QThread)` (mirrors existing `ImportWorker` pattern)
+- Show a `QProgressDialog` during the write
+- On success: status bar message "Saved — wrote {n} SLP files"
+
+## 8.5 On close — unsaved-changes prompt (`main_window.py`)
+
+```python
+if self._state.points_store and self._state.points_store.changed:
+    reply = QMessageBox.question(
+        self, "Save before closing?",
+        "You have unsaved changes. Save and update SLP files before closing?",
+        QMessageBox.StandardButton.Save
+        | QMessageBox.StandardButton.Discard
+        | QMessageBox.StandardButton.Cancel,
+    )
+```
+
+- **Save** → call `sync_slp_files()` on main thread (brief block acceptable on close), then close
+- **Discard** → close without saving
+- **Cancel** → `event.ignore()`
+
+## Data flow
+
+```
+Project open
+  ↓  points.csv empty AND slp/ has *.slp?
+       → QMessageBox("Import SLP predictions?")
+       → SleapAdapter.load() → PointsStore.merge_from_df()
+
+[User labels frames]
+  ↓  auto-save every 30 s (points.csv only)
+
+File > Save (Ctrl+S)
+  ↓  points_store.save_if_dirty() → points.csv
+  ↓  SleapAdapter.build_file_map() → (experiment, trial, camera) → file_path
+  ↓  SleapAdapter.save(file_map=...) → original slp/*.slp files
+
+App close (unsaved changes)
+  ↓  QMessageBox("Save before closing?")
+```
