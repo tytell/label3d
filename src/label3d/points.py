@@ -38,7 +38,7 @@ class PointsStore(QObject):
     on frame change.
     """
 
-    changed = Signal()  # emitted on any mutation
+    data_changed = Signal()  # emitted on any mutation
 
     # Auto-save interval in milliseconds
     AUTO_SAVE_MS = 30_000
@@ -46,7 +46,7 @@ class PointsStore(QObject):
     def __init__(self, df: pd.DataFrame, parent: QObject | None = None):
         super().__init__(parent)
         self._df = df
-        self._dirty = False
+        self._changed = False
         self._save_path: Path | None = None
         self._experiment_name: str = ""
 
@@ -65,8 +65,8 @@ class PointsStore(QObject):
         return self._df
 
     @property
-    def dirty(self) -> bool:
-        return self._dirty
+    def changed(self) -> bool:
+        return self._changed
 
     @property
     def experiment_name(self) -> str:
@@ -134,6 +134,19 @@ class PointsStore(QObject):
         store._experiment_name = str(exp_levels[0]) if len(exp_levels) > 0 else "default"
         return store
 
+    @classmethod
+    def load_all_experiments(cls, project) -> list[PointsStore]:
+        """Load a PointsStore for each experiment that has a saved points.csv.
+
+        Skips experiments whose points.csv does not yet exist.
+        """
+        stores = []
+        for exp_name, exp_info in project.experiments.items():
+            csv_path = exp_info.root / "points.csv"
+            if csv_path.exists():
+                stores.append(cls.from_csv(csv_path))
+        return stores
+
     def to_csv(self, path: Path | None = None) -> None:
         """Save to points.csv."""
         path = path or self._save_path
@@ -141,7 +154,7 @@ class PointsStore(QObject):
             raise ValueError("No save path specified")
         self._df.to_csv(path)
         self._save_path = path
-        self._dirty = False
+        self._changed = False
 
     # -- Frame cache -----------------------------------------------------------
 
@@ -221,7 +234,7 @@ class PointsStore(QObject):
         self._df.at[idx, (camera, "x")] = x
         self._df.at[idx, (camera, "y")] = y
         self._df.at[idx, (camera, "state")] = state
-        self._mark_dirty()
+        self._mark_changed()
         self._invalidate_cache(trial, frame)
 
     def set_not_visible(
@@ -232,7 +245,7 @@ class PointsStore(QObject):
         if idx not in self._df.index:
             self._ensure_row(idx)
         self._df.at[idx, (camera, "state")] = "not_visible"
-        self._mark_dirty()
+        self._mark_changed()
         self._invalidate_cache(trial, frame)
 
     def delete_point(
@@ -247,7 +260,7 @@ class PointsStore(QObject):
         self._df.at[idx, (camera, "xr")] = np.nan
         self._df.at[idx, (camera, "yr")] = np.nan
         self._df.at[idx, (camera, "state")] = "not_set"
-        self._mark_dirty()
+        self._mark_changed()
         self._invalidate_cache(trial, frame)
 
     # -- Frame-level API -------------------------------------------------------
@@ -293,7 +306,7 @@ class PointsStore(QObject):
         new_idx = max(existing) + 1 if existing else 0
         for bp in bodyparts:
             self._ensure_row((self._experiment_name, trial, frame, new_idx, bp))
-        self._mark_dirty()
+        self._mark_changed()
         self._invalidate_cache(trial, frame)
         return new_idx
 
@@ -306,7 +319,7 @@ class PointsStore(QObject):
                 names=INDEX_NAMES,
             )
             self._df = self._df.drop(full_idx)
-            self._mark_dirty()
+            self._mark_changed()
             self._invalidate_cache(trial, frame)
         except KeyError:
             pass
@@ -327,7 +340,7 @@ class PointsStore(QObject):
             self._ensure_row(new_key)
             for col in self._df.columns:
                 self._df.at[new_key, col] = row[col]
-        self._mark_dirty()
+        self._mark_changed()
         self._invalidate_cache(trial, dst_frame)
         return new_idx
 
@@ -350,7 +363,7 @@ class PointsStore(QObject):
         self._df.at[idx, ("3d", "x")] = x
         self._df.at[idx, ("3d", "y")] = y
         self._df.at[idx, ("3d", "z")] = z
-        self._mark_dirty()
+        self._mark_changed()
 
     def set_reprojected(
         self,
@@ -368,7 +381,7 @@ class PointsStore(QObject):
             return
         self._df.at[idx, (camera, "xr")] = xr
         self._df.at[idx, (camera, "yr")] = yr
-        self._mark_dirty()
+        self._mark_changed()
 
     # -- Labeled-frame queries -------------------------------------------------
 
@@ -439,21 +452,21 @@ class PointsStore(QObject):
         new_row = pd.DataFrame([row], index=new_idx, columns=self._df.columns)
         self._df = pd.concat([self._df, new_row])
 
-    def _mark_dirty(self) -> None:
-        self._dirty = True
-        self.changed.emit()
+    def _mark_changed(self) -> None:
+        self._changed = True
+        self.data_changed.emit()
 
     def _auto_save(self) -> None:
-        if self._dirty and self._save_path is not None:
+        if self._changed and self._save_path is not None:
             # Backup before overwriting
             bak = self._save_path.with_suffix(".csv.bak")
             if self._save_path.exists():
                 self._save_path.rename(bak)
             self.to_csv(self._save_path)
 
-    def save_if_dirty(self) -> None:
+    def save_if_changed(self) -> None:
         """Save immediately if there are unsaved changes."""
-        if self._dirty and self._save_path is not None:
+        if self._changed and self._save_path is not None:
             bak = self._save_path.with_suffix(".csv.bak")
             if self._save_path.exists():
                 self._save_path.rename(bak)
@@ -522,6 +535,6 @@ class PointsStore(QObject):
                 added += 1
 
         if added:
-            self._mark_dirty()
+            self._mark_changed()
 
         return added

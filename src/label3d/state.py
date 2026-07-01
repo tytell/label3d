@@ -62,7 +62,7 @@ class ProjectState(QObject):
     def current_experiment(self, value: str):
         if value != self._current_experiment:
             if self._points_store is not None:
-                self._points_store.save_if_dirty()
+                self._points_store.save_if_changed()
             self._current_experiment = value
             self.experiment_changed.emit(value)
 

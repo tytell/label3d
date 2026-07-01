@@ -332,15 +332,15 @@ class MainWindow(QMainWindow):
     # -- Slider marks ----------------------------------------------------------
 
     def _connect_store(self, store) -> None:
-        """Wire PointsStore.changed → slider marks refresh, replacing any old connection."""
+        """Wire PointsStore.data_changed → slider marks refresh, replacing any old connection."""
         if self._connected_store is not None:
             try:
-                self._connected_store.changed.disconnect(self._update_slider_marks)
+                self._connected_store.data_changed.disconnect(self._update_slider_marks)
             except RuntimeError:
                 pass
         self._connected_store = store
         if store is not None:
-            store.changed.connect(self._update_slider_marks)
+            store.data_changed.connect(self._update_slider_marks)
 
     def _update_slider_marks(self) -> None:
         store = self._state.points_store
@@ -738,7 +738,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self._state.points_store is not None:
-            self._state.points_store.save_if_dirty()
+            self._state.points_store.save_if_changed()
         self._save_session_settings()
         self._save_app_settings()
         self._frame_provider.close()
