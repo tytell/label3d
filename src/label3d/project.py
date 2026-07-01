@@ -251,6 +251,40 @@ class Project:
         adapter_df = self.load_slp_adapter_df(experiment)
         return self.merge_slp_adapter_df(adapter_df, experiment)
 
+    def sync_slp_files(self) -> int:
+        """Flush points.csv and write current labels back to the SLP files in project/slp/.
+
+        Loads all experiments' DataFrames, concatenates them, and writes each
+        (experiment, trial, camera) group back to the original .slp file it came from.
+        Returns the number of files written.
+
+        Safe to call from a background thread — does not touch any QObject.
+        """
+        from label3d.adapters.sleap_adapter import SleapAdapter
+
+        if self.points is not None:
+            self.points.save_if_changed()
+
+        slp_files = list(self.slp_dir.glob("*.slp"))
+        if not slp_files or self.trials_df is None:
+            return 0
+
+        adapter = SleapAdapter()
+        file_map = adapter.build_file_map(slp_files, self.trials_df, self.cameras)
+
+        all_stores = PointsStore.load_all_experiments(self)
+        if not all_stores:
+            return 0
+
+        all_df = pd.concat([s.df for s in all_stores])
+        return adapter.save(
+            all_df,
+            cameras=self.cameras,
+            skeleton=self.skeleton,
+            trials_df=self.trials_df,
+            file_map=file_map,
+        )
+
     def set_experiment(self, name: str) -> None:
         """Switch active experiment, updating cameras/trials/calibration/points."""
         if name not in self.experiments:
