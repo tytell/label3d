@@ -775,8 +775,24 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, self._apply_deferred_session)
 
     def closeEvent(self, event):
-        if self._state.points_store is not None:
-            self._state.points_store.save_if_changed()
+        store = self._state.points_store
+        if store is not None and store.changed:
+            if self._save_action.isEnabled():
+                reply = QMessageBox.question(
+                    self,
+                    "Save before closing?",
+                    "You have unsaved changes. Save and update SLP files before closing?",
+                    QMessageBox.StandardButton.Save
+                    | QMessageBox.StandardButton.Discard
+                    | QMessageBox.StandardButton.Cancel,
+                )
+                if reply == QMessageBox.StandardButton.Cancel:
+                    event.ignore()
+                    return
+                if reply == QMessageBox.StandardButton.Save:
+                    self._project.sync_slp_files()
+            else:
+                store.save_if_changed()
         self._save_session_settings()
         self._save_app_settings()
         self._frame_provider.close()
