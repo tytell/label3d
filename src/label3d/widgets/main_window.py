@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from label3d.workers.import_worker import ImportWorker
+from label3d.workers.save_worker import SaveWorker
 
 from label3d.project import Project
 from label3d.state import ProjectState
@@ -182,6 +183,16 @@ class MainWindow(QMainWindow):
         new_action.setEnabled(False)
         open_action = file_menu.addAction("Open project...")
         open_action.setEnabled(False)
+        file_menu.addSeparator()
+        save_action = file_menu.addAction("Save")
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.triggered.connect(self._do_save_slp)
+        slp_files_exist = (
+            self._project.slp_dir.exists()
+            and any(self._project.slp_dir.glob("*.slp"))
+        )
+        save_action.setEnabled(slp_files_exist)
+        self._save_action = save_action
         file_menu.addSeparator()
         import_slp_action = file_menu.addAction("Import from SLP files…")
         import_slp_action.triggered.connect(self._do_import_slp)
@@ -727,6 +738,33 @@ class MainWindow(QMainWindow):
     def _on_import_error(self, msg: str, progress: QProgressDialog) -> None:
         progress.close()
         QMessageBox.critical(self, "Import failed", f"SLP import error:\n{msg}")
+
+    # -- SLP save ------------------------------------------------------------
+
+    def _do_save_slp(self) -> None:
+        """Write current labels back to SLP files in a background thread."""
+        progress = QProgressDialog("Saving SLP files…", None, 0, 0, self)
+        progress.setWindowTitle("Saving")
+        progress.setMinimumDuration(0)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setValue(0)
+
+        self._save_worker = SaveWorker(self._project, parent=self)
+        self._save_worker.finished.connect(
+            lambda n: self._on_save_done(n, progress)
+        )
+        self._save_worker.error.connect(
+            lambda msg: self._on_save_error(msg, progress)
+        )
+        self._save_worker.start()
+
+    def _on_save_done(self, n: int, progress: QProgressDialog) -> None:
+        progress.close()
+        self._status_bar.showMessage(f"Saved — wrote {n} SLP file(s)")
+
+    def _on_save_error(self, msg: str, progress: QProgressDialog) -> None:
+        progress.close()
+        QMessageBox.critical(self, "Save failed", f"SLP save error:\n{msg}")
 
     def showEvent(self, event):
         super().showEvent(event)
