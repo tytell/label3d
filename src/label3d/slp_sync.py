@@ -140,6 +140,160 @@ class SlpMapping:
         )
 
 
+SLP_DIR = Path("slp")
+
+# key -> (label, default file name pattern); placeholders {experiment}, {trial}, {camera}
+PRESETS: dict[str, tuple[str, str]] = {
+    "per_camera": ("One file per camera", "{camera}.slp"),
+    "per_experiment_camera": ("One file per camera per experiment", "{experiment}_{camera}.slp"),
+    "per_trial_camera": ("One file per trial × camera", "{experiment}_{trial}_{camera}.slp"),
+    "single": ("One file for everything", "labels.slp"),
+}
+
+
+class SlpMappingEditor:
+    """Cell-level editing of an SlpMapping (used by the Set up Sleap files dialog).
+
+    Only cells with a video in trials.csv are kept.  Files left with no cells
+    are dropped after every edit.
+    """
+
+    def __init__(self, mapping: SlpMapping, trials_df: pd.DataFrame, cameras: list[str]):
+        self.cells_info = video_cells(trials_df, cameras)
+        self._rank = {cell: i for i, cell in enumerate(self.cells_info)}
+        self._files: dict[Path, list[Cell]] = {}
+        for spec in mapping.files:
+            cells = self._files.setdefault(spec.path, [])
+            cells.extend(c for c in spec.cells() if c in self._rank and c not in cells)
+        self._drop_empty()
+
+    @property
+    def files(self) -> list[Path]:
+        return list(self._files)
+
+    def cells_of(self, path: Path) -> list[Cell]:
+        return sorted(self._files.get(path, []), key=self._rank.__getitem__)
+
+    def files_of(self, cell: Cell) -> list[Path]:
+        return [path for path, cells in self._files.items() if cell in cells]
+
+    def mapping(self) -> SlpMapping:
+        return SlpMapping(files=[
+            SlpFileSpec(path=path, blocks=compact_blocks(self.cells_of(path)))
+            for path in self._files
+        ])
+
+    def apply_preset(self, pattern: str) -> None:
+        """Replace all assignments using a file name pattern.
+
+        Raises KeyError/ValueError/IndexError for an invalid pattern.
+        """
+        files: dict[Path, list[Cell]] = {}
+        for cell in self.cells_info:
+            experiment, trial, camera = cell
+            name = pattern.format(experiment=experiment, trial=trial, camera=camera).strip()
+            if not name.endswith(".slp"):
+                name += ".slp"
+            files.setdefault(SLP_DIR / name, []).append(cell)
+        self._files = files
+
+    def move_cells(self, cells: list[Cell], path: Path) -> None:
+        """Assign cells to path (creating the file if needed), removing them elsewhere."""
+        moving = [c for c in dict.fromkeys(cells) if c in self._rank]
+        if not moving:
+            return
+        moving_set = set(moving)
+        for p in self._files:
+            self._files[p] = [c for c in self._files[p] if c not in moving_set]
+        self._files.setdefault(path, []).extend(moving)
+        self._drop_empty()
+
+    def new_file(self, cells: list[Cell], stem: str = "new", parent: Path = SLP_DIR) -> Path | None:
+        """Move cells into a new, uniquely named file.  Returns its path."""
+        if not any(c in self._rank for c in cells):
+            return None
+        path = self.unique_path(stem, parent)
+        self.move_cells(cells, path)
+        return path
+
+    def split_by_camera(self, path: Path) -> list[Path]:
+        """Split a file into one file per camera.  Returns the new paths."""
+        cells = self.cells_of(path)
+        cameras = list(dict.fromkeys(c[2] for c in cells))
+        if len(cameras) < 2:
+            return []
+        return [
+            self.new_file([c for c in cells if c[2] == cam], f"{path.stem}_{cam}", path.parent)
+            for cam in cameras
+        ]
+
+    def split_by_trial(self, path: Path, trials: set[tuple[str, str]]) -> Path | None:
+        """Move the given (experiment, trial) rows of a file into a new file.
+
+        Returns None if that would move none or all of the file's cells.
+        """
+        cells = self.cells_of(path)
+        moving = [c for c in cells if (c[0], c[1]) in trials]
+        if not moving or len(moving) == len(cells):
+            return None
+        return self.new_file(moving, path.stem, path.parent)
+
+    def join(self, paths: list[Path]) -> Path | None:
+        """Move all cells of paths[1:] into paths[0]."""
+        paths = [p for p in paths if p in self._files]
+        if len(paths) < 2:
+            return None
+        for p in paths[1:]:
+            self.move_cells(self.cells_of(p), paths[0])
+        return paths[0]
+
+    def rename(self, old: Path, new: Path) -> Path:
+        """Rename a file, keeping its position.  Raises ValueError for a bad name."""
+        if not new.name or new.stem == "":
+            raise ValueError("File name cannot be empty")
+        if new.suffix != ".slp":
+            new = new.with_name(new.name + ".slp")
+        if new != old and new in self._files:
+            raise ValueError(f"{new.name} already exists")
+        self._files = {(new if p == old else p): cells for p, cells in self._files.items()}
+        return new
+
+    def unique_path(self, stem: str, parent: Path = SLP_DIR) -> Path:
+        path = parent / f"{stem}.slp"
+        n = 2
+        taken = {p.as_posix().lower() for p in self._files}
+        while path.as_posix().lower() in taken:
+            path = parent / f"{stem}_{n}.slp"
+            n += 1
+        return path
+
+    def errors(self) -> list[str]:
+        """Problems that must be fixed before the mapping can be applied."""
+        counts: dict[Cell, int] = {}
+        for cells in self._files.values():
+            for cell in cells:
+                counts[cell] = counts.get(cell, 0) + 1
+        errors = []
+        unassigned = sum(1 for cell in self.cells_info if cell not in counts)
+        if unassigned:
+            errors.append(f"{unassigned} video(s) unassigned")
+        duplicated = sum(1 for n in counts.values() if n > 1)
+        if duplicated:
+            errors.append(f"{duplicated} video(s) assigned to more than one file")
+        seen: set[str] = set()
+        for path in self._files:
+            if path.suffix != ".slp":
+                errors.append(f"File name must end in .slp: {path.name}")
+            key = path.as_posix().lower()
+            if key in seen:
+                errors.append(f"File names differ only by case: {path.name}")
+            seen.add(key)
+        return errors
+
+    def _drop_empty(self) -> None:
+        self._files = {p: cells for p, cells in self._files.items() if cells}
+
+
 def video_cells(trials_df: pd.DataFrame, cameras: list[str]) -> dict[Cell, tuple[str, int]]:
     """Return cell → (video filename, start frame) for every video in trials.csv."""
     cells: dict[Cell, tuple[str, int]] = {}

@@ -93,6 +93,13 @@ class PointsStore(QObject):
         experiment_name: str = "default",
     ) -> PointsStore:
         """Create an empty PointsStore with the right column structure."""
+        store = cls(cls.empty_df(cameras))
+        store._experiment_name = experiment_name
+        return store
+
+    @staticmethod
+    def empty_df(cameras: list[str]) -> pd.DataFrame:
+        """Empty points DataFrame with the canonical columns (no QObject created)."""
         col_tuples = []
         for cam in cameras:
             for coord in CAM_COORDS:
@@ -104,14 +111,22 @@ class PointsStore(QObject):
         index = pd.MultiIndex.from_tuples(
             [], names=INDEX_NAMES
         )
-        df = pd.DataFrame(index=index, columns=columns)
-        store = cls(df)
-        store._experiment_name = experiment_name
-        return store
+        return pd.DataFrame(index=index, columns=columns)
 
     @classmethod
     def from_csv(cls, path: Path) -> PointsStore:
         """Load from points.csv."""
+        df = cls.read_csv_df(path)
+        store = cls(df)
+        store._save_path = path
+        # Infer experiment name from first row
+        exp_levels = df.index.get_level_values("experiment").unique()
+        store._experiment_name = str(exp_levels[0]) if len(exp_levels) > 0 else "default"
+        return store
+
+    @staticmethod
+    def read_csv_df(path: Path) -> pd.DataFrame:
+        """Read points.csv into a DataFrame (no QObject created; thread-safe)."""
         df = pd.read_csv(path, header=[0, 1], index_col=[0, 1, 2, 3, 4])
         df.index.names = INDEX_NAMES
         # Ensure frame and instance are int
@@ -127,12 +142,7 @@ class PointsStore(QObject):
             for coord in ["x", "y", "xr", "yr"]:
                 if (cam, coord) in df.columns:
                     df[(cam, coord)] = pd.to_numeric(df[(cam, coord)], errors="coerce")
-        store = cls(df)
-        store._save_path = path
-        # Infer experiment name from first row
-        exp_levels = df.index.get_level_values("experiment").unique()
-        store._experiment_name = str(exp_levels[0]) if len(exp_levels) > 0 else "default"
-        return store
+        return df
 
     @classmethod
     def load_all_experiments(cls, project) -> list[PointsStore]:

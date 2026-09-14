@@ -194,7 +194,7 @@ After merging, re-run triangulation for the frames that changed. Use the same pa
 
 **As implemented:** `replace_df()` is added. `merge_from_df()` stays until 8.11 removes its last caller (the old import flow). `compute_merge()` converts index levels to str/int so trial names parsed as ints from `points.csv` still match.
 
-## 8.9 File > Set up Sleap files... (`widgets/slp_setup_dialog.py`) — TODO
+## 8.9 File > Set up Sleap files... (`widgets/slp_setup_dialog.py`) ✓
 
 A modal dialog that edits an `SlpMapping` in memory. Nothing is written until **Apply**.
 
@@ -227,6 +227,23 @@ Blocks are compacted after each edit: cells are grouped into the fewest (trials 
 4. `Project.save_slp_mapping(new_mapping)`.
 5. Write every file in the new mapping from `points.csv` for all experiments (8.7). Files in `slp/` that are no longer in the mapping are removed; their copies stay in the backup folder.
 6. Status bar: "Set up N SLP file(s); backup in slp/backup/…". Update whether Sync is enabled.
+
+**As implemented:**
+- **Editing logic** lives in `slp_sync.SlpMappingEditor`, which has no Qt dependency: `apply_preset`, `move_cells`, `new_file`, `split_by_camera`, `split_by_trial`, `join`, `rename`, `unique_path`, `errors`. The dialog only calls these and redraws. Cells in `project.toml` whose video is no longer in `trials.csv` are dropped when the dialog opens.
+- **Naming.** New files get automatic names: `new.slp` from a selection, `{stem}_2.slp` from split by trial, and `{stem}_{camera}.slp` from split by camera. Rename them in the file list. Names that differ only by case are reported, because macOS file systems ignore case.
+- **Split by trial** moves only the trials selected in the grid for the experiment shown. Rows from other experiments stay where they are.
+- **File list.** It shows names only, since the text is editable. The video count is in the tooltip.
+- **Adopt existing** runs automatically when the dialog opens if `project.toml` has no `[slp]` section and `slp/` has files.
+- **Apply order:**
+  1. The read and merge run first (`SlpReadWorker`).
+  2. The conflict warning appears.
+  3. `apply_merge()` updates the points and `project.toml` is saved.
+  4. `SlpWriteWorker` backs up `slp/*.slp`, writes the files, then removes unmapped files.
+
+  The backup happens after the warning rather than first, so Cancel leaves nothing behind.
+- **New `Project` methods, reused by 8.10:** `experiment_points_df()`, `read_slp_for_sync(mapping)`, `apply_merge(results, overwrite)`, `write_slp_files(mapping)`, `backup_slp_files()` and `remove_unmapped_slp_files(mapping)`. `PointsStore` gained `empty_df()` and `read_csv_df()`, so other experiments' points can be read without creating a QObject. Workers are in `workers/slp_sync_worker.py`; they use a `done` signal instead of overriding `QThread.finished`.
+- **Save stays enabled** whenever `slp/` has files after setup. 8.10 replaces this with the mapping-complete rule.
+- **Not done:** re-triangulating the merged frames. The current import path doesn't triangulate either, so this is left for 8.10/8.11.
 
 ## 8.10 File > Sync with Sleap... (`main_window.py`) — TODO
 

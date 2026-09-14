@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -12,9 +14,10 @@ import toml
 import logging
 logger = logging.getLogger(__name__)
 
+from label3d.adapters.sleap_adapter import SleapAdapter
 from label3d.points import PointsStore
 from label3d.skeleton import Skeleton
-from label3d.slp_sync import SlpMapping
+from label3d.slp_sync import MergeResult, SlpMapping, compute_merge
 
 
 @dataclass
@@ -191,6 +194,101 @@ class Project:
         with open(config_path, "w") as f:
             toml.dump(config, f)
         self.config = config
+
+    def experiment_points_df(self, experiment: str) -> pd.DataFrame:
+        """Points for an experiment: the live store if active, else its points.csv."""
+        if experiment == self.active_experiment and self.points is not None:
+            return self.points.df
+        csv_path = self.experiments[experiment].root / "points.csv"
+        if csv_path.exists():
+            return PointsStore.read_csv_df(csv_path)
+        return PointsStore.empty_df(self.cameras)
+
+    def read_slp_for_sync(self, mapping: SlpMapping | None = None) -> dict[str, MergeResult]:
+        """Read SLP files and merge them with each experiment's points.
+
+        Uses the mapping (default: project.toml's); with no mapping, reads all
+        slp/*.slp files matched by video basename.  Does not modify anything.
+        Safe to call from a background thread.
+        """
+        mapping = self.slp_mapping if mapping is None else mapping
+        adapter = SleapAdapter()
+        if mapping.files:
+            slp_df = adapter.load(
+                None, self.trials_df, self.cameras, mapping=mapping, root=self.root
+            )
+        else:
+            slp_df = adapter.load(sorted(self.slp_dir.glob("*.slp")), self.trials_df, self.cameras)
+
+        results = {}
+        for name in self.experiments:
+            exp_slp = slp_df
+            if not slp_df.empty:
+                exp_slp = slp_df[slp_df.index.get_level_values("experiment") == name]
+            results[name] = compute_merge(self.experiment_points_df(name), exp_slp)
+        return results
+
+    def apply_merge(self, results: dict[str, MergeResult], overwrite: bool) -> None:
+        """Store merge results: the active store in memory + points.csv, others to points.csv.
+
+        overwrite=True takes conflicting points from the SLP files.
+        Must be called from the main thread (may create a PointsStore).
+        """
+        for name, result in results.items():
+            if not result.changed_frames and not (overwrite and result.conflicts):
+                continue
+            df = result.df_overwrite if overwrite else result.df
+            exp = self.experiments[name]
+            if name == self.active_experiment:
+                if self.points is None:
+                    self.points = PointsStore.create_empty(
+                        cameras=self.cameras, bodyparts=[], experiment_name=name
+                    )
+                    self.points._save_path = exp.root / "points.csv"
+                self.points.replace_df(df)
+                self.points.save_if_changed()
+            else:
+                exp.root.mkdir(parents=True, exist_ok=True)
+                df.to_csv(exp.root / "points.csv")
+
+    def write_slp_files(self, mapping: SlpMapping | None = None) -> int:
+        """Write all experiments' points to the mapped SLP files.  Returns files written.
+
+        Safe to call from a background thread.
+        """
+        mapping = self.slp_mapping if mapping is None else mapping
+        dfs = [self.experiment_points_df(name) for name in self.experiments]
+        dfs = [df for df in dfs if not df.empty]
+        all_df = pd.concat(dfs) if dfs else PointsStore.empty_df(self.cameras)
+        return SleapAdapter().save(
+            all_df,
+            cameras=self.cameras,
+            skeleton=self.skeleton,
+            trials_df=self.trials_df,
+            mapping=mapping,
+            root=self.root,
+        )
+
+    def backup_slp_files(self) -> Path | None:
+        """Copy slp/*.slp to slp/backup/{timestamp}/.  Returns the backup folder, if any."""
+        files = sorted(self.slp_dir.glob("*.slp"))
+        if not files:
+            return None
+        backup_dir = self.slp_dir / "backup" / datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        for f in files:
+            shutil.copy2(f, backup_dir / f.name)
+        return backup_dir
+
+    def remove_unmapped_slp_files(self, mapping: SlpMapping) -> list[Path]:
+        """Delete slp/*.slp files that are not in the mapping.  Back up first."""
+        mapped = {(self.root / spec.path).resolve() for spec in mapping.files}
+        removed = []
+        for f in sorted(self.slp_dir.glob("*.slp")):
+            if f.resolve() not in mapped:
+                f.unlink()
+                removed.append(f)
+        return removed
 
     @property
     def slp_import_available(self) -> bool:

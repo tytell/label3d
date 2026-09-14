@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QRectF, QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from label3d.workers.import_worker import ImportWorker
 from label3d.workers.save_worker import SaveWorker
+from label3d.workers.slp_sync_worker import SlpReadWorker, SlpWriteWorker
 
 from label3d.project import Project
 from label3d.state import ProjectState
@@ -31,6 +34,7 @@ from label3d.widgets.calibration_view import CalibrationView
 from label3d.widgets.camera_grid import CameraGrid, LayoutMode
 from label3d.widgets.frame_controls import FrameControls
 from label3d.widgets.label_view import LabelView
+from label3d.widgets.slp_setup_dialog import SlpSetupDialog
 
 
 class MainWindow(QMainWindow):
@@ -193,6 +197,8 @@ class MainWindow(QMainWindow):
         )
         save_action.setEnabled(slp_files_exist)
         self._save_action = save_action
+        setup_slp_action = file_menu.addAction("Set up Sleap files...")
+        setup_slp_action.triggered.connect(self._do_setup_slp)
         file_menu.addSeparator()
         import_slp_action = file_menu.addAction("Import from SLP files…")
         import_slp_action.triggered.connect(self._do_import_slp)
@@ -765,6 +771,109 @@ class MainWindow(QMainWindow):
     def _on_save_error(self, msg: str, progress: QProgressDialog) -> None:
         progress.close()
         QMessageBox.critical(self, "Save failed", f"SLP save error:\n{msg}")
+
+    # -- SLP setup -----------------------------------------------------------
+
+    def _busy_dialog(self, text: str, title: str) -> QProgressDialog:
+        progress = QProgressDialog(text, None, 0, 0, self)
+        progress.setWindowTitle(title)
+        progress.setMinimumDuration(0)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setValue(0)
+        return progress
+
+    def _do_setup_slp(self) -> None:
+        """Edit SLP file assignments, then read old files, merge, and write the new files."""
+        dialog = SlpSetupDialog(self._project, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_mapping = dialog.mapping()
+        old_mapping = self._project.slp_mapping
+        if self._project.points is not None:
+            self._project.points.save_if_changed()
+
+        # Read the old files first so labels made in SLEAP are not lost
+        progress = self._busy_dialog("Reading SLP files…", "Set up Sleap files")
+        self._slp_read_worker = SlpReadWorker(self._project, old_mapping, parent=self)
+        self._slp_read_worker.done.connect(
+            lambda results: self._on_setup_read(results, new_mapping, progress)
+        )
+        self._slp_read_worker.error.connect(
+            lambda msg: self._on_slp_error("Set up failed", msg, progress)
+        )
+        self._slp_read_worker.start()
+
+    def _on_setup_read(self, results, new_mapping, progress: QProgressDialog) -> None:
+        progress.close()
+        overwrite = self._confirm_merge(results)
+        if overwrite is None:
+            self._status_bar.showMessage("Set up cancelled — nothing changed")
+            return
+        self._project.apply_merge(results, overwrite=overwrite)
+        self._refresh_after_merge()
+        self._project.save_slp_mapping(new_mapping)
+
+        progress = self._busy_dialog("Writing SLP files…", "Set up Sleap files")
+        self._slp_write_worker = SlpWriteWorker(
+            self._project, new_mapping, backup=True, remove_unmapped=True, parent=self
+        )
+        self._slp_write_worker.done.connect(
+            lambda n, backup_dir: self._on_setup_written(n, backup_dir, progress)
+        )
+        self._slp_write_worker.error.connect(
+            lambda msg: self._on_slp_error("Set up failed", msg, progress)
+        )
+        self._slp_write_worker.start()
+
+    def _on_setup_written(self, n: int, backup_dir: str, progress: QProgressDialog) -> None:
+        progress.close()
+        message = f"Set up {n} SLP file(s)"
+        if backup_dir:
+            message += f"; backup in {Path(backup_dir).relative_to(self._project.root).as_posix()}"
+        self._status_bar.showMessage(message)
+        self._save_action.setEnabled(any(self._project.slp_dir.glob("*.slp")))
+
+    def _on_slp_error(self, title: str, msg: str, progress: QProgressDialog) -> None:
+        progress.close()
+        QMessageBox.critical(self, title, msg)
+
+    def _confirm_merge(self, results) -> bool | None:
+        """Ask how to resolve conflicts.  Returns overwrite flag, or None to cancel."""
+        conflicts = sum(len(r.conflicts) for r in results.values())
+        if not conflicts:
+            return False
+        frames = sum(len(r.conflict_frames) for r in results.values())
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("SLEAP files changed")
+        box.setText(
+            f"{conflicts} point(s) in {frames} frame(s) were changed in the SLEAP files "
+            "and differ from label3d."
+        )
+        box.setInformativeText(
+            "Use SLEAP — overwrite label3d points with the SLEAP versions.\n"
+            "Keep label3d — keep label3d points; SLEAP files will be overwritten."
+        )
+        use_sleap = box.addButton("Use SLEAP", QMessageBox.ButtonRole.AcceptRole)
+        keep = box.addButton("Keep label3d", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is use_sleap:
+            return True
+        if clicked is keep:
+            return False
+        return None
+
+    def _refresh_after_merge(self) -> None:
+        """Rewire and redraw after merge results replaced the active store's data."""
+        if self._state.points_store is not self._project.points:
+            self._state.points_store = self._project.points
+            self._connect_store(self._project.points)
+            self._label_view.reload_for_experiment()
+        self._state.frame_changed.emit(self._state.current_frame)
+        self._update_slider_marks()
 
     def showEvent(self, event):
         super().showEvent(event)
