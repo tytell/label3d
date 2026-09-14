@@ -1,29 +1,31 @@
 # Phase 8 — SLP Write-back
 
-**Goal**: Write current labels from `PointsStore`/`points.csv` back to the original SLP files in `project/slp/` on explicit save; prompt on close if there are unsaved changes.
+**Goal**: Keep `points.csv` and the SLP files in `project/slp/` in sync. The user assigns (experiment, trial, camera) cells to SLP files with **File > Set up Sleap files...**, then runs **File > Sync with Sleap...** to read new labels/predictions from the SLP files and write the merged result back. Prompt on close if there are unsynced changes.
 
-**Design principle**: SLP files are synchronized copies updated on demand. Auto-save (every 30 s) writes only `points.csv`. SLP write-back happens only on explicit **File > Save**. User-added instances (Phase 7.6–7.8) live in `points.csv` like any other user instance and are included automatically — no special handling needed.
+**Design principle**: SLP files are synchronized copies updated on demand. Auto-save (every 30 s) writes only `points.csv`. SLP files are read at startup and read + written on explicit **Sync**. User-added instances (Phase 7.6–7.8) live in `points.csv` like any other user instance and are included automatically — no special handling needed.
 
-## 8.1 `SleapAdapter.build_file_map()` (`adapters/sleap_adapter.py`)
+**Expected workflow**: label in label3d → Sync → close label3d → train and predict in SLEAP (writing into the same SLP files) → reopen label3d, which reads the SLP files on startup. Because the round trip is this simple, sync uses a plain comparison of SLP contents vs `points.csv` — no sync history or snapshots.
 
-New stateless method: given `files: list[Path]`, `trials_df`, and `cameras`, reads each SLP file's embedded video path, matches via the existing `_build_basename_lookup()` logic, and returns a `dict[tuple[str, str, str], Path]` mapping `(experiment, trial, camera) → file_path`. Called at save time — nothing needs to be tracked at load time.
+Steps 8.1–8.5 below are done (first pass, one SLP file found per video by scanning `slp/`). Steps 8.6–8.13 replace that scan with an explicit mapping and add two-way sync.
 
-Also update `SleapAdapter.save()`:
-- Add `file_map: dict[tuple, Path] | None = None` parameter
-- When provided, route each `(experiment, trial, camera)` group back to its original path instead of generating `{camera}_{trial_name}.slp` names
-- Make `output_dir` optional (kept for Phase 10 Export, which will still generate new names)
-- Return `int` (count of files written) instead of `None`
+## 8.1 `SleapAdapter.build_file_map()` (`adapters/sleap_adapter.py`) ✓
 
-## 8.2 `PointsStore.load_all_experiments()` (`points.py`)
+Stateless method: given `files: list[Path]`, `trials_df`, and `cameras`, reads each SLP file's embedded video references via `labels.videos`, matches via `_build_basename_lookup()`, and returns `dict[tuple[str, str, str], Path]` mapping `(experiment, trial, camera) → file_path`. Called at save time — nothing tracked at load time.
 
-New classmethod:
-```python
-@classmethod
-def load_all_experiments(cls, project: Project) -> list[PointsStore]:
-```
-Iterates `project.experiments`, loads each experiment's `points.csv` if it exists, returns the list of stores (skips experiments with no CSV).
+`SleapAdapter.save()` also updated:
+- `file_map: dict[tuple, Path] | None = None` parameter added
+- `output_dir` made optional (kept for Phase 10 Export)
+- Returns `int` (count of files written) instead of `None`
+- Instance state logic corrected: all-`not_set` instances omitted; `not_visible` treated as user ground-truth (replaces incorrect `occluded` check)
 
-## 8.3 `Project.sync_slp_files()` (`project.py`)
+## 8.2 `PointsStore.load_all_experiments()` (`points.py`) ✓
+
+New classmethod iterates `project.experiments`, loads each experiment's `points.csv` via `from_csv()` if it exists, skips experiments with no CSV. Also in this step:
+
+- `dirty` renamed to `changed` throughout (`_dirty` → `_changed`, `save_if_dirty()` → `save_if_changed()`, `_mark_dirty()` → `_mark_changed()`)
+- Qt signal renamed `changed` → `data_changed` to free the name for the property; `connect`/`disconnect` calls updated in `main_window.py` and `state.py`
+
+## 8.3 `Project.sync_slp_files()` (`project.py`) ✓
 
 ```python
 def sync_slp_files(self) -> int:
@@ -34,7 +36,7 @@ def sync_slp_files(self) -> int:
 ```
 
 Steps:
-1. `self.points.save_if_dirty()` — flush active experiment's CSV first
+1. `self.points.save_if_changed()` — flush active experiment's CSV first
 2. `slp_files = list(self.slp_dir.glob("*.slp"))`
 3. `file_map = SleapAdapter().build_file_map(slp_files, self.trials_df, self.cameras)`
 4. `all_stores = PointsStore.load_all_experiments(self)`
@@ -49,17 +51,11 @@ Steps:
 | All cameras have `predicted` | `PredictedInstance` |
 | All cameras have `not_set` | Instance omitted |
 
-- [ ] Add unit test: create `PointsStore` with user-added instance; call `SleapAdapter.save()`; reload via `sleap_io.load_file()`; assert appears as `Instance` with correct coordinates
+## 8.4 File > Save (`main_window.py`) ✓
 
-## 8.4 File > Save (`main_window.py`)
+`SaveWorker(QThread)` in `workers/save_worker.py` calls `sync_slp_files()` and emits `finished(n)` or `error(msg)`. File > Save (Ctrl+S) in the menu launches the worker behind a `QProgressDialog`; status bar shows "Saved — wrote N SLP file(s)". Action enabled at startup only when `slp/` contains `.slp` files.
 
-Add **File > Save** menu action (Ctrl+S):
-- Enabled only when `points_store` is not None and `slp_dir` contains `.slp` files
-- Run `self._project.sync_slp_files()` in a `SaveWorker(QThread)` (mirrors existing `ImportWorker` pattern)
-- Show a `QProgressDialog` during the write
-- On success: status bar message "Saved — wrote {n} SLP files"
-
-## 8.5 On close — unsaved-changes prompt (`main_window.py`)
+## 8.5 On close — unsaved-changes prompt (`main_window.py`) ✓
 
 ```python
 if self._state.points_store and self._state.points_store.changed:
@@ -72,26 +68,236 @@ if self._state.points_store and self._state.points_store.changed:
     )
 ```
 
-- **Save** → call `sync_slp_files()` on main thread (brief block acceptable on close), then close
+- **Save** → `sync_slp_files()` on main thread (brief block acceptable on close), then close
 - **Discard** → close without saving
 - **Cancel** → `event.ignore()`
+- Falls back to `save_if_changed()` (points.csv only) if no SLP files exist
+
+## 8.6 SLP file mapping in `project.toml` — TODO
+
+Each SLP file is made of one or more **blocks**. A block is one experiment × a list of trials × a list of cameras. With blocks, files can be split and joined while `project.toml` stays readable.
+
+```toml
+[[slp.files]]
+path = "slp/cam0_cam1_early.slp"     # relative to project root
+[[slp.files.blocks]]
+experiment = "exp1"
+trials = ["t1", "t2", "t3"]
+cameras = ["cam0", "cam1"]
+
+[[slp.files]]
+path = "slp/cam0_cam1_late.slp"
+[[slp.files.blocks]]
+experiment = "exp1"
+trials = ["t4", "t5"]
+cameras = ["cam0", "cam1"]
+
+[[slp.files]]
+path = "slp/cam2.slp"
+[[slp.files.blocks]]
+experiment = "exp1"
+trials = ["t1", "t2", "t3", "t4", "t5"]
+cameras = ["cam2"]
+```
+
+New module `slp_sync.py` (no Qt):
+
+```python
+@dataclass
+class SlpBlock:
+    experiment: str
+    trials: list[str]
+    cameras: list[str]
+
+@dataclass
+class SlpFileSpec:
+    path: Path                 # relative to project root
+    blocks: list[SlpBlock]
+
+class SlpMapping:
+    files: list[SlpFileSpec]
+
+    @classmethod
+    def from_config(cls, config: dict) -> SlpMapping
+    def to_config(self) -> dict
+    def cell_map(self) -> dict[tuple[str, str, str], Path]   # replaces build_file_map() for sync
+    def missing_cells(self, project) -> list[tuple[str, str, str]]  # cells in trials.csv with a video but no file
+    def duplicate_cells(self) -> list[tuple[str, str, str]]         # cells assigned to >1 file
+    def is_complete(self, project) -> bool                          # no missing, no duplicates
+```
+
+- `Project.slp_mapping` property reads `config["slp"]`; `Project.save_slp_mapping(mapping)` writes it back to `project.toml`, keeping all other sections unchanged.
+- A cell exists only where `trials.csv` has a non-empty video for that camera. Trials never share a video (start/end frames only trim a video), so each cell corresponds to exactly one video file.
+- `build_file_map()` (8.1) is kept only to create a first mapping from existing SLP files (see 8.9, "Adopt existing").
+
+## 8.7 `SleapAdapter` fixes for multi-video files — TODO
+
+The current `save()` and `load()` assume one SLP file per (trial, camera). Changes:
+
+1. **Group writes by file.** `save(df, mapping=..., ...)` loops over `SlpFileSpec`. Each file becomes one `sio.Labels` with one `sio.Video` per cell, and all labeled frames for those videos. Today, a file shared by several cameras or trials gets overwritten once per group, so only the last group is kept.
+2. **Keep the rest of an existing file.** If the file exists, load it and keep its videos (matched by basename), suggestions and provenance. Replace only `labeled_frames`, and add or remove videos to match the mapping. Frames for videos no longer in this file are dropped here; the new owning file writes them.
+3. **Frame offset.** Write `frame_idx = frame + cam{i}_start`, which is the inverse of `load()`.
+4. **Match experiment as well as trial.** In both `load()` and `save()`, look up the `trials_df` row by `(experiment, trial)`, not by `trial` alone.
+5. **Video path.** Set `sio.Video.filename` to the full path `experiments/{exp}/videos/{file}`, so SLEAP can open the video. Matching on load still uses the basename.
+6. **Empty files.** Write a file even when it has no labeled frames yet, so new files contain their videos and skeleton.
+7. `load(mapping=...)` reads only the files in the mapping. It ignores videos in a file that aren't assigned to that file, and logs a warning.
+
+## 8.8 Merge rules — `slp_sync.compute_merge()` — TODO
+
+Pure function, safe to run in a background thread:
+
+```python
+@dataclass
+class MergeResult:
+    df: pd.DataFrame           # store df with non-conflicting SLP data applied
+    df_overwrite: pd.DataFrame # same, plus conflicting cells taken from SLP
+    n_new: int                 # cells filled where the store had nothing
+    n_predictions: int         # predicted cells replaced/added
+    conflicts: list[tuple]     # (experiment, trial, frame, instance, bodypart, camera)
+
+def compute_merge(store_df: pd.DataFrame, slp_df: pd.DataFrame) -> MergeResult
+```
+
+Merge is done **per camera cell** `(experiment, trial, frame, instance, bodypart, camera)`. The current `merge_from_df()` skips a whole bodypart row if any camera has user data, which would block a new SLEAP label in another camera.
+
+| Store state | SLP state | Result |
+|---|---|---|
+| missing / `not_set` | any | take SLP (new) |
+| `predicted` | `predicted` | take SLP (predictions replace older predictions) |
+| `predicted` | `set` | take SLP (user beats prediction) |
+| `set` / `not_visible` | `predicted` | keep store (user beats prediction) |
+| `set` / `not_visible` | `not_set` | keep store (SLP can't store `not_visible`; deletions in SLEAP are not detected) |
+| `set` | `set`, same x/y (±0.01 px) | no change |
+| `set` | `set`, different x/y | **conflict** |
+| `not_visible` | `set` | **conflict** |
+
+Frame-level rule: on a (frame, camera) where the store has any user instance, SLP *predicted* instances are ignored completely. Otherwise a prediction for an animal that's already labeled would come in as an extra instance.
+
+Instances are matched by index within a frame. Known limitation: if SLEAP reorders user instances, the result can be wrong.
+
+After merging, re-run triangulation for the frames that changed. Use the same path as the current import.
+
+`PointsStore.merge_from_df()` is replaced by `PointsStore.replace_df(df)`, which swaps the data, clears caches and marks the store changed.
+
+## 8.9 File > Set up Sleap files... (`widgets/slp_setup_dialog.py`) — TODO
+
+A modal dialog that edits an `SlpMapping` in memory. Nothing is written until **Apply**.
+
+**Layout**
+- Experiment selector at the top (blocks belong to one experiment, but one file can have blocks from several experiments).
+- **Assignment grid**: rows = trials, columns = cameras. Each cell shows the file it's assigned to, with one color per file. Unassigned cells are hatched. Cells can be multi-selected (click, drag, shift/ctrl, click a row or column header).
+- **File list** on the right: file name (editable), cell count, color swatch.
+
+**Actions**
+| Action | Effect |
+|---|---|
+| Preset ▾ | Replaces the whole mapping: *one file per camera*, *one file per camera per experiment*, *one file per trial × camera*, *one file for everything*. Filename pattern editable, e.g. `{camera}.slp`, `{experiment}_{camera}.slp`. |
+| Adopt existing | Builds a first mapping from the SLP files already in `slp/` using `build_file_map()`. Offered automatically when `slp/` has files but `project.toml` has no `[slp]` section. |
+| Split by camera | For each selected file: one new file per camera. |
+| Split by trial... | For the selected file: move the selected trials (grid rows) into a new file. |
+| New file from selection | Move the selected grid cells into a new file. This is the general split. |
+| Join | Merge the selected files into one; the first file's name is kept. |
+| Assign to ▸ | Move the selected cells into an existing file. |
+
+The user's example works like this: **Preset → one file per camera** (3 files). **Join** cam0 + cam1. Select the rows for trials 4–5 and **Split by trial...**, giving files for cam0+cam1 × t1–3, cam0+cam1 × t4–5, and cam2.
+
+Blocks are compacted after each edit: cells are grouped into the fewest (trials × cameras) rectangles per experiment. A file whose shape isn't a rectangle just keeps several blocks.
+
+**Validation.** Apply is disabled until every cell has exactly one file and file names are unique and end in `.slp`. The status line shows the problem, e.g. "4 cells unassigned".
+
+**Apply** (runs in `SlpSetupWorker` behind a progress dialog):
+1. `points.save_if_changed()`.
+2. Copy every existing `slp/*.slp` to `slp/backup/{YYYYmmdd-HHMMSS}/`. Existing files are never deleted without a backup.
+3. **Read before rewriting**: read the *old* mapping's files (or all `slp/*.slp` if there was no mapping) and merge them into `points.csv` using 8.8. Labels made in SLEAP but never synced are then not lost. Show the conflict warning from 8.10 if needed.
+4. `Project.save_slp_mapping(new_mapping)`.
+5. Write every file in the new mapping from `points.csv` for all experiments (8.7). Files in `slp/` that are no longer in the mapping are removed; their copies stay in the backup folder.
+6. Status bar: "Set up N SLP file(s); backup in slp/backup/…". Update whether Sync is enabled.
+
+## 8.10 File > Sync with Sleap... (`main_window.py`) — TODO
+
+Rename **File > Save** to **Sync with Sleap...** (keep Ctrl+S). Remove **Import from SLP files…**, since startup read and Sync now do the same job.
+
+**Enabled** only when `project.slp_mapping.is_complete(project)`. Re-check after Set up, after switching experiments, and after reloading `trials.csv`. The disabled tooltip says why, e.g. "3 videos have no SLP file — use Set up Sleap files...".
+
+**Sequence** (read, then write):
+1. `points.save_if_changed()`.
+2. `SyncReadWorker`: load all mapped files → `slp_df`; for each experiment, `compute_merge(store_df, slp_df_for_experiment)`. Emits `list[MergeResult]`.
+3. Main thread: if any result has conflicts, show **one** warning:
+   > "N points in M frames were changed in the SLEAP files and differ from label3d.
+   > **Use SLEAP** — overwrite label3d points with the SLEAP versions.
+   > **Keep label3d** — keep label3d points; SLEAP files will be overwritten.
+   > **Cancel** — change nothing."
+4. Apply `df` or `df_overwrite` for each experiment. The active experiment goes through `PointsStore.replace_df()`; other experiments are written directly to their `points.csv`. Re-triangulate the changed frames.
+5. `SyncWriteWorker` (the renamed `SaveWorker`): write all mapped files from the merged data (8.7).
+6. Status bar: "Synced — read N new, M predictions; wrote K SLP file(s)".
+
+A mapped file that doesn't exist on disk is treated as empty on read and created on write, with a warning in the log.
+
+`Project.sync_slp_files()` (8.3) is split into `read_slp_for_sync() -> list[MergeResult]` and `write_slp_files() -> int`, so the conflict prompt can run on the main thread between them.
+
+## 8.11 Startup read (`main_window.py`) — TODO
+
+When a project opens (and when switching experiments), if the mapping is complete, run steps 1–4 of 8.10 without the write. Conflicts show the same single warning; **Keep label3d** leaves the SLP files as they are until the next Sync. If anything was merged, the status bar says "Loaded N new labels / M predictions from SLP files".
+
+This replaces `_maybe_offer_slp_import()`, the "Import SLP predictions?" prompt. If the mapping is missing or incomplete and `slp/` has files, show a one-time message instead: "SLP files found but not assigned — open Set up Sleap files...?"
+
+## 8.12 On close — update 8.5 — TODO
+
+The prompt becomes "Sync with Sleap before closing?" with Sync / Discard / Cancel. **Sync** runs read + write on the main thread; a conflict still shows the warning. If the mapping is incomplete, fall back to `save_if_changed()`.
+
+## 8.13 Unit tests (`tests/test_sleap_adapter.py`, `tests/test_slp_sync.py`) — TODO
+
+Mapping and merge tests (no Qt):
+1. `SlpMapping` round-trips through `to_config()` / `from_config()`; `missing_cells` and `duplicate_cells` find gaps and overlaps.
+2. Block compaction: the 3-camera example (per camera → join → split by trial) gives the expected blocks.
+3. `compute_merge()`: one test per row of the 8.8 table, plus the rule that predictions are ignored on frames with user instances.
+
+Adapter tests: the original plan follows.
+
+Test the full round-trip through `SleapAdapter.save()` → `sleap_io.load_file()`.
+
+**Fixtures needed:**
+- A minimal `trials_df` with one trial and two cameras, referencing synthetic video filenames
+- A pair of stub SLP files in a temp dir — each containing a `sio.Video` with the matching filename but no labeled frames (enough for `build_file_map()` to read)
+- A `PointsStore` (or bare DataFrame) with one user-set instance (state `"set"`) and one predicted instance (state `"predicted"`) across a few bodyparts
+
+**Test cases:**
+1. **User instance exported as `Instance`** — row with any camera state `"set"` → reloaded instance is `sio.Instance`, not `sio.PredictedInstance`; coordinates match
+2. **Predicted instance exported as `PredictedInstance`** — all cameras `"predicted"` → reloaded instance is `sio.PredictedInstance`
+3. **All-`not_set` instance omitted** — frame with all states `"not_set"` produces no instance in the output file
+4. **`build_file_map()` routes correctly** — given two stub SLP files (one per camera), `build_file_map()` returns the right `(experiment, trial, camera) → path` mapping; `save()` writes to those paths, not to generated names
+5. **Shared file** — a file mapped to two cameras × two trials keeps all four videos and all their frames after `save()` (the overwrite bug from 8.7)
+6. **Frame offset** — with `cam0_start = 10`, frame 5 is saved as `frame_idx` 15 and loads back as frame 5
+7. **Existing file preserved** — suggestions in an existing SLP file are still there after `save()`
+
+Each test calls `sio.save_file()` to write stub SLP files, then `SleapAdapter().save(df, cameras=..., mapping=...)`, then `sio.load_file()` to reload and assert.
 
 ## Data flow
 
 ```
-Project open
-  ↓  points.csv empty AND slp/ has *.slp?
-       → QMessageBox("Import SLP predictions?")
-       → SleapAdapter.load() → PointsStore.merge_from_df()
+Project open / switch experiment
+  ↓  mapping complete?
+       yes → read mapped SLP files → compute_merge() → conflicts? → one warning
+             → PointsStore.replace_df() → re-triangulate changed frames
+       no, but slp/ has files → "Open Set up Sleap files...?"
 
 [User labels frames]
   ↓  auto-save every 30 s (points.csv only)
 
-File > Save (Ctrl+S)
-  ↓  points_store.save_if_dirty() → points.csv
-  ↓  SleapAdapter.build_file_map() → (experiment, trial, camera) → file_path
-  ↓  SleapAdapter.save(file_map=...) → original slp/*.slp files
+File > Set up Sleap files...
+  ↓  edit mapping (presets, split, join) → Apply
+  ↓  backup slp/*.slp → read old files + merge → save [slp] to project.toml
+  ↓  write all files in the new mapping from points.csv
 
-App close (unsaved changes)
-  ↓  QMessageBox("Save before closing?")
+File > Sync with Sleap... (Ctrl+S; enabled only when mapping is complete)
+  ↓  save_if_changed() → points.csv
+  ↓  READ: mapped SLP files → compute_merge() per experiment
+  ↓  conflicts? → "Use SLEAP / Keep label3d / Cancel"
+  ↓  apply merge → points.csv
+  ↓  WRITE: SleapAdapter.save(mapping=...) → slp/*.slp
+
+App close (unsynced changes)
+  ↓  "Sync with Sleap before closing?"
+
+[Outside label3d: train + predict in SLEAP into the same files] → reopen → startup read
 ```
