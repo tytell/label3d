@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import sleap_io as sio
 
 import logging
 logger = logging.getLogger(__name__)
 
 from label3d.adapters.base import PoseAdapter
 from label3d.points import CAM_COORDS, INDEX_NAMES, THREE_D_COORDS
+from label3d.slp_sync import (
+    Cell,
+    SlpMapping,
+    camera_cells,
+    normalize_index,
+    video_cells,
+    written_instances,
+)
 
 
 class SleapAdapter(PoseAdapter):
@@ -27,67 +37,70 @@ class SleapAdapter(PoseAdapter):
 
     def load(
         self,
-        files: list[Path],
+        files: list[Path] | None,
         trials: pd.DataFrame,
         cameras: list[str],
+        mapping: SlpMapping | None = None,
+        root: Path | None = None,
     ) -> pd.DataFrame:
         """Load .slp files and return a points-compatible DataFrame.
 
         Each .slp file may cover one or more cameras (matched by video basename
-        against trials.csv).
+        against trials.csv).  When mapping is given, files is ignored: the
+        mapping's files (relative to root) are read, and videos in a file that
+        are not assigned to that file are skipped.
+
+        Within each frame and camera, instances with no finite points are
+        skipped and the rest are numbered 0, 1, … in file order.
         """
-        import sleap_io as sio
-
-        # Build a lookup: video_basename -> list of (trial_name, camera_name)
-        basename_to_trial_cam = _build_basename_lookup(trials, cameras)
-
+        cells_info = video_cells(trials, cameras)
+        basename_to_cells = _build_basename_lookup(trials, cameras)
         rows: list[dict] = []
 
-        for slp_path in files:
+        for slp_path, allowed in self._sources(files, mapping, root):
             logger.debug(f"Loading SLEAP file: {slp_path}")
             labels = sio.load_file(str(slp_path))
-            node_names = [n.name for n in labels.skeleton.nodes]
-            logger.debug(f"{node_names=}")
-
             logger.debug(f"{len(labels.labeled_frames)} labeled frames")
+            warned: set[str] = set()
+
             for lf in labels.labeled_frames:
-                # Match video to (trial, camera)
-                video_basename = Path(lf.video.filename).name
-                matches = basename_to_trial_cam.get(video_basename, [])
-                if not matches:
+                if not isinstance(lf.video.filename, str):
                     continue
+                video_basename = Path(lf.video.filename).name
+                matches = basename_to_cells.get(video_basename, [])
+                if allowed is not None:
+                    kept = [m for m in matches if m in allowed]
+                    if matches and not kept and video_basename not in warned:
+                        logger.warning(
+                            f"{slp_path.name}: video {video_basename} is not assigned "
+                            "to this file, skipping"
+                        )
+                        warned.add(video_basename)
+                    matches = kept
 
-                for experiment_name, trial_name, cam_name in matches:
-                    frame_idx = lf.frame_idx
-                    # Adjust frame index by start offset
-                    start_col = f"{cam_name}_start"
-                    if start_col in trials.columns:
-                        trial_row = trials[trials["trial"] == trial_name]
-                        if not trial_row.empty:
-                            start = int(trial_row.iloc[0].get(start_col, 0) or 0)
-                            global_frame = frame_idx - start
-                        else:
-                            global_frame = frame_idx
-                    else:
-                        global_frame = frame_idx
-
+                for cell in matches:
+                    experiment_name, trial_name, cam_name = cell
+                    global_frame = lf.frame_idx - cells_info[cell][1]
                     if global_frame < 0:
                         continue
 
-                    for inst_idx, inst in enumerate(lf.instances):
-                        is_predicted = hasattr(inst, "score")
+                    inst_idx = 0
+                    for inst in lf.instances:
                         pts = inst.numpy()  # (n_nodes, 2), NaN for missing
+                        finite = np.isfinite(pts).all(axis=1)
+                        if not finite.any():
+                            continue
+                        is_predicted = isinstance(inst, sio.PredictedInstance)
 
-                        for node_idx, node_name in enumerate(node_names):
-                            x, y = pts[node_idx]
-                            if np.isnan(x) or np.isnan(y):
-                                state = "predicted" if is_predicted else "not_set"
+                        for node_idx, node_name in enumerate(inst.skeleton.node_names):
+                            if finite[node_idx]:
+                                state = "predicted" if is_predicted else "set"
+                                x_val = float(pts[node_idx, 0])
+                                y_val = float(pts[node_idx, 1])
+                            else:
+                                state = "not_set"
                                 x_val = np.nan
                                 y_val = np.nan
-                            else:
-                                state = "predicted" if is_predicted else "set"
-                                x_val = float(x)
-                                y_val = float(y)
 
                             rows.append({
                                 "experiment": experiment_name,
@@ -100,6 +113,7 @@ class SleapAdapter(PoseAdapter):
                                 "y": y_val,
                                 "state": state,
                             })
+                        inst_idx += 1
 
         return _rows_to_dataframe(rows, cameras)
 
@@ -114,8 +128,6 @@ class SleapAdapter(PoseAdapter):
         Reads the video references embedded in each SLP file and matches them
         against trials_df using the same basename lookup used during load.
         """
-        import sleap_io as sio
-
         basename_to_trial_cam = _build_basename_lookup(trials_df, cameras)
         file_map: dict[tuple[str, str, str], Path] = {}
         for slp_path in files:
@@ -134,115 +146,195 @@ class SleapAdapter(PoseAdapter):
         trials_df: pd.DataFrame | None = None,
         file_map: dict[tuple[str, str, str], Path] | None = None,
         output_dir: Path | None = None,
+        mapping: SlpMapping | None = None,
+        root: Path | None = None,
         **kwargs,
     ) -> int:
-        """Write per-(trial, camera) .slp files from the points DataFrame.
+        """Write .slp files from the points DataFrame.
 
-        When file_map is provided, writes back to the original source paths.
-        When output_dir is provided (Phase 10 export), generates new filenames.
-        Returns the number of files written.
+        Targets, in order of precedence:
+        - mapping (with root): one file per SlpFileSpec, holding all its videos
+        - file_map: cells grouped by their source path
+        - output_dir (Phase 10 export): one {camera}_{trial}.slp per cell with data
+
+        Each file is written once with all of its videos.  If the file already
+        exists, its videos (matched by basename), suggestions, tracks and
+        provenance are kept; labeled frames are replaced.  Videos no longer
+        assigned to the file are dropped.  Files are written even when they
+        have no labeled frames.  Returns the number of files written.
         """
-        import sleap_io as sio
+        if trials_df is None:
+            raise ValueError("trials_df is required")
 
-        if output_dir is not None:
+        cells_info = {
+            cell: info for cell, info in video_cells(trials_df, cameras).items()
+        }
+        df = normalize_index(df)
+        trial_groups = (
+            {k: g for k, g in df.groupby(level=["experiment", "trial"], sort=False)}
+            if not df.empty else {}
+        )
+
+        targets: dict[Path, list[Cell]] = {}
+        if mapping is not None:
+            if root is None:
+                raise ValueError("root is required with mapping")
+            for spec in mapping.files:
+                targets[root / spec.path] = [c for c in spec.cells() if c in cells_info]
+        elif file_map is not None:
+            for cell in cells_info:
+                if cell in file_map:
+                    targets.setdefault(Path(file_map[cell]), []).append(cell)
+                elif (cell[0], cell[1]) in trial_groups:
+                    logger.warning(f"No SLP file found for {cell}, skipping")
+        elif output_dir is not None:
             output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Build sleap skeleton
-        if skeleton is None:
-            bodyparts = df.index.get_level_values("bodypart").unique().tolist()
-            sio_skeleton = sio.Skeleton(name="label3d")
-            for bp in bodyparts:
-                sio_skeleton.add_node(bp)
+            for cell in cells_info:
+                experiment_name, trial_name, cam = cell
+                if (experiment_name, trial_name) in trial_groups:
+                    targets[output_dir / f"{cam}_{trial_name}.slp"] = [cell]
         else:
-            sio_skeleton = sio.Skeleton(name="label3d")
-            for node in skeleton.nodes:
-                sio_skeleton.add_node(node)
-            for src, dst in skeleton.edges:
-                sio_skeleton.add_edge(src, dst)
+            raise ValueError("One of mapping, file_map or output_dir must be provided")
 
-        node_names = [n.name for n in sio_skeleton.nodes]
-        files_written = 0
+        sio_skeleton = _make_skeleton(skeleton, df)
+        for path, cells in targets.items():
+            self._write_file(path, cells, trial_groups, sio_skeleton, cells_info, root)
+        return len(targets)
 
-        # Group by (experiment, trial)
-        for experiment_name in df.index.get_level_values("experiment").unique():
-            exp_df = df.loc[experiment_name]
-            for trial_name in exp_df.index.get_level_values("trial").unique():
-                trial_df = exp_df.loc[trial_name]
+    # -- Internal --------------------------------------------------------------
 
-                for cam in cameras:
-                    if cam not in df.columns.get_level_values(0):
-                        continue
+    def _sources(
+        self,
+        files: list[Path] | None,
+        mapping: SlpMapping | None,
+        root: Path | None,
+    ) -> list[tuple[Path, set[Cell] | None]]:
+        """Return (file path, allowed cells or None) pairs to read."""
+        if mapping is None:
+            return [(Path(f), None) for f in files or []]
+        if root is None:
+            raise ValueError("root is required with mapping")
+        sources = []
+        for spec in mapping.files:
+            path = root / spec.path
+            if not path.exists():
+                logger.warning(f"Mapped SLP file does not exist, treating as empty: {path}")
+                continue
+            sources.append((path, set(spec.cells())))
+        return sources
 
-                    # Resolve output path
-                    key = (str(experiment_name), str(trial_name), cam)
-                    if file_map is not None:
-                        if key not in file_map:
-                            logger.warning(f"No SLP file found for {key}, skipping")
-                            continue
-                        slp_path = file_map[key]
-                    elif output_dir is not None:
-                        slp_path = output_dir / f"{cam}_{trial_name}.slp"
-                    else:
-                        raise ValueError("Either file_map or output_dir must be provided")
+    def _write_file(
+        self,
+        path: Path,
+        cells: list[Cell],
+        trial_groups: dict[tuple[str, str], pd.DataFrame],
+        sio_skeleton,
+        cells_info: dict[Cell, tuple[str, int]],
+        root: Path | None,
+    ) -> None:
+        existing = sio.load_file(str(path)) if path.exists() else None
 
-                    # Resolve video path for the Video reference
-                    video_filename = ""
-                    if trials_df is not None:
-                        trial_row = trials_df[trials_df["trial"] == trial_name]
-                        if not trial_row.empty and cam in trial_row.columns:
-                            video_filename = str(trial_row.iloc[0][cam])
+        skeleton = sio_skeleton
+        if (
+            existing is not None
+            and existing.skeletons
+            and existing.skeletons[0].node_names == sio_skeleton.node_names
+        ):
+            skeleton = existing.skeletons[0]
 
-                    video = sio.Video(filename=video_filename)
+        existing_videos = {}
+        if existing is not None:
+            for video in existing.videos:
+                if isinstance(video.filename, str):
+                    existing_videos[Path(video.filename).name] = video
 
-                    labeled_frames = []
-                    for frame_idx in trial_df.index.get_level_values("frame").unique():
-                        frame_df = trial_df.loc[frame_idx]
-                        instances = []
+        videos: list = []
+        labeled_frames: list = []
+        for cell in cells:
+            filename, start = cells_info[cell]
+            video = existing_videos.get(Path(filename).name)
+            if video is None:
+                video_filename = (
+                    str((root / "experiments" / cell[0] / "videos" / filename).absolute())
+                    if root is not None else filename
+                )
+                video = sio.Video(filename=video_filename, open_backend=False)
+            if not any(v is video for v in videos):
+                videos.append(video)
+            labeled_frames.extend(
+                _cell_frames(cell, video, start, trial_groups, skeleton)
+            )
 
-                        for inst_idx in frame_df.index.get_level_values("instance").unique():
-                            inst_df = frame_df.loc[inst_idx]
-                            pts = np.full((len(node_names), 2), np.nan, dtype=np.float32)
+        suggestions = []
+        if existing is not None:
+            suggestions = [
+                s for s in existing.suggestions if any(s.video is v for v in videos)
+            ]
 
-                            has_user = False
-                            has_predicted = False
-                            has_data = False
-                            for bp_idx, bp in enumerate(node_names):
-                                if bp in inst_df.index:
-                                    row = inst_df.loc[bp]
-                                    x = row.get((cam, "x"), np.nan)
-                                    y = row.get((cam, "y"), np.nan)
-                                    state = row.get((cam, "state"), "not_set")
-                                    if pd.notna(x) and pd.notna(y):
-                                        pts[bp_idx] = [float(x), float(y)]
-                                    if state in ("set", "not_visible"):
-                                        has_user = True
-                                        has_data = True
-                                    elif state == "predicted":
-                                        has_predicted = True
-                                        has_data = True
+        labels = sio.Labels(
+            labeled_frames=labeled_frames,
+            videos=videos,
+            skeletons=[skeleton],
+            tracks=list(existing.tracks) if existing is not None else [],
+            suggestions=suggestions,
+            provenance=dict(existing.provenance) if existing is not None else {},
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(path.stem + ".tmp.slp")
+        sio.save_file(labels, str(tmp_path), verbose=False)
+        os.replace(tmp_path, path)
 
-                            if not has_data:
-                                continue  # all not_set — omit this instance
-                            elif has_user:
-                                inst = sio.Instance.from_numpy(pts, skeleton=sio_skeleton)
-                            else:
-                                inst = sio.PredictedInstance.from_numpy(
-                                    pts, skeleton=sio_skeleton, score=1.0
-                                )
-                            instances.append(inst)
 
-                        if instances:
-                            lf = sio.LabeledFrame(
-                                video=video, frame_idx=int(frame_idx), instances=instances
-                            )
-                            labeled_frames.append(lf)
+def _make_skeleton(skeleton, df: pd.DataFrame):
+    """Build a sleap_io Skeleton from a label3d Skeleton (or df bodyparts)."""
+    sio_skeleton = sio.Skeleton(name="label3d")
+    if skeleton is None:
+        for bp in df.index.get_level_values("bodypart").unique():
+            sio_skeleton.add_node(str(bp))
+    else:
+        for node in skeleton.nodes:
+            sio_skeleton.add_node(node)
+        for src, dst in skeleton.edges:
+            sio_skeleton.add_edge(src, dst)
+    return sio_skeleton
 
-                    if labeled_frames:
-                        labels = sio.Labels(labeled_frames=labeled_frames)
-                        sio.save_file(labels, str(slp_path))
-                        files_written += 1
 
-        return files_written
+def _cell_frames(
+    cell: Cell,
+    video,
+    start: int,
+    trial_groups: dict[tuple[str, str], pd.DataFrame],
+    skeleton,
+) -> list:
+    """Build LabeledFrames for one (experiment, trial, camera) cell."""
+    experiment_name, trial_name, cam = cell
+    group = trial_groups.get((experiment_name, trial_name))
+    if group is None or (cam, "state") not in group.columns:
+        return []
+
+    node_names = skeleton.node_names
+    labeled_frames = []
+    for frame_idx, frame_df in group.groupby(level="frame", sort=True):
+        cells = camera_cells(frame_df, cam)
+        instances = []
+        for inst, is_user in written_instances(cells):
+            # not_visible points are written as NaN (SLEAP's "not visible")
+            pts = np.full((len(node_names), 2), np.nan, dtype=np.float32)
+            for bp_idx, bp in enumerate(node_names):
+                x, y, state = cells.get((inst, bp), (np.nan, np.nan, "not_set"))
+                if state in ("set", "predicted") and np.isfinite(x) and np.isfinite(y):
+                    pts[bp_idx] = [x, y]
+            if is_user:
+                instances.append(sio.Instance.from_numpy(pts, skeleton=skeleton))
+            else:
+                instances.append(
+                    sio.PredictedInstance.from_numpy(pts, skeleton=skeleton, score=1.0)
+                )
+        if instances:
+            labeled_frames.append(sio.LabeledFrame(
+                video=video, frame_idx=int(frame_idx) + start, instances=instances
+            ))
+    return labeled_frames
 
 
 def _build_basename_lookup(

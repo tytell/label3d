@@ -474,6 +474,13 @@ class PointsStore(QObject):
 
     # -- Merge -----------------------------------------------------------------
 
+    def replace_df(self, df: pd.DataFrame) -> None:
+        """Replace all data (e.g. with a merge result), clear the cache, mark changed."""
+        self._df = df
+        self._cache.clear()
+        self._cache_key = None
+        self._mark_changed()
+
     def merge_from_df(self, adapter_df: pd.DataFrame) -> int:
         """Merge external adapter data into this store without overwriting user work.
 

@@ -73,7 +73,7 @@ if self._state.points_store and self._state.points_store.changed:
 - **Cancel** → `event.ignore()`
 - Falls back to `save_if_changed()` (points.csv only) if no SLP files exist
 
-## 8.6 SLP file mapping in `project.toml` — TODO
+## 8.6 SLP file mapping in `project.toml` ✓
 
 Each SLP file is made of one or more **blocks**. A block is one experiment × a list of trials × a list of cameras. With blocks, files can be split and joined while `project.toml` stays readable.
 
@@ -130,7 +130,12 @@ class SlpMapping:
 - A cell exists only where `trials.csv` has a non-empty video for that camera. Trials never share a video (start/end frames only trim a video), so each cell corresponds to exactly one video file.
 - `build_file_map()` (8.1) is kept only to create a first mapping from existing SLP files (see 8.9, "Adopt existing").
 
-## 8.7 `SleapAdapter` fixes for multi-video files — TODO
+**As implemented:**
+- `missing_cells()` and `is_complete()` take `(trials_df, cameras)` instead of `project`, so they can be tested without a `Project`.
+- Added `video_cells(trials_df, cameras) -> {cell: (video filename, start frame)}`, the single source for which cells exist. It looks up start frames by `(experiment, trial)`.
+- Added `compact_blocks(cells)` and `SlpMapping.from_cell_map(cell_map, cell_order)`. Trials with the same camera set share a block. "Adopt existing" (8.9) will use these.
+
+## 8.7 `SleapAdapter` fixes for multi-video files ✓
 
 The current `save()` and `load()` assume one SLP file per (trial, camera). Changes:
 
@@ -142,7 +147,15 @@ The current `save()` and `load()` assume one SLP file per (trial, camera). Chang
 6. **Empty files.** Write a file even when it has no labeled frames yet, so new files contain their videos and skeleton.
 7. `load(mapping=...)` reads only the files in the mapping. It ignores videos in a file that aren't assigned to that file, and logs a warning.
 
-## 8.8 Merge rules — `slp_sync.compute_merge()` — TODO
+**As implemented:**
+- The signatures are `save(df, cameras, skeleton, trials_df, file_map=None, output_dir=None, mapping=None, root=None)` and `load(files, trials, cameras, mapping=None, root=None)`. `trials_df` is now required. The `file_map` and `output_dir` modes also write each file once.
+- **Instance numbering.** For each camera, `save()` writes only the instances that have a finite `set` or `predicted` point there (`slp_sync.written_instances()`), in index order. `load()` skips instances with no finite points and numbers the rest 0, 1, … for each frame and camera. Merge (8.8) uses this to match instances back.
+- **Missing points.** `not_visible` points are written as NaN, which is SLEAP's "not visible". Predicted nodes with no coordinates load as `not_set`.
+- **Video paths.** A video already in an existing file keeps its stored path (matched by basename). Only newly added videos get the `experiments/{exp}/videos/` absolute path.
+- **Atomic write.** Files are written to `{name}.tmp.slp`, then renamed over the original.
+- `import sleap_io` moved to the top of the module.
+
+## 8.8 Merge rules — `slp_sync.compute_merge()` ✓
 
 Pure function, safe to run in a background thread:
 
@@ -167,17 +180,19 @@ Merge is done **per camera cell** `(experiment, trial, frame, instance, bodypart
 | `predicted` | `set` | take SLP (user beats prediction) |
 | `set` / `not_visible` | `predicted` | keep store (user beats prediction) |
 | `set` / `not_visible` | `not_set` | keep store (SLP can't store `not_visible`; deletions in SLEAP are not detected) |
-| `set` | `set`, same x/y (±0.01 px) | no change |
+| `set` / `predicted` | `set`, same x/y (±0.01 px) | no change (a predicted point in a user instance is saved as part of a user `Instance` and reloads as `set`) |
 | `set` | `set`, different x/y | **conflict** |
 | `not_visible` | `set` | **conflict** |
 
 Frame-level rule: on a (frame, camera) where the store has any user instance, SLP *predicted* instances are ignored completely. Otherwise a prediction for an animal that's already labeled would come in as an extra instance.
 
-Instances are matched by index within a frame. Known limitation: if SLEAP reorders user instances, the result can be wrong.
+**Instance matching.** Within each frame and camera, the n-th SLP instance maps to the n-th store instance that `save()` writes for that camera. SLP instances beyond those map next to store instances that have no data in that camera, sorted by index, and after that to new indices starting at the frame's max + 1. This way a round trip gives back the same instance numbers even when an instance is missing from one camera. A new SLEAP label in a camera that had no labels joins the existing animal, and new instances line up across cameras. Known limitation: if SLEAP reorders or deletes user instances, the result can be wrong.
 
-After merging, re-run triangulation for the frames that changed. Use the same path as the current import.
+After merging, re-run triangulation for the frames that changed. Use the same path as the current import. `MergeResult.changed_frames` and `conflict_frames` list those frames.
 
 `PointsStore.merge_from_df()` is replaced by `PointsStore.replace_df(df)`, which swaps the data, clears caches and marks the store changed.
+
+**As implemented:** `replace_df()` is added. `merge_from_df()` stays until 8.11 removes its last caller (the old import flow). `compute_merge()` converts index levels to str/int so trial names parsed as ints from `points.csv` still match.
 
 ## 8.9 File > Set up Sleap files... (`widgets/slp_setup_dialog.py`) — TODO
 
@@ -245,7 +260,9 @@ This replaces `_maybe_offer_slp_import()`, the "Import SLP predictions?" prompt.
 
 The prompt becomes "Sync with Sleap before closing?" with Sync / Discard / Cancel. **Sync** runs read + write on the main thread; a conflict still shows the warning. If the mapping is incomplete, fall back to `save_if_changed()`.
 
-## 8.13 Unit tests (`tests/test_sleap_adapter.py`, `tests/test_slp_sync.py`) — TODO
+## 8.13 Unit tests (`tests/test_sleap_adapter.py`, `tests/test_slp_sync.py`) — partial
+
+Done with 8.6–8.8 (52 tests): the mapping round trip, missing and duplicate cells, block compaction (the test builds the example's final mapping directly; the per-camera → join → split steps get tested with 8.9), every row of the merge table, the frame rules, instance matching, adapter tests 1–7 below, and a save → load → merge round trip that must give no changes and no conflicts.
 
 Mapping and merge tests (no Qt):
 1. `SlpMapping` round-trips through `to_config()` / `from_config()`; `missing_cells` and `duplicate_cells` find gaps and overlaps.

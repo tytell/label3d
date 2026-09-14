@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 from label3d.points import PointsStore
 from label3d.skeleton import Skeleton
+from label3d.slp_sync import SlpMapping
 
 
 @dataclass
@@ -176,6 +177,20 @@ class Project:
     @property
     def trials_csv_path(self) -> Path:
         return self.root / "trials.csv"
+
+    @property
+    def slp_mapping(self) -> SlpMapping:
+        """SLP file assignments from the [slp] section of project.toml."""
+        return SlpMapping.from_config(self.config)
+
+    def save_slp_mapping(self, mapping: SlpMapping) -> None:
+        """Write the [slp] section to project.toml, keeping all other sections."""
+        config_path = self.root / "project.toml"
+        config = toml.load(config_path) if config_path.exists() else {}
+        config["slp"] = mapping.to_config()
+        with open(config_path, "w") as f:
+            toml.dump(config, f)
+        self.config = config
 
     @property
     def slp_import_available(self) -> bool:
