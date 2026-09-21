@@ -264,6 +264,23 @@ class MainWindow(QMainWindow):
 
         self._layout_actions[LayoutMode.GRID].setChecked(True)
 
+        # View > Zoom
+        zoom_menu = view_menu.addMenu("Zoom")
+        self._action_zoom_instance = zoom_menu.addAction("Zoom to instance")
+        self._action_zoom_instance.setShortcut(QKeySequence("Ctrl+="))
+        self._action_zoom_instance.triggered.connect(self._zoom_to_instance)
+        self._action_zoom_point = zoom_menu.addAction("Zoom to point")
+        self._action_zoom_point.setShortcut(QKeySequence("Ctrl+-"))
+        self._action_zoom_point.triggered.connect(self._zoom_to_point)
+        zoom_all = zoom_menu.addAction("Zoom to all")
+        zoom_all.setShortcut(QKeySequence("Ctrl+0"))
+        zoom_all.triggered.connect(self._camera_grid.fit_targets)
+
+        self._state.selection_changed.connect(self._update_zoom_actions)
+        self._update_zoom_actions(
+            self._state.selected_instance, self._state.selected_bodypart
+        )
+
         # Instances menu
         inst_menu = menu_bar.addMenu("Instances")
 
@@ -433,6 +450,26 @@ class MainWindow(QMainWindow):
     def _set_camera_view(self, index: int):
         """Switch camera from menu — keeps combo box in sync."""
         self._view_combo.setCurrentIndex(index)
+
+    def _update_zoom_actions(self, instance: int, bodypart: str):
+        """Enable the selection-dependent zoom actions only when something is selected."""
+        self._action_zoom_instance.setEnabled(instance >= 0)
+        self._action_zoom_point.setEnabled(instance >= 0 and bool(bodypart))
+
+    def _zoom_to_instance(self):
+        instance = self._state.selected_instance
+        if instance < 0:
+            self._status_bar.showMessage("No instance selected", 2000)
+            return
+        self._camera_grid.zoom_to_instance(instance)
+
+    def _zoom_to_point(self):
+        instance = self._state.selected_instance
+        bodypart = self._state.selected_bodypart
+        if instance < 0 or not bodypart:
+            self._status_bar.showMessage("No point selected", 2000)
+            return
+        self._camera_grid.zoom_to_point(instance, bodypart)
 
     def _set_layout_mode(self, mode: LayoutMode):
         """Switch layout from menu."""

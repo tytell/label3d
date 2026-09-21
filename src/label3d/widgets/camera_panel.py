@@ -22,6 +22,9 @@ import numpy as np
 from label3d.widgets.skeleton_overlay import SkeletonOverlay
 from label3d.widgets.epipolar_overlay import EpipolarOverlay, camera_color
 
+# "Zoom to point" box size, as a fraction of the image dimensions
+POINT_ZOOM_FRAC = 0.05
+
 
 class _CameraLegend(QWidget):
     """Small overlay widget showing colored dots + camera names."""
@@ -103,6 +106,8 @@ class CameraPanel(QGraphicsView):
     """
 
     ZOOM_FACTOR = 1.15
+    # Smallest zoom box, as a fraction of the image's shorter side
+    MIN_ZOOM_FRAC = 0.05
 
     # (camera_name, instance, bodypart) — clicked on existing point
     point_clicked = Signal(str, int, str)
@@ -389,6 +394,59 @@ class CameraPanel(QGraphicsView):
         rect = self._pixmap_item.boundingRect()
         if not rect.isEmpty():
             self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+
+    def zoom_to_scene_rect(self, rect: QRectF, margin_frac: float = 0.25):
+        """Zoom to a scene rect, padded by margin_frac and clamped to the image."""
+        img_rect = self._pixmap_item.boundingRect()
+        if img_rect.isEmpty():
+            return
+
+        rect = QRectF(rect).normalized()
+        # Pad, with a floor so a degenerate (single-point) rect still zooms sanely
+        min_size = min(img_rect.width(), img_rect.height()) * self.MIN_ZOOM_FRAC
+        pad_x = max(rect.width() * margin_frac, min_size / 2.0)
+        pad_y = max(rect.height() * margin_frac, min_size / 2.0)
+        rect.adjust(-pad_x, -pad_y, pad_x, pad_y)
+
+        rect = rect.intersected(img_rect)
+        if rect.isEmpty():
+            return
+
+        self._hide_line_labels()
+        self._label_debounce.start()
+        self.set_scene_rect(rect)
+
+    def zoom_to_points(self, points: list[QPointF], margin_frac: float = 0.25):
+        """Zoom to the bounding box of the given scene points."""
+        if not points:
+            return
+        xs = [p.x() for p in points]
+        ys = [p.y() for p in points]
+        rect = QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+        self.zoom_to_scene_rect(rect, margin_frac)
+
+    def zoom_to_point(self, point: QPointF, frac: float = POINT_ZOOM_FRAC):
+        """Zoom to a box frac of the image size, centred on one scene point."""
+        img_rect = self._pixmap_item.boundingRect()
+        if img_rect.isEmpty():
+            return
+
+        w = img_rect.width() * frac
+        h = img_rect.height() * frac
+        rect = QRectF(point.x() - w / 2.0, point.y() - h / 2.0, w, h)
+
+        # Keep the box inside the image rather than shrinking it at the edges
+        rect.translate(
+            max(0.0, img_rect.left() - rect.left()) + min(0.0, img_rect.right() - rect.right()),
+            max(0.0, img_rect.top() - rect.top()) + min(0.0, img_rect.bottom() - rect.bottom()),
+        )
+        rect = rect.intersected(img_rect)
+        if rect.isEmpty():
+            return
+
+        self._hide_line_labels()
+        self._label_debounce.start()
+        self.set_scene_rect(rect)
 
     def wheelEvent(self, event: QWheelEvent):
         """Zoom in/out with scroll wheel, clamped to image bounds."""

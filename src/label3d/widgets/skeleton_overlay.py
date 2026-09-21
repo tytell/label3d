@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPen
 from PySide6.QtWidgets import (
     QGraphicsLineItem,
@@ -206,6 +206,14 @@ class SkeletonOverlay:
             item.setVisible(False)
         for item in self._label_items.values():
             item.setVisible(False)
+
+    def visible_points(self, instance: int) -> list[QPointF]:
+        """Scene positions of the currently visible points for one instance."""
+        return [
+            item.pos()
+            for (inst, _bp), item in self._point_items.items()
+            if inst == instance and (inst, _bp) in self._active_points and item.isVisible()
+        ]
 
     def get_point_item(self, instance: int, bodypart: str) -> PointItem | None:
         """Get the PointItem for a given (instance, bodypart), if it exists."""
