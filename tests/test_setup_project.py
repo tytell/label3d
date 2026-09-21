@@ -600,112 +600,104 @@ class TestExtractTrialPrefix:
 
 
 @pytest.fixture
-def split_source_dir(tmp_path: Path) -> Path:
-    """Flat source dir with two calibration groups (PS18 and PS19)."""
+def takes_source_dir(tmp_path: Path) -> Path:
+    """Flat source dir: two experiments, each with a PreCal and PostCal take."""
     src = tmp_path / "source"
     src.mkdir()
     for cam in ["left", "right"]:
-        # PS18 group
-        (src / f"PS18_calib_{cam}.mp4").write_bytes(b"\x00" * 100)
-        for trial in ["1", "2"]:
-            (src / f"PS18_Trial{trial}_{cam}.mp4").write_bytes(b"\x00" * 100)
-        # PS19 group
-        (src / f"PS19_calib_{cam}.mp4").write_bytes(b"\x00" * 100)
-        (src / f"PS19_Trial1_{cam}.mp4").write_bytes(b"\x00" * 100)
+        for exp in ["PS18", "PS19"]:
+            for take in ["PreCal", "PostCal"]:
+                (src / f"{exp}_{take}_{cam}.mp4").write_bytes(b"\x00" * 100)
+            (src / f"{exp}_Trial1_{cam}.mp4").write_bytes(b"\x00" * 100)
     return src
 
 
-class TestSplitDetection:
-    def test_needs_split_detected(self, split_source_dir, tmp_path):
-        config = SetupConfig(
-            source_dir=split_source_dir,
-            output_dir=tmp_path / "project",
-            camera_names=["left", "right"],
-            calib_keyword="calib",
-            match_strategy="keyword",
-            trial_keyword="Trial",
-        )
-        assignment = classify_files(config)
-        assert assignment.needs_split
-        assert set(assignment.calibration_groups.keys()) == {"PS18", "PS19"}
+def _takes_config(src: Path, out: Path, **kw) -> SetupConfig:
+    params = dict(
+        source_dir=src,
+        output_dir=out,
+        camera_names=["left", "right"],
+        calib_keyword="",
+        calib_keywords=["PreCal", "PostCal"],
+        match_strategy="keyword",
+        trial_keyword="Trial",
+        experiment_keywords=["PS18", "PS19"],
+    )
+    params.update(kw)
+    return SetupConfig(**params)
 
-    def test_trial_prefix_assigned(self, split_source_dir, tmp_path):
-        config = SetupConfig(
-            source_dir=split_source_dir,
-            output_dir=tmp_path / "project",
-            camera_names=["left", "right"],
-            calib_keyword="calib",
-            match_strategy="keyword",
-            trial_keyword="Trial",
-        )
-        assignment = classify_files(config)
-        ps18_trials = [t for t, p in assignment.trial_prefix.items() if p == "PS18"]
-        ps19_trials = [t for t, p in assignment.trial_prefix.items() if p == "PS19"]
-        assert len(ps18_trials) == 2
-        assert len(ps19_trials) == 1
 
-    def test_no_split_single_calibration(self, source_dir, tmp_path):
-        config = SetupConfig(
-            source_dir=source_dir,
-            output_dir=tmp_path / "project",
-            camera_names=["left", "right"],
-            calib_keyword="calib",
-            match_strategy="number",
-        )
+class TestCalibrationTakes:
+    def test_takes_grouped_per_experiment(self, takes_source_dir, tmp_path):
+        config = _takes_config(takes_source_dir, tmp_path / "project")
+        assignment = classify_files(config)
+
+        assert set(assignment.calibration_takes) == {"PS18", "PS19"}
+        for exp in ("PS18", "PS19"):
+            takes = assignment.calibration_takes[exp]
+            assert set(takes) == {"PreCal", "PostCal"}
+            for take, cam_files in takes.items():
+                assert set(cam_files) == {"left", "right"}
+                for cam, fp in cam_files.items():
+                    assert exp in fp.name and take in fp.name and cam in fp.name
+
+    def test_multiple_takes_do_not_trigger_split(self, takes_source_dir, tmp_path):
+        config = _takes_config(takes_source_dir, tmp_path / "project")
         assignment = classify_files(config)
         assert not assignment.needs_split
         assert assignment.calibration_groups == {}
 
-    def test_split_project_groups_returns_two(self, split_source_dir, tmp_path):
-        config = SetupConfig(
-            source_dir=split_source_dir,
-            output_dir=tmp_path / "project",
-            camera_names=["left", "right"],
-            calib_keyword="calib",
-            match_strategy="keyword",
-            trial_keyword="Trial",
-        )
+    def test_calibration_videos_are_not_trials(self, takes_source_dir, tmp_path):
+        config = _takes_config(takes_source_dir, tmp_path / "project")
         assignment = classify_files(config)
-        groups = split_project_groups(config, assignment)
-        assert set(groups.keys()) == {"PS18", "PS19"}
-        ps18_config, ps18_assignment = groups["PS18"]
-        assert ps18_config.output_dir == tmp_path / "PS18"
-        assert len(ps18_assignment.trials) == 2
-        assert len(ps18_assignment.calibration) > 0
+        for cam_files in assignment.trials.values():
+            for fp in cam_files.values():
+                assert "Cal" not in fp.name
 
-    def test_split_execute_creates_two_projects(self, split_source_dir, tmp_path):
-        config = SetupConfig(
-            source_dir=split_source_dir,
-            output_dir=tmp_path / "project",
-            camera_names=["left", "right"],
-            calib_keyword="calib",
-            match_strategy="keyword",
-            trial_keyword="Trial",
-            copy_files=True,
-        )
-        assignment = classify_files(config)
-        groups = split_project_groups(config, assignment)
-        for prefix, (sub_config, sub_assignment) in groups.items():
-            execute_setup(sub_config, sub_assignment)
-        assert (tmp_path / "PS18").is_dir()
-        assert (tmp_path / "PS19").is_dir()
-        assert (tmp_path / "PS18" / "trials.csv").is_file()
-        assert (tmp_path / "PS19" / "trials.csv").is_file()
+    def test_undetermined_take_raises(self, tmp_path):
+        """Two takes per camera that share one generic keyword cannot be split."""
+        src = tmp_path / "source"
+        src.mkdir()
+        for cam in ["left", "right"]:
+            for i in (1, 2):
+                (src / f"PS18_calib{i}_{cam}.mp4").write_bytes(b"\x00" * 100)
+            (src / f"PS18_Trial1_{cam}.mp4").write_bytes(b"\x00" * 100)
 
-    def test_preview_shows_split_summary(self, split_source_dir, tmp_path):
-        config = SetupConfig(
-            source_dir=split_source_dir,
-            output_dir=tmp_path / "project",
-            camera_names=["left", "right"],
-            calib_keyword="calib",
-            match_strategy="keyword",
-            trial_keyword="Trial",
+        config = _takes_config(
+            src, tmp_path / "project", calib_keywords=["calib"],
+            experiment_keywords=["PS18"],
+        )
+        with pytest.raises(ValueError, match="calibration take"):
+            classify_files(config)
+
+    def test_regex_take_group(self, takes_source_dir, tmp_path):
+        config = _takes_config(
+            takes_source_dir, tmp_path / "project",
+            calib_keywords=[], calib_regex=r"_(?P<take>(?:Pre|Post)Cal)_",
         )
         assignment = classify_files(config)
-        text = preview_assignment(config, assignment)
-        assert "Multiple calibration groups detected" in text
-        assert "PS18" in text
-        assert "PS19" in text
+        assert set(assignment.calibration_takes["PS18"]) == {"PreCal", "PostCal"}
+
+    def test_missing_camera_in_take_warns(self, takes_source_dir, tmp_path):
+        (takes_source_dir / "PS18_PreCal_right.mp4").unlink()
+        config = _takes_config(takes_source_dir, tmp_path / "project")
+        assignment = classify_files(config)
+        assert any(
+            "PreCal" in w and "right" in w for w in assignment.warnings
+        )
+
+    def test_single_take_still_works(self, tmp_path):
+        src = tmp_path / "source"
+        src.mkdir()
+        for cam in ["left", "right"]:
+            (src / f"PS18_calib_{cam}.mp4").write_bytes(b"\x00" * 100)
+            (src / f"PS18_Trial1_{cam}.mp4").write_bytes(b"\x00" * 100)
+        config = _takes_config(
+            src, tmp_path / "project", calib_keywords=["calib"],
+            experiment_keywords=["PS18"],
+        )
+        assignment = classify_files(config)
+        assert set(assignment.calibration_takes["PS18"]) == {"calib"}
 
 
 # --- Unit tests: SLP matching ---

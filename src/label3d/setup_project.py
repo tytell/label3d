@@ -37,6 +37,19 @@ class SetupConfig:
     trial_keyword: str = "Trial"  # used by "keyword" match strategy
     trial_regex: str = ""         # used by "regex" match strategy
     experiment_keywords: list[str] = field(default_factory=list)  # empty → single "default" experiment
+    # Calibration take identification (Phase 9). Each keyword names one take,
+    # e.g. ["PreCal", "PostCal"]; calib_regex is an alternative whose "take"
+    # group (or group 1) supplies the name.
+    calib_keywords: list[str] = field(default_factory=list)
+    calib_regex: str = ""
+    # Strategy used to separate takes when keywords/regex cannot; "" → match_strategy
+    calib_match_strategy: str = ""
+
+    def effective_calib_keywords(self) -> list[str]:
+        """Take keywords, falling back to the legacy single calib_keyword."""
+        if self.calib_keywords:
+            return list(self.calib_keywords)
+        return [self.calib_keyword] if self.calib_keyword else []
 
 
 @dataclass
@@ -53,6 +66,8 @@ class FileAssignment:
     trial_experiment: dict[str, str] = field(default_factory=dict)
     # experiment_name -> {camera_name: [calib files]} — always populated by classify_files
     exp_calibration: dict[str, dict[str, list[Path]]] = field(default_factory=dict)
+    # experiment_name -> take_name -> {camera_name: calib video} (Phase 9)
+    calibration_takes: dict[str, dict[str, dict[str, Path]]] = field(default_factory=dict)
     # files that couldn't be assigned
     unmatched: list[Path] = field(default_factory=list)
     # warnings generated during classification
@@ -93,7 +108,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
             image_files.append(f)
 
     # Classify each file by camera
-    calib_keyword_lower = config.calib_keyword.lower()
+    calib_kws = config.effective_calib_keywords()
 
     # Separate calibration vs data files
     calib_videos: list[tuple[str, Path]] = []  # (camera, path)
@@ -108,7 +123,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
                 f"Video '{f.name}' does not match any camera name"
             )
             continue
-        if calib_keyword_lower and calib_keyword_lower in f.name.lower():
+        if _is_calibration(f.name, calib_kws, config.calib_regex):
             calib_videos.append((camera, f))
         else:
             data_videos.append((camera, f))
@@ -118,7 +133,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         if camera is None:
             assignment.unmatched.append(f)
             continue
-        if calib_keyword_lower and calib_keyword_lower in f.name.lower():
+        if _is_calibration(f.name, calib_kws, config.calib_regex):
             calib_images.append((camera, f))
         else:
             assignment.unmatched.append(f)
@@ -140,24 +155,9 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         assignment.calibration.setdefault(camera, []).append(f)
 
     # Match data videos into trials
-    if config.match_strategy == "number":
-        assignment.trials = _match_by_number(data_videos, config.camera_names)
-    elif config.match_strategy == "keyword":
-        assignment.trials = _match_by_keyword(
-            data_videos, config.trial_keyword
-        )
-    elif config.match_strategy == "regex":
-        assignment.trials = _match_by_regex(data_videos, config.trial_regex)
-    elif config.match_strategy == "datestamp":
-        assignment.trials = _match_by_datestamp(
-            data_videos, config.camera_names, config.datestamp_window_sec
-        )
-    elif config.match_strategy == "mtime":
-        assignment.trials = _match_by_mtime(
-            data_videos, config.camera_names, config.mtime_window_sec
-        )
-    else:
-        raise ValueError(f"Unknown match strategy: {config.match_strategy}")
+    assignment.trials = _run_match_strategy(
+        config.match_strategy, data_videos, config
+    )
 
     # Match SLP files to trials via their embedded video references
     if slp_paths:
@@ -253,23 +253,42 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         for camera, filepath in all_calib:
             assignment.exp_calibration.setdefault("default", {}).setdefault(camera, []).append(filepath)
 
-    # Detect calibration groups for multi-group split detection
-    prefix_to_calib: dict[str, dict[str, list[Path]]] = {}
-    for cam, fp in all_calib:
-        prefix = _extract_calib_prefix(fp.name, config.camera_names, config.calib_keyword)
-        prefix_to_calib.setdefault(prefix, {}).setdefault(cam, []).append(fp)
+    # Group each experiment's calibration videos into takes (Phase 9).
+    # Multiple takes per experiment are normal — typically one before and one
+    # after the trials — so this no longer triggers a project split.
+    calib_by_exp: dict[str, list[tuple[str, Path]]] = {}
+    for camera, filepath in calib_videos:
+        exp = (
+            _identify_experiment(filepath.name, config.experiment_keywords)
+            if config.experiment_keywords
+            else "default"
+        )
+        calib_by_exp.setdefault(exp, []).append((camera, filepath))
 
-    if len(prefix_to_calib) > 1:
-        assignment.needs_split = True
-        assignment.calibration_groups = prefix_to_calib
-        for trial_name, cam_files in assignment.trials.items():
-            if cam_files:
-                first_file = next(iter(cam_files.values()))
-                assignment.trial_prefix[trial_name] = _extract_trial_prefix(
-                    first_file.name,
-                    config.camera_names,
-                    config.match_strategy,
-                    trial_keyword=config.trial_keyword,
+    unresolved_all: list[Path] = []
+    for exp, videos in calib_by_exp.items():
+        takes, unresolved = _match_calibration_takes(config, videos)
+        unresolved_all.extend(unresolved)
+        if takes:
+            assignment.calibration_takes[exp] = takes
+
+    if unresolved_all:
+        names = ", ".join(sorted(fp.name for fp in unresolved_all))
+        raise ValueError(
+            "Could not determine the calibration take for: "
+            f"{names}. Give each take its own keyword via calib_keywords "
+            "(e.g. [\"PreCal\", \"PostCal\"]), or set calib_regex with a "
+            "'take' group."
+        )
+
+    # Warn about takes that are missing cameras
+    for exp, takes in assignment.calibration_takes.items():
+        for take, cam_files in takes.items():
+            missing = [c for c in config.camera_names if c not in cam_files]
+            if missing:
+                assignment.warnings.append(
+                    f"Calibration take '{take}' in experiment '{exp}' is missing "
+                    f"cameras: {', '.join(sorted(missing))}"
                 )
 
     # Warn for experiments that are missing calibration for one or more cameras
@@ -281,7 +300,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         missing = [cam for cam in config.camera_names if not calib_for_exp.get(cam)]
         if missing:
             assignment.warnings.append(
-                f"Experiment '{exp}' has no calibration images for: {', '.join(missing)}"
+                f"Experiment '{exp}' has no calibration video for: {', '.join(missing)}"
             )
 
     return assignment
@@ -336,8 +355,21 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
         lines.append("Trials: none found")
     lines.append("")
 
-    # Calibration — per experiment
-    if assignment.exp_calibration:
+    # Calibration — per experiment, broken out by take
+    if assignment.calibration_takes:
+        n_takes = sum(len(t) for t in assignment.calibration_takes.values())
+        lines.append(f"Calibration ({n_takes} takes):")
+        for exp_name in sorted(assignment.calibration_takes):
+            takes = assignment.calibration_takes[exp_name]
+            lines.append(f"  [{exp_name}]")
+            for take in sorted(takes):
+                cam_files = takes[take]
+                parts = []
+                for cam in config.camera_names:
+                    present = cam in cam_files
+                    parts.append(f"{cam}: {'ok' if present else '-- !'}")
+                lines.append(f"    {take} — " + "  ".join(parts))
+    elif assignment.exp_calibration:
         total = sum(
             len(files)
             for cam_dict in assignment.exp_calibration.values()
@@ -582,6 +614,93 @@ def _read_slp_info(slp_path: Path) -> tuple[set[str], dict]:
     edges = [(e.source.name, e.destination.name) for e in sk.edges]
     symmetries = [(s[0].name, s[1].name) for s in sk.symmetries]
     return video_basenames, {"nodes": nodes, "edges": edges, "symmetries": symmetries}
+
+
+def _run_match_strategy(
+    strategy: str, videos: list[tuple[str, Path]], config: SetupConfig
+) -> dict[str, dict[str, Path]]:
+    """Group (camera, path) pairs into named sets using one matching strategy."""
+    if strategy == "number":
+        return _match_by_number(videos, config.camera_names)
+    if strategy == "keyword":
+        return _match_by_keyword(videos, config.trial_keyword)
+    if strategy == "regex":
+        return _match_by_regex(videos, config.trial_regex)
+    if strategy == "datestamp":
+        return _match_by_datestamp(
+            videos, config.camera_names, config.datestamp_window_sec
+        )
+    if strategy == "mtime":
+        return _match_by_mtime(videos, config.camera_names, config.mtime_window_sec)
+    raise ValueError(f"Unknown match strategy: {strategy}")
+
+
+def _is_calibration(filename: str, keywords: list[str], regex: str) -> bool:
+    """Stage 1: does this file look like calibration at all?"""
+    low = filename.lower()
+    if any(kw.lower() in low for kw in keywords):
+        return True
+    if regex and re.search(regex, Path(filename).stem, re.IGNORECASE):
+        return True
+    return False
+
+
+def _identify_take(filename: str, keywords: list[str], regex: str) -> str | None:
+    """Stage 2: which calibration take does this file belong to?
+
+    The matched keyword *is* the take name. With a regex, a named group "take"
+    (else group 1) supplies it. Returns None when the take is undetermined.
+    """
+    if regex:
+        m = re.search(regex, Path(filename).stem, re.IGNORECASE)
+        if m:
+            if "take" in (m.groupdict() or {}) and m.group("take"):
+                return m.group("take")
+            if m.groups() and m.group(1):
+                return m.group(1)
+
+    low = filename.lower()
+    matches = [kw for kw in keywords if kw.lower() in low]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        # Prefer the longest, so "PostCal" wins over a bare "Cal".
+        matches.sort(key=len, reverse=True)
+        if matches[1].lower() in matches[0].lower():
+            return matches[0]
+        return None  # genuinely ambiguous
+    return None
+
+
+def _match_calibration_takes(
+    config: SetupConfig, calib_videos: list[tuple[str, Path]]
+) -> tuple[dict[str, dict[str, Path]], list[Path]]:
+    """Group one experiment's calibration videos into takes.
+
+    Tries keyword/regex first. If that leaves a take undetermined — or puts two
+    files from the same camera in one take — falls back to the configured
+    match strategy. Returns (takes, unresolved_files).
+    """
+    keywords = config.effective_calib_keywords()
+    takes: dict[str, dict[str, Path]] = {}
+    ambiguous = False
+
+    for cam, fp in calib_videos:
+        take = _identify_take(fp.name, keywords, config.calib_regex)
+        if take is None or cam in takes.get(take, {}):
+            ambiguous = True
+            break
+        takes.setdefault(take, {})[cam] = fp
+
+    if not ambiguous:
+        return takes, []
+
+    strategy = config.calib_match_strategy or config.match_strategy
+    takes = _run_match_strategy(strategy, calib_videos, config)
+
+    assigned = {fp for cam_files in takes.values() for fp in cam_files.values()}
+    unresolved = [fp for _, fp in calib_videos if fp not in assigned]
+    return takes, unresolved
 
 
 def _identify_experiment(filename: str, experiment_keywords: list[str]) -> str:

@@ -334,14 +334,20 @@ class Project:
         return start
 
 
+# trials.csv columns that are metadata, not camera names.
+NON_CAMERA_COLUMNS = ("trial", "experiment", "is_calibration")
+
+
 def _extract_cameras(columns: list[str]) -> list[str]:
     """Extract ordered camera names from trials.csv columns.
 
-    Skips: experiment, trial, and any *_start / *_end suffix columns.
+    Skips NON_CAMERA_COLUMNS and any *_start / *_end suffix columns. Anything
+    else is taken to be a camera, so every new metadata column must be added to
+    NON_CAMERA_COLUMNS or it becomes a phantom camera.
     """
     cameras = []
     for col in columns:
-        if col in ("trial", "experiment"):
+        if col in NON_CAMERA_COLUMNS:
             continue
         if col.endswith("_start") or col.endswith("_end"):
             continue
