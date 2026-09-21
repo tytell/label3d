@@ -245,7 +245,7 @@ Blocks are compacted after each edit: cells are grouped into the fewest (trials 
 - **Save stays enabled** whenever `slp/` has files after setup. 8.10 replaces this with the mapping-complete rule.
 - **Not done:** re-triangulating the merged frames. The current import path doesn't triangulate either, so this is left for 8.10/8.11.
 
-## 8.10 File > Sync with Sleap... (`main_window.py`) — TODO
+## 8.10 File > Sync with Sleap... (`main_window.py`) ✓
 
 Rename **File > Save** to **Sync with Sleap...** (keep Ctrl+S). Remove **Import from SLP files…**, since startup read and Sync now do the same job.
 
@@ -267,15 +267,23 @@ A mapped file that doesn't exist on disk is treated as empty on read and created
 
 `Project.sync_slp_files()` (8.3) is split into `read_slp_for_sync() -> list[MergeResult]` and `write_slp_files() -> int`, so the conflict prompt can run on the main thread between them.
 
+**As implemented:**
+- The read and write reuse `SlpReadWorker` / `SlpWriteWorker` from 8.9; `SaveWorker` and `ImportWorker` are deleted, along with `Project.sync_slp_files()`, `import_from_slp()`, `load_slp_adapter_df()`, `merge_slp_adapter_df()`, `slp_import_available` and `PointsStore.merge_from_df()`.
+- **Re-triangulation** runs *after* the write, not before it, so the background write and the triangulation workers never touch the DataFrame at the same time.  3D coordinates are not written to SLP, so the file contents are unaffected.  Only the **active** experiment is re-triangulated (`_retriangulate`), because calibration is loaded for the active experiment alone; `_run_next_triangulation` walks one `TriangulationWorker` per trial.  Other experiments are re-triangulated with **Instances > Triangulate all experiments...**.
+- `_update_sync_action()` sets the enabled state and the disabled tooltip; it runs at menu setup, after Set up, and on an experiment switch.
+- `tests/test_import.py` becomes `tests/test_slp_load.py`: the `merge_from_df` and `slp_import_available` tests are gone, the adapter state tests stay, and the merge test now goes through `compute_merge()`.
+
 ## 8.11 Startup read (`main_window.py`) — TODO
 
 When a project opens (and when switching experiments), if the mapping is complete, run steps 1–4 of 8.10 without the write. Conflicts show the same single warning; **Keep label3d** leaves the SLP files as they are until the next Sync. If anything was merged, the status bar says "Loaded N new labels / M predictions from SLP files".
 
 This replaces `_maybe_offer_slp_import()`, the "Import SLP predictions?" prompt. If the mapping is missing or incomplete and `slp/` has files, show a one-time message instead: "SLP files found but not assigned — open Set up Sleap files...?"
 
-## 8.12 On close — update 8.5 — TODO
+## 8.12 On close — update 8.5 ✓
 
 The prompt becomes "Sync with Sleap before closing?" with Sync / Discard / Cancel. **Sync** runs read + write on the main thread; a conflict still shows the warning. If the mapping is incomplete, fall back to `save_if_changed()`.
+
+**As implemented:** `_sync_on_close()` does read → `_confirm_merge()` → `apply_merge()` → `write_slp_files()` synchronously and returns False when the conflict dialog is cancelled, which leaves the window open.  No re-triangulation on close.
 
 ## 8.13 Unit tests (`tests/test_sleap_adapter.py`, `tests/test_slp_sync.py`) — partial
 

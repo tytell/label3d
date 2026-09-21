@@ -23,9 +23,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from label3d.workers.import_worker import ImportWorker
-from label3d.workers.save_worker import SaveWorker
 from label3d.workers.slp_sync_worker import SlpReadWorker, SlpWriteWorker
+from label3d.workers.triangulation_worker import TriangulationWorker
 
 from label3d.project import Project
 from label3d.state import ProjectState
@@ -47,6 +46,8 @@ class MainWindow(QMainWindow):
         self._frame_provider = FrameProvider()
         self._experiment_positions: dict[str, tuple[str, int]] = {}
         self._pending_session: tuple[int, dict[str, QRectF], list[int], list[list[int]]] | None = None
+        self._tri_queue: list[tuple[str, list[int]]] = []
+        self._merge_tri_worker = None
 
         self.setWindowTitle(f"label3d — {project.root.name}")
         self.resize(1200, 800)
@@ -167,8 +168,7 @@ class MainWindow(QMainWindow):
         # Load first trial (or restore from session)
         self._restore_and_apply_session()
 
-        # Offer SLP import if points.csv is empty
-        self._maybe_offer_slp_import()
+        self._update_sync_action()
 
     # -- Menus ---------------------------------------------------------------
 
@@ -188,20 +188,13 @@ class MainWindow(QMainWindow):
         open_action = file_menu.addAction("Open project...")
         open_action.setEnabled(False)
         file_menu.addSeparator()
-        save_action = file_menu.addAction("Save")
-        save_action.setShortcut(QKeySequence.StandardKey.Save)
-        save_action.triggered.connect(self._do_save_slp)
-        slp_files_exist = (
-            self._project.slp_dir.exists()
-            and any(self._project.slp_dir.glob("*.slp"))
-        )
-        save_action.setEnabled(slp_files_exist)
-        self._save_action = save_action
+        sync_action = file_menu.addAction("Sync with Sleap...")
+        sync_action.setShortcut(QKeySequence.StandardKey.Save)
+        sync_action.triggered.connect(self._do_sync_slp)
+        self._sync_action = sync_action
         setup_slp_action = file_menu.addAction("Set up Sleap files...")
         setup_slp_action.triggered.connect(self._do_setup_slp)
-        file_menu.addSeparator()
-        import_slp_action = file_menu.addAction("Import from SLP files…")
-        import_slp_action.triggered.connect(self._do_import_slp)
+        self._update_sync_action()
         file_menu.addSeparator()
         export_action = file_menu.addAction("Export points...")
         export_action.setEnabled(False)
@@ -410,7 +403,7 @@ class MainWindow(QMainWindow):
                 self._load_trial(trial_names[0])
                 self._trial_combo.setCurrentIndex(0)
 
-        self._maybe_offer_slp_import()
+        self._update_sync_action()
 
     # -- Tab switching -------------------------------------------------------
 
@@ -664,113 +657,126 @@ class MainWindow(QMainWindow):
         if zoom_rects:
             self._camera_grid.set_all_scene_rects(zoom_rects)
 
-    # -- SLP import ----------------------------------------------------------
+    # -- SLP sync ------------------------------------------------------------
 
-    def _maybe_offer_slp_import(self) -> None:
-        """Prompt the user to import SLP predictions if points.csv is empty."""
-        if not self._project.slp_import_available:
+    def _update_sync_action(self) -> None:
+        """Enable Sync only when every video is assigned to exactly one SLP file."""
+        mapping = self._project.slp_mapping
+        trials_df = self._project.trials_df
+        cameras = self._project.cameras
+        complete = trials_df is not None and mapping.is_complete(trials_df, cameras)
+        self._sync_action.setEnabled(complete)
+        if complete:
+            self._sync_action.setToolTip("")
             return
-        slp_count = len(list(self._project.slp_dir.glob("*.slp")))
-        reply = QMessageBox.question(
-            self,
-            "Import SLP predictions?",
-            f"Found {slp_count} SLP file(s) in {self._project.slp_dir.name}/\n"
-            "and the project has no labeled points yet.\n\n"
-            "Import predicted instances now?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        if not mapping.files:
+            reason = "No SLP files assigned"
+        else:
+            missing = mapping.missing_cells(trials_df, cameras) if trials_df is not None else []
+            duplicates = mapping.duplicate_cells()
+            parts = []
+            if missing:
+                parts.append(f"{len(missing)} video(s) have no SLP file")
+            if duplicates:
+                parts.append(f"{len(duplicates)} video(s) are in more than one file")
+            reason = "; ".join(parts) or "SLP file assignments are incomplete"
+        self._sync_action.setToolTip(f"{reason} — use Set up Sleap files...")
+
+    def _do_sync_slp(self) -> None:
+        """Read the mapped SLP files, merge, then write them back."""
+        if self._project.points is not None:
+            self._project.points.save_if_changed()
+
+        progress = self._busy_dialog("Reading SLP files…", "Sync with Sleap")
+        self._slp_read_worker = SlpReadWorker(self._project, parent=self)
+        self._slp_read_worker.done.connect(
+            lambda results: self._on_sync_read(results, progress)
         )
-        if reply == QMessageBox.StandardButton.Yes:
-            self._do_import_slp()
+        self._slp_read_worker.error.connect(
+            lambda msg: self._on_slp_error("Sync failed", msg, progress)
+        )
+        self._slp_read_worker.start()
 
-    def _do_import_slp(self) -> None:
-        """Load SLP files in a background thread; merge into PointsStore on main thread.
+    def _on_sync_read(self, results, progress: QProgressDialog) -> None:
+        progress.close()
+        overwrite = self._confirm_merge(results)
+        if overwrite is None:
+            self._status_bar.showMessage("Sync cancelled — nothing changed")
+            return
+        self._project.apply_merge(results, overwrite=overwrite)
+        self._refresh_after_merge()
 
-        The worker only does the I/O-heavy SleapAdapter.load() call.  All
-        PointsStore creation and mutation (QTimer-bearing objects) stays on the
-        main thread to avoid "Timers cannot be stopped from another thread".
-        """
-        # Ensure PointsStore exists in the main thread before the worker starts.
-        # This avoids creating QTimer-bearing objects in the background thread.
-        if self._project.points is None:
-            exp = self._project.experiments[self._project.active_experiment]
-            from label3d.points import PointsStore
-            self._project.points = PointsStore.create_empty(
-                cameras=self._project.cameras,
-                bodyparts=[],
-                experiment_name=self._project.active_experiment,
+        n_new = sum(r.n_new for r in results.values())
+        n_predictions = sum(r.n_predictions for r in results.values())
+
+        progress = self._busy_dialog("Writing SLP files…", "Sync with Sleap")
+        self._slp_write_worker = SlpWriteWorker(self._project, parent=self)
+        self._slp_write_worker.done.connect(
+            lambda n, _backup: self._on_sync_written(
+                n, n_new, n_predictions, results, overwrite, progress
             )
-            self._project.points._save_path = exp.root / "points.csv"
-            self._state.points_store = self._project.points
-            self._connect_store(self._project.points)
-
-        progress = QProgressDialog(
-            "Importing SLP files…", "Cancel", 0, 0, self
         )
-        progress.setWindowTitle("Importing")
-        progress.setMinimumDuration(0)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setValue(0)
-
-        self._import_worker = ImportWorker(self._project, parent=self)
-        # `loaded` delivers the raw DataFrame to the main thread for merging.
-        self._import_worker.loaded.connect(
-            lambda df: self._on_import_loaded(df, progress)
+        self._slp_write_worker.error.connect(
+            lambda msg: self._on_slp_error("Sync failed", msg, progress)
         )
-        self._import_worker.error.connect(
-            lambda msg: self._on_import_error(msg, progress)
-        )
-        progress.canceled.connect(self._import_worker.requestInterruption)
-        self._import_worker.start()
+        self._slp_write_worker.start()
 
-    def _on_import_loaded(self, adapter_df, progress: QProgressDialog) -> None:
-        """Receive the adapter DataFrame in the main thread and merge into PointsStore."""
+    def _on_sync_written(
+        self, n: int, n_new: int, n_predictions: int, results, overwrite: bool,
+        progress: QProgressDialog,
+    ) -> None:
         progress.close()
-
-        # All PointsStore mutation happens here, on the main thread.
-        count = self._project.merge_slp_adapter_df(adapter_df)
-        slp_count = len(list(self._project.slp_dir.glob("*.slp")))
-
-        # Wire the store into state if it was newly created.
-        if self._state.points_store is not self._project.points:
-            self._state.points_store = self._project.points
-            self._connect_store(self._project.points)
-            self._label_view.reload_for_experiment()
-
-        self._update_slider_marks()
         self._status_bar.showMessage(
-            f"Imported {count} rows from {slp_count} SLP file(s)"
+            f"Synced — read {n_new} new, {n_predictions} predictions; "
+            f"wrote {n} SLP file(s)"
         )
+        # Triangulation runs after the write so the two never touch the
+        # DataFrame at the same time; 3D coordinates are not written to SLP.
+        self._retriangulate(results, overwrite)
 
-    def _on_import_error(self, msg: str, progress: QProgressDialog) -> None:
-        progress.close()
-        QMessageBox.critical(self, "Import failed", f"SLP import error:\n{msg}")
+    # -- Re-triangulation after a merge ---------------------------------------
 
-    # -- SLP save ------------------------------------------------------------
+    def _retriangulate(self, results, overwrite: bool) -> None:
+        """Re-triangulate the active experiment's merged frames, trial by trial."""
+        experiment = self._project.active_experiment
+        result = results.get(experiment)
+        store = self._project.points
+        cameras = self._label_view._cameras
+        if result is None or store is None or not cameras:
+            return
 
-    def _do_save_slp(self) -> None:
-        """Write current labels back to SLP files in a background thread."""
-        progress = QProgressDialog("Saving SLP files…", None, 0, 0, self)
-        progress.setWindowTitle("Saving")
-        progress.setMinimumDuration(0)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setValue(0)
+        frames = set(result.changed_frames)
+        if overwrite:
+            frames |= result.conflict_frames
 
-        self._save_worker = SaveWorker(self._project, parent=self)
-        self._save_worker.finished.connect(
-            lambda n: self._on_save_done(n, progress)
+        by_trial: dict[str, list[int]] = {}
+        for exp, trial, frame in frames:
+            if exp != experiment:
+                continue
+            by_trial.setdefault(str(trial), []).append(int(frame))
+        if not by_trial:
+            return
+
+        self._tri_queue = [(trial, sorted(f)) for trial, f in sorted(by_trial.items())]
+        self._run_next_triangulation()
+
+    def _run_next_triangulation(self) -> None:
+        if not self._tri_queue:
+            self._merge_tri_worker = None
+            self._refresh_after_merge()
+            return
+        trial, frames = self._tri_queue.pop(0)
+        self._merge_tri_worker = TriangulationWorker(
+            self._label_view._cameras, self._project.points, trial, frames, parent=self
         )
-        self._save_worker.error.connect(
-            lambda msg: self._on_save_error(msg, progress)
-        )
-        self._save_worker.start()
+        self._merge_tri_worker.finished.connect(self._run_next_triangulation)
+        self._merge_tri_worker.error_occurred.connect(self._on_triangulation_error)
+        self._merge_tri_worker.start()
 
-    def _on_save_done(self, n: int, progress: QProgressDialog) -> None:
-        progress.close()
-        self._status_bar.showMessage(f"Saved — wrote {n} SLP file(s)")
-
-    def _on_save_error(self, msg: str, progress: QProgressDialog) -> None:
-        progress.close()
-        QMessageBox.critical(self, "Save failed", f"SLP save error:\n{msg}")
+    def _on_triangulation_error(self, msg: str) -> None:
+        self._tri_queue = []
+        self._merge_tri_worker = None
+        self._status_bar.showMessage(f"Triangulation failed: {msg}")
 
     # -- SLP setup -----------------------------------------------------------
 
@@ -831,7 +837,7 @@ class MainWindow(QMainWindow):
         if backup_dir:
             message += f"; backup in {Path(backup_dir).relative_to(self._project.root).as_posix()}"
         self._status_bar.showMessage(message)
-        self._save_action.setEnabled(any(self._project.slp_dir.glob("*.slp")))
+        self._update_sync_action()
 
     def _on_slp_error(self, title: str, msg: str, progress: QProgressDialog) -> None:
         progress.close()
@@ -883,23 +889,38 @@ class MainWindow(QMainWindow):
             if self._pending_session is not None:
                 QTimer.singleShot(0, self._apply_deferred_session)
 
+    def _sync_on_close(self) -> bool:
+        """Read, merge and write the SLP files on the main thread.  False = cancelled."""
+        self._project.points.save_if_changed()
+        results = self._project.read_slp_for_sync()
+        overwrite = self._confirm_merge(results)
+        if overwrite is None:
+            return False
+        self._project.apply_merge(results, overwrite=overwrite)
+        self._project.write_slp_files()
+        return True
+
     def closeEvent(self, event):
         store = self._state.points_store
         if store is not None and store.changed:
-            if self._save_action.isEnabled():
-                reply = QMessageBox.question(
-                    self,
-                    "Save before closing?",
-                    "You have unsaved changes. Save and update SLP files before closing?",
-                    QMessageBox.StandardButton.Save
-                    | QMessageBox.StandardButton.Discard
-                    | QMessageBox.StandardButton.Cancel,
+            if self._sync_action.isEnabled():
+                box = QMessageBox(self)
+                box.setWindowTitle("Sync with Sleap before closing?")
+                box.setText(
+                    "You have unsaved changes. Sync with the SLEAP files before closing?"
                 )
-                if reply == QMessageBox.StandardButton.Cancel:
+                sync = box.addButton("Sync", QMessageBox.ButtonRole.AcceptRole)
+                box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
+                cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+                box.setDefaultButton(sync)
+                box.exec()
+                clicked = box.clickedButton()
+                if clicked is cancel:
                     event.ignore()
                     return
-                if reply == QMessageBox.StandardButton.Save:
-                    self._project.sync_slp_files()
+                if clicked is sync and not self._sync_on_close():
+                    event.ignore()
+                    return
             else:
                 store.save_if_changed()
         self._save_session_settings()
