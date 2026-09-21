@@ -273,11 +273,13 @@ A mapped file that doesn't exist on disk is treated as empty on read and created
 - `_update_sync_action()` sets the enabled state and the disabled tooltip; it runs at menu setup, after Set up, and on an experiment switch.
 - `tests/test_import.py` becomes `tests/test_slp_load.py`: the `merge_from_df` and `slp_import_available` tests are gone, the adapter state tests stay, and the merge test now goes through `compute_merge()`.
 
-## 8.11 Startup read (`main_window.py`) — TODO
+## 8.11 Startup read (`main_window.py`) ✓
 
 When a project opens (and when switching experiments), if the mapping is complete, run steps 1–4 of 8.10 without the write. Conflicts show the same single warning; **Keep label3d** leaves the SLP files as they are until the next Sync. If anything was merged, the status bar says "Loaded N new labels / M predictions from SLP files".
 
 This replaces `_maybe_offer_slp_import()`, the "Import SLP predictions?" prompt. If the mapping is missing or incomplete and `slp/` has files, show a one-time message instead: "SLP files found but not assigned — open Set up Sleap files...?"
+
+**As implemented:** `_read_slp_on_open()` runs after the session is restored and after an experiment switch.  It stays silent when nothing was merged — the status bar only reports a non-zero read.  `_offer_slp_setup()` asks once per session (`_offered_slp_setup`) and opens the Set up dialog on Yes.
 
 ## 8.12 On close — update 8.5 ✓
 

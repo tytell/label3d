@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self._tri_queue: list[tuple[str, list[int]]] = []
         self._merge_tri_worker = None
         self._all_tri_worker = None
+        self._offered_slp_setup = False
 
         self.setWindowTitle(f"label3d — {project.root.name}")
         self.resize(1200, 800)
@@ -178,6 +179,7 @@ class MainWindow(QMainWindow):
         self._restore_and_apply_session()
 
         self._update_sync_action()
+        self._read_slp_on_open()
 
     # -- Menus ---------------------------------------------------------------
 
@@ -418,6 +420,7 @@ class MainWindow(QMainWindow):
                 self._trial_combo.setCurrentIndex(0)
 
         self._update_sync_action()
+        self._read_slp_on_open()
 
     # -- Tab switching -------------------------------------------------------
 
@@ -737,11 +740,69 @@ class MainWindow(QMainWindow):
         for _name, _cameras, store in jobs:
             store.save_if_changed()
         self._all_tri_worker = None
+        self._offered_slp_setup = False
         message = f"Triangulated {n_frames} frame(s) in {len(jobs)} experiment(s)"
         if skipped:
             message += f"; skipped {', '.join(sorted(skipped))} (no calibration)"
         self._status_bar.showMessage(message)
         self._state.frame_changed.emit(self._state.current_frame)
+
+    # -- SLP startup read ------------------------------------------------------
+
+    def _read_slp_on_open(self) -> None:
+        """Read the mapped SLP files into points.csv when a project or experiment opens.
+
+        Same read-and-merge as Sync, without the write-back: labels made in
+        SLEAP show up straight away, and the SLP files are left alone until the
+        next Sync.
+        """
+        if not self._sync_action.isEnabled():
+            self._offer_slp_setup()
+            return
+
+        progress = self._busy_dialog("Reading SLP files…", "Loading SLP files")
+        self._slp_open_worker = SlpReadWorker(self._project, parent=self)
+        self._slp_open_worker.done.connect(
+            lambda results: self._on_open_read(results, progress)
+        )
+        self._slp_open_worker.error.connect(
+            lambda msg: self._on_slp_error("Reading SLP files failed", msg, progress)
+        )
+        self._slp_open_worker.start()
+
+    def _on_open_read(self, results, progress: QProgressDialog) -> None:
+        progress.close()
+        overwrite = self._confirm_merge(results)
+        if overwrite is None:
+            self._status_bar.showMessage("SLP files not loaded — nothing changed")
+            return
+        n_new = sum(r.n_new for r in results.values())
+        n_predictions = sum(r.n_predictions for r in results.values())
+        if not n_new and not n_predictions and not (overwrite and any(r.conflicts for r in results.values())):
+            return
+        self._project.apply_merge(results, overwrite=overwrite)
+        self._refresh_after_merge()
+        self._status_bar.showMessage(
+            f"Loaded {n_new} new labels / {n_predictions} predictions from SLP files"
+        )
+        self._retriangulate(results, overwrite)
+
+    def _offer_slp_setup(self) -> None:
+        """Once per session: point the user at Set up when slp/ has unassigned files."""
+        if self._offered_slp_setup:
+            return
+        if not self._project.slp_dir.exists() or not any(self._project.slp_dir.glob("*.slp")):
+            return
+        self._offered_slp_setup = True
+        reply = QMessageBox.question(
+            self,
+            "SLP files not assigned",
+            f"{self._project.slp_dir.name}/ contains SLP files that are not assigned "
+            "to videos.\n\nOpen Set up Sleap files... now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._do_setup_slp()
 
     # -- SLP sync ------------------------------------------------------------
 
