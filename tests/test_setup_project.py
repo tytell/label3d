@@ -415,11 +415,46 @@ class TestExecuteSetup:
         df = pd.read_csv(basic_config.output_dir / "trials.csv")
         assert "experiment" in df.columns
         assert "trial" in df.columns
+        assert "is_calibration" in df.columns
         assert "left" in df.columns
         assert "right" in df.columns
         assert "left_start" in df.columns
         assert "right_end" in df.columns
-        assert len(df) == 2  # 2 trials
+
+        # 2 trials + 1 calibration take
+        assert len(df) == 3
+        trials = df[~df["is_calibration"]]
+        takes = df[df["is_calibration"]]
+        assert len(trials) == 2
+        assert len(takes) == 1
+        assert takes.iloc[0]["trial"] == "calib"
+        # The take's cells name the calibration videos, not the trial videos
+        assert takes.iloc[0]["left"] == "calib_left.mp4"
+
+    def test_calibration_takes_are_not_trials(self, basic_config, qapp):
+        """Project.load() keeps calibration takes out of the trial list."""
+        from label3d.project import Project
+
+        assignment = classify_files(basic_config)
+        execute_setup(basic_config, assignment)
+
+        project = Project.load(basic_config.output_dir)
+        assert project.trial_names() == ["trial_001", "trial_002"]
+        assert [t.name for t in project.calibration_takes] == ["calib"]
+
+    def test_calibration_video_path_resolves_to_calibration_dir(
+        self, basic_config, qapp
+    ):
+        from label3d.project import Project
+
+        assignment = classify_files(basic_config)
+        execute_setup(basic_config, assignment)
+
+        project = Project.load(basic_config.output_dir)
+        path = project.video_path("calib", "left")
+        assert path.parent.name == "left"
+        assert path.parent.parent.name == "calibration"
+        assert path.is_file()
 
     def test_files_moved(self, basic_config, source_dir):
         assignment = classify_files(basic_config)

@@ -80,19 +80,23 @@ The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init_
 
 ### Videos and trials
 
-`trials.csv` lives at the project root and has one row per trial across all experiments. Columns:
+`trials.csv` lives at the project root and has one row per trial **and one row per calibration take** across all experiments. Columns:
 
-| experiment | trial | cam0 | cam0_start | cam0_end | cam1 | cam1_start | cam1_end | … |
-|---|---|---|---|---|---|---|---|---|
-| PS18 | trial1 | cam0_t1.mp4 | 0 | 500 | cam1_t1.mp4 | 3 | 503 | … |
-| PS18 | trial2 | cam0_t2.mp4 | 0 | 480 | cam1_t2.mp4 | 0 | 480 | … |
-| PS19 | trial1 | cam0_t1.mp4 | 0 | 600 | cam1_t1.mp4 | 0 | 600 | … |
+| experiment | trial | is_calibration | cam0 | cam0_start | cam0_end | cam1 | cam1_start | cam1_end | … |
+|---|---|---|---|---|---|---|---|---|---|
+| PS18 | PreCal | True | PS18_PreCal_cam0.mp4 | 0 | | PS18_PreCal_cam1.mp4 | 0 | | … |
+| PS18 | trial1 | False | cam0_t1.mp4 | 0 | 500 | cam1_t1.mp4 | 3 | 503 | … |
+| PS18 | trial2 | False | cam0_t2.mp4 | 0 | 480 | cam1_t2.mp4 | 0 | 480 | … |
+| PS18 | PostCal | True | PS18_PostCal_cam0.mp4 | 0 | | PS18_PostCal_cam1.mp4 | 0 | | … |
+| PS19 | trial1 | False | cam0_t1.mp4 | 0 | 600 | cam1_t1.mp4 | 0 | 600 | … |
 
 - `_start` / `_end`: frame indices into the video file (inclusive). Blank = start (0) / end of file.
 - The per-camera offset is **implicit**: global frame `N` maps to video frame `_start + N` for each camera.
 - **Trial length** = `min(_end_i - _start_i + 1)` across all cameras. Blank `_end` resolved via `cv2.CAP_PROP_FRAME_COUNT`.
 - Camera ID columns must match the `name` field values in `calibration.toml`.
-- Video filenames are resolved relative to `experiments/{experiment}/videos/`.
+- Any column that is not `experiment`, `trial`, `is_calibration`, or a `*_start` / `*_end` suffix is taken to be a camera name — new metadata columns must be added to `project.NON_CAMERA_COLUMNS`.
+
+**Calibration takes** (`is_calibration = True`): a take is one synchronized calibration recording, typically one before and one after the trials. The `trial` column holds the take name (from the calibration keyword, e.g. `PreCal`). Takes reuse the camera / `_start` / `_end` triples, so a take can be trimmed to the segment where the board is visible. Take videos resolve relative to `experiments/{experiment}/calibration/{camera}/`; trial videos relative to `experiments/{experiment}/videos/`. Takes are excluded from `Project.trials` and from SLP cell matching.
 
 ### Primary storage: `points.csv`
 

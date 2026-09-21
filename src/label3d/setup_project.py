@@ -441,6 +441,29 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
     return "\n".join(lines)
 
 
+def _blank_row(
+    experiment: str, name: str, is_calibration: bool, cameras: list[str]
+) -> dict:
+    """An empty trials.csv row; cells are filled in by _fill_cell."""
+    row: dict[str, str | int | bool] = {
+        "experiment": experiment,
+        "trial": name,
+        "is_calibration": is_calibration,
+    }
+    for cam in cameras:
+        row[cam] = ""
+        row[f"{cam}_start"] = ""
+        row[f"{cam}_end"] = ""
+    return row
+
+
+def _fill_cell(row: dict, camera: str, filename: str) -> None:
+    """Record one camera's video in a trials.csv row."""
+    row[camera] = filename
+    row[f"{camera}_start"] = 0
+    row[f"{camera}_end"] = ""
+
+
 def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     """Create project folder structure, move or copy files, write trials.csv and project.toml.
 
@@ -448,7 +471,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
       project/
         project.toml
         skeleton.json            <- written if SLP files provided a skeleton
-        trials.csv               <- experiment + trial columns
+        trials.csv               <- experiment, trial, is_calibration columns
         slp/
         experiments/
           default/
@@ -471,12 +494,14 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     else:
         exp_trials = {"default": sorted(assignment.trials)}
 
-    # Create directory structure and move/copy files per experiment
+    # Create directory structure and move/copy files per experiment.
+    # Calibration takes get rows too, flagged with is_calibration.
+    all_experiments = sorted(set(exp_trials) | set(assignment.calibration_takes))
     trials_rows: list[dict] = []
-    for exp_name in sorted(exp_trials):
+    for exp_name in all_experiments:
         exp_dir = out / "experiments" / exp_name
         videos_dir = exp_dir / "videos"
-        videos_dir.mkdir(parents=True)
+        videos_dir.mkdir(parents=True, exist_ok=True)
 
         for cam, files in assignment.exp_calibration.get(exp_name, {}).items():
             cam_dir = exp_dir / "calibration" / cam
@@ -484,26 +509,27 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
             for f in files:
                 transfer(str(f), str(cam_dir / f.name))
 
-        for trial_name in sorted(exp_trials[exp_name]):
+        for trial_name in sorted(exp_trials.get(exp_name, [])):
             cam_files = assignment.trials[trial_name]
-            row: dict[str, str | int] = {"experiment": exp_name, "trial": trial_name}
+            row = _blank_row(exp_name, trial_name, False, config.camera_names)
             for cam in config.camera_names:
                 if cam in cam_files:
                     src = cam_files[cam]
-                    dst = videos_dir / src.name
-                    transfer(str(src), str(dst))
-                    row[cam] = src.name
-                    row[f"{cam}_start"] = 0
-                    row[f"{cam}_end"] = ""
-                else:
-                    row[cam] = ""
-                    row[f"{cam}_start"] = ""
-                    row[f"{cam}_end"] = ""
+                    transfer(str(src), str(videos_dir / src.name))
+                    _fill_cell(row, cam, src.name)
+            trials_rows.append(row)
+
+        # Calibration files have already been moved above, so only record them.
+        for take in sorted(assignment.calibration_takes.get(exp_name, {})):
+            cam_files = assignment.calibration_takes[exp_name][take]
+            row = _blank_row(exp_name, take, True, config.camera_names)
+            for cam, src in cam_files.items():
+                _fill_cell(row, cam, src.name)
             trials_rows.append(row)
 
     # Write trials.csv at project root with experiment column
     if trials_rows:
-        columns = ["experiment", "trial"]
+        columns = ["experiment", "trial", "is_calibration"]
         for cam in config.camera_names:
             columns.extend([cam, f"{cam}_start", f"{cam}_end"])
         df = pd.DataFrame(trials_rows, columns=columns)

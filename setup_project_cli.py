@@ -10,7 +10,9 @@ Config file format (TOML):
     source_dir = "/path/to/flat/folder"
     output_dir = "/path/to/new/project"
     camera_names = ["left", "right", "bottom"]
-    calib_keyword = "calib"
+    calib_keyword = "calib"          # legacy single keyword
+    calib_keywords = ["PreCal", "PostCal"]   # one keyword per calibration take
+    calib_regex = ""                 # alternative: regex with a "take" group
     experiment_keywords = ["PS", "BG"]   # omit or [] for single experiment named "default"
     match_strategy = "keyword"   # "keyword" | "regex" | "number" | "datestamp" | "mtime"
     trial_keyword = "Trial"      # only for keyword strategy
@@ -152,6 +154,8 @@ def save_config_toml(config: SetupConfig, path: Path) -> None:
             "output_dir": str(config.output_dir),
             "camera_names": config.camera_names,
             "calib_keyword": config.calib_keyword,
+            "calib_keywords": config.calib_keywords,
+            "calib_regex": config.calib_regex,
             "experiment_keywords": config.experiment_keywords,
             "match_strategy": config.match_strategy,
         },
@@ -187,7 +191,19 @@ def run_interactive(copy_files: bool = False, dry_run: bool = False) -> None:
 
     print()
     camera_names = prompt_list("Camera names (comma-separated, e.g. left,right,bottom)")
-    calib_keyword = input("Calibration keyword (e.g. calib, charuco): ").strip()
+
+    print()
+    print("--- Calibration takes ---")
+    print("  Each keyword names one calibration take, e.g. PreCal,PostCal for a")
+    print("  recording before and after the trials. A single keyword (calib) means")
+    print("  one take per experiment.")
+    calib_keywords = prompt_optional_list("Calibration keywords")
+    calib_regex = ""
+    if not calib_keywords:
+        print("  No keywords given — supply a regex whose 'take' group names the take,")
+        print("  e.g. _(?P<take>(?:Pre|Post)Cal)_  (leave blank to use 'calib')")
+        calib_regex = input("Calibration regex: ").strip()
+    calib_keyword = calib_keywords[0] if calib_keywords else "calib"
 
     print()
     print("--- Experiment grouping ---")
@@ -230,6 +246,8 @@ def run_interactive(copy_files: bool = False, dry_run: bool = False) -> None:
         output_dir=output_dir,
         camera_names=camera_names,
         calib_keyword=calib_keyword,
+        calib_keywords=calib_keywords,
+        calib_regex=calib_regex,
         experiment_keywords=experiment_keywords,
         match_strategy=match_strategy,
         mtime_window_sec=mtime_window,
@@ -287,6 +305,9 @@ def run_from_config(config_path: Path, copy_files: bool = False, dry_run: bool =
         output_dir=output_dir,
         camera_names=setup["camera_names"],
         calib_keyword=setup.get("calib_keyword", "calib"),
+        calib_keywords=setup.get("calib_keywords", []),
+        calib_regex=setup.get("calib_regex", ""),
+        calib_match_strategy=setup.get("calib_match_strategy", ""),
         experiment_keywords=setup.get("experiment_keywords", []),
         match_strategy=setup.get("match_strategy", "keyword"),
         trial_keyword=setup.get("trial_keyword", "Trial"),

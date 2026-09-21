@@ -49,6 +49,8 @@ class ExperimentInfo:
     trials: list[TrialInfo]
     has_calibration: bool
     camera_info: dict[str, CameraInfo] = field(default_factory=dict)
+    # Calibration takes for this experiment, from the is_calibration rows
+    calibration_takes: list[TrialInfo] = field(default_factory=list)
 
 
 @dataclass
@@ -102,6 +104,10 @@ class Project:
             for trial in exp_trials:
                 _resolve_trial_length(trial, videos_dir)
 
+            # Calibration take videos live under calibration/{cam}/, not
+            # videos/, so their lengths are resolved on demand instead.
+            exp_takes = _parse_calibration_takes(exp_rows, cameras)
+
             calib_path = exp_dir / "calibration.toml"
             has_calibration = False
             camera_info: dict[str, CameraInfo] = {}
@@ -123,6 +129,7 @@ class Project:
                 trials=exp_trials,
                 has_calibration=has_calibration,
                 camera_info=camera_info,
+                calibration_takes=exp_takes,
             )
 
         active_experiment = experiment_names[0]
@@ -164,10 +171,19 @@ class Project:
         )
 
     def video_path(self, trial_name: str, camera: str) -> Path:
-        """Resolve absolute path to a video file."""
-        trial = self.get_trial(trial_name)
+        """Resolve absolute path to a trial or calibration-take video.
+
+        Calibration takes live in calibration/{camera}/, trials in videos/.
+        """
+        exp_dir = self.root / "experiments" / self.active_experiment
+        try:
+            trial = self.get_trial(trial_name)
+        except KeyError:
+            take = self.get_calibration_take(trial_name)
+            filename, _, _ = take.camera_videos[camera]
+            return exp_dir / "calibration" / camera / filename
         filename, _, _ = trial.camera_videos[camera]
-        return self.root / "experiments" / self.active_experiment / "videos" / filename
+        return exp_dir / "videos" / filename
 
     def calibration_path(self, experiment: str | None = None) -> Path:
         """Path to an experiment's calibration.toml (default: the active one)."""
@@ -314,11 +330,23 @@ class Project:
         else:
             self.points = None
 
+    @property
+    def calibration_takes(self) -> list[TrialInfo]:
+        """Calibration takes of the active experiment, in trials.csv order."""
+        exp = self.experiments.get(self.active_experiment)
+        return exp.calibration_takes if exp else []
+
     def get_trial(self, name: str) -> TrialInfo:
         for t in self.trials:
             if t.name == name:
                 return t
         raise KeyError(f"Trial not found: {name}")
+
+    def get_calibration_take(self, name: str) -> TrialInfo:
+        for t in self.calibration_takes:
+            if t.name == name:
+                return t
+        raise KeyError(f"Calibration take not found: {name}")
 
     def trial_names(self) -> list[str]:
         return [t.name for t in self.trials]
@@ -355,8 +383,31 @@ def _extract_cameras(columns: list[str]) -> list[str]:
     return cameras
 
 
+def _calibration_mask(df: pd.DataFrame) -> pd.Series:
+    """Boolean mask of calibration-take rows."""
+    return df["is_calibration"].astype(str).str.lower().isin(("true", "1", "yes"))
+
+
 def _parse_trials(df: pd.DataFrame, cameras: list[str]) -> list[TrialInfo]:
-    """Parse trials.csv DataFrame into TrialInfo objects."""
+    """Parse the trial (non-calibration) rows of trials.csv into TrialInfo."""
+    if "is_calibration" in df.columns:
+        df = df[~_calibration_mask(df)]
+    return _parse_rows(df, cameras)
+
+
+def _parse_calibration_takes(df: pd.DataFrame, cameras: list[str]) -> list[TrialInfo]:
+    """Parse the calibration-take rows of trials.csv into TrialInfo.
+
+    A take has the same shape as a trial — one video per camera, with optional
+    start/end trimming — so it reuses TrialInfo.
+    """
+    if "is_calibration" not in df.columns:
+        return []
+    return _parse_rows(df[_calibration_mask(df)], cameras)
+
+
+def _parse_rows(df: pd.DataFrame, cameras: list[str]) -> list[TrialInfo]:
+    """Parse trials.csv rows into TrialInfo objects."""
     trials = []
     for _, row in df.iterrows():
         camera_videos = {}
