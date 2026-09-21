@@ -14,23 +14,34 @@ from aniposelib.boards import merge_rows
 logger = logging.getLogger(__name__)
 
 
-def save_corners(cam_dir: Path, rows: list[dict]) -> None:
-    """Save detected Charuco corners for one camera to cam_dir/corners.csv.
+def corners_path(cam_dir: Path, take: str | None = None) -> Path:
+    """Path to a camera's corners file.
+
+    One take: corners_{take}.csv. The joint solution, or whichever single take
+    the user selects as final: corners.csv.
+    """
+    return cam_dir / (f"corners_{take}.csv" if take else "corners.csv")
+
+
+def save_corners(cam_dir: Path, rows: list[dict], take: str | None = None) -> None:
+    """Save detected Charuco corners for one camera.
 
     Schema: source_key (str), corner_id (int), x (float), y (float).
-    source_key is the image basename for image-based calibration, or
-    "{video_idx}:{frame_in_video}" for video-based calibration.
+    source_key is "{take}:{frame_in_video}" for video-based calibration, or an
+    image basename for the deprecated image path.
     """
     records = []
     for row in rows:
         fname = row.get("fname")
         framenum = row.get("framenum")
 
-        if fname is not None:
+        if framenum is not None and isinstance(framenum, tuple):
+            take_name, fi = framenum
+            source_key = f"{take_name}:{fi}"
+        elif fname is not None:
             source_key = Path(fname).name
         elif framenum is not None:
-            vi, fi = framenum if isinstance(framenum, tuple) else (0, int(framenum))
-            source_key = f"{vi}:{fi}"
+            source_key = f"{take or ''}:{int(framenum)}"
         else:
             continue
 
@@ -51,17 +62,17 @@ def save_corners(cam_dir: Path, rows: list[dict]) -> None:
             })
 
     df = pd.DataFrame(records, columns=["source_key", "corner_id", "x", "y"])
-    df.to_csv(cam_dir / "corners.csv", index=False)
+    df.to_csv(corners_path(cam_dir, take), index=False)
 
 
-def load_corners(cam_dir: Path) -> list[dict] | None:
-    """Load saved Charuco corners from cam_dir/corners.csv.
+def load_corners(cam_dir: Path, take: str | None = None) -> list[dict] | None:
+    """Load saved Charuco corners for one camera.
 
     Returns a list of row dicts compatible with aniposelib's merge_rows —
     each dict has 'corners' (N,1,2), 'ids' (N,1), and either 'fname' (Path)
-    or 'framenum' (tuple). Returns None if corners.csv does not exist.
+    or 'framenum' (a (take, frame) tuple). Returns None if the file is absent.
     """
-    csv_path = cam_dir / "corners.csv"
+    csv_path = corners_path(cam_dir, take)
     if not csv_path.exists():
         return None
 
@@ -93,12 +104,12 @@ def load_corners(cam_dir: Path) -> list[dict] | None:
 
         row: dict = {"corners": corners, "ids": ids}
 
-        # Reconstruct source reference: "vi:fi" → video, else image basename.
-        # merge_rows always keys on 'framenum', so image rows use the sequence
-        # index (matching aniposelib's detect_images convention).
-        parts = source_key.split(":", 1)
-        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-            row["framenum"] = (int(parts[0]), int(parts[1]))
+        # Reconstruct source reference: "{take}:{frame}" → video frame, else an
+        # image basename from the deprecated image path. merge_rows always keys
+        # on 'framenum', so image rows fall back to the sequence index.
+        parts = source_key.rsplit(":", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            row["framenum"] = (parts[0], int(parts[1]))
         else:
             row["framenum"] = i
             row["fname"] = cam_dir / source_key

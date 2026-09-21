@@ -43,8 +43,10 @@ from label3d.widgets.charuco_overlay import CharucoOverlay
 from label3d.workers.calibration_worker import (
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
+    CalibrationTake,
     CalibrationWorker,
     DetectionWorker,
+    TakeVideo,
     calibration_images_error,
 )
 
@@ -62,89 +64,68 @@ _CHARUCO_DEFAULTS = {
 _FRAME_SKIP_DEFAULT = 20
 
 
-def _scan_raw_media(
-    project_root: Path,
-    exp_name: str,
-    cam_names: list[str],
-    skip: int = 20,
+def _build_takes(project: Project) -> list[CalibrationTake]:
+    """Build detection takes from the is_calibration rows of trials.csv."""
+    takes: list[CalibrationTake] = []
+    for info in project.calibration_takes:
+        videos: dict[str, TakeVideo] = {}
+        for cam, (filename, start, end) in info.camera_videos.items():
+            if not filename or filename.lower() == "nan":
+                continue
+            videos[cam] = TakeVideo(
+                path=project.video_path(info.name, cam), start=start, end=end
+            )
+        takes.append(CalibrationTake(name=info.name, videos=videos))
+    return takes
+
+
+def _scan_take_media(
+    takes: list[CalibrationTake], cam_names: list[str], skip: int
 ) -> tuple[list[dict], dict, dict]:
-    """Scan calibration dirs and build a raw frame list for display before detection.
+    """Build a browsable frame list from the takes, before any detection runs.
 
-    Returns (merged_rows, cam_sizes, cam_media) ready for CalibFrameProvider.setup().
+    Frames are keyed (take_name, frame) exactly as detection keys them, so the
+    browser visits what detection will visit. Returns
+    (merged_rows, cam_sizes, cam_media) ready for CalibFrameProvider.setup().
     """
-    cam_media: dict[str, list[Path]] = {}
     cam_sizes: dict[str, tuple[int, int]] = {}
+    cam_media: dict[str, dict[str, Path]] = {cam: {} for cam in cam_names}
+    cam_keys: dict[str, set] = {cam: set() for cam in cam_names}
+    ordered_keys: list[tuple[str, int]] = []
 
-    for cam in cam_names:
-        cam_dir = project_root / "experiments" / exp_name / "calibration" / cam
-        if not cam_dir.is_dir():
-            cam_media[cam] = []
-            continue
-        files = sorted(cam_dir.iterdir())
-        image_files = [f for f in files if f.suffix.lower() in IMAGE_EXTENSIONS]
-        video_files = [f for f in files if f.suffix.lower() in VIDEO_EXTENSIONS]
-        media = image_files or video_files
-        cam_media[cam] = media
-        if media:
-            first = media[0]
-            ext = first.suffix.lower()
-            if ext in IMAGE_EXTENSIONS:
-                img = cv2.imread(str(first))
-                if img is not None:
-                    h, w = img.shape[:2]
-                    cam_sizes[cam] = (w, h)
-            elif ext in VIDEO_EXTENSIONS:
-                cap = cv2.VideoCapture(str(first))
-                if cap.isOpened():
-                    cam_sizes[cam] = (
-                        int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                        int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-                    )
-                    cap.release()
-
-    is_image = any(
-        cam_media.get(c) and cam_media[c][0].suffix.lower() in IMAGE_EXTENSIONS
-        for c in cam_names
-    )
-
-    if is_image:
-        cam, files = next(
-            (c, cam_media[c])
-            for c in cam_names
-            if cam_media.get(c) and cam_media[c][0].suffix.lower() in IMAGE_EXTENSIONS
-        )
-        raise ValueError(calibration_images_error(cam, len(files)))
-        # Deprecated image path, kept for reference:
-        max_n = max((len(cam_media.get(c, [])) for c in cam_names), default=0)
-        merged: list[dict] = []
-        for i in range(max_n):
-            row: dict = {}
-            for cam in cam_names:
-                files = cam_media.get(cam, [])
-                if i < len(files):
-                    row[cam] = {"fname": files[i]}
-            merged.append(row)
-    else:
-        cam_frame_seqs: dict[str, list[tuple[int, int]]] = {}
+    for take in takes:
         for cam in cam_names:
-            files = cam_media.get(cam, [])
-            seq: list[tuple[int, int]] = []
-            for vi, vpath in enumerate(files):
-                cap = cv2.VideoCapture(str(vpath))
-                total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                cap.release()
-                seq.extend((vi, fi) for fi in range(0, total, skip))
-            cam_frame_seqs[cam] = seq
-        max_n = max((len(s) for s in cam_frame_seqs.values()), default=0)
-        merged = []
-        for i in range(max_n):
-            row = {}
-            for cam in cam_names:
-                seq = cam_frame_seqs.get(cam, [])
-                if i < len(seq):
-                    row[cam] = {"framenum": seq[i]}
-            merged.append(row)
+            tv = take.videos.get(cam)
+            if tv is None or not tv.path.is_file():
+                continue
+            cam_media[cam][take.name] = tv.path
 
+            cap = cv2.VideoCapture(str(tv.path))
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
+            if cap.isOpened() and cam not in cam_sizes:
+                cam_sizes[cam] = (
+                    int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                    int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+                )
+            cap.release()
+
+            start = max(0, tv.start)
+            last = tv.end if tv.end is not None else total - 1
+            for frame in range(start, last + 1, skip):
+                key = (take.name, frame)
+                if key not in cam_keys[cam]:
+                    cam_keys[cam].add(key)
+                    ordered_keys.append(key)
+
+    # One merged row per distinct (take, frame), in take order then frame order.
+    take_order = {take.name: i for i, take in enumerate(takes)}
+    unique_keys = sorted(
+        set(ordered_keys), key=lambda k: (take_order.get(k[0], 0), k[1])
+    )
+    merged = [
+        {cam: {"framenum": key} for cam in cam_names if key in cam_keys[cam]}
+        for key in unique_keys
+    ]
     return merged, cam_sizes, cam_media
 
 
@@ -153,9 +134,9 @@ def _scan_raw_media(
 class CalibFrameProvider:
     """Serves calibration images for each merged detection frame.
 
-    For image-based calibration: reads the file named in row['fname'].
-    For video-based calibration: seeks to row['framenum'] = (video_idx, frame_num).
-    Returns a black frame when a camera has no detection at the given index.
+    row['framenum'] is (take_name, frame_in_video); the video is looked up as
+    cam_media[camera][take_name]. Returns a black frame when a camera has no
+    detection at the given index.
     """
 
     def __init__(self):
@@ -172,7 +153,7 @@ class CalibFrameProvider:
         self,
         merged_rows: list[dict],
         cam_sizes: dict[str, tuple[int, int]],
-        cam_media: dict[str, list[Path]],
+        cam_media: dict[str, dict[str, Path]],
     ):
         self.close()
         self._merged = merged_rows
@@ -206,19 +187,18 @@ class CalibFrameProvider:
         if framenum is None:
             return blank
 
-        if isinstance(framenum, tuple):
-            vid_idx, frame_in_vid = framenum
-        else:
-            vid_idx, frame_in_vid = 0, int(framenum)
+        if not isinstance(framenum, tuple):
+            return blank
+        take_name, frame_in_vid = framenum
 
-        files = self._cam_media.get(camera, [])
-        if vid_idx >= len(files):
+        path = self._cam_media.get(camera, {}).get(take_name)
+        if path is None:
             return blank
 
-        reader_key = (camera, vid_idx)
+        reader_key = (camera, take_name)
         if reader_key not in self._video_readers:
             try:
-                self._video_readers[reader_key] = VideoReader(Path(files[vid_idx]))
+                self._video_readers[reader_key] = VideoReader(Path(path))
             except IOError:
                 return blank
 
@@ -245,8 +225,9 @@ class CalibrationView(QWidget):
 
         # ── State ────────────────────────────────────────────────────────
         self._all_rows: dict[str, list] | None = None
+        self._takes: list[CalibrationTake] = []
         self._cam_sizes: dict[str, tuple[int, int]] = {}
-        self._cam_media: dict[str, list[Path]] = {}
+        self._cam_media: dict[str, dict[str, Path]] = {}
         self._merged_rows: list[dict] = []
         self._frame_errors: dict[int, dict[str, np.ndarray]] = {}
         self._cgroup = None
@@ -442,20 +423,7 @@ class CalibrationView(QWidget):
                 self._charuco_overlays[cam] = overlay
 
         # Pre-populate frame provider so frames appear before corner detection
-        try:
-            raw_merged, raw_sizes, raw_media = _scan_raw_media(
-                project.root, project.active_experiment, project.cameras, self._skip
-            )
-        except ValueError as exc:
-            self._log_msg(f"  {exc}")
-            self._detect_btn.setEnabled(False)
-        else:
-            self._cam_media = raw_media
-            if raw_merged:
-                self._cam_sizes = raw_sizes
-                self._calib_provider.setup(raw_merged, raw_sizes, raw_media)
-                self._show_frame(0)
-                self._update_frame_nav()
+        self._load_take_media()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -486,24 +454,49 @@ class CalibrationView(QWidget):
         if self._all_rows is None:
             self._rescan_raw_media()
 
+    def _no_takes_message(self) -> str:
+        """Explain why there is nothing to detect."""
+        exp_dir = self._project.root / "experiments" / self._project.active_experiment
+        for cam in self._project.cameras:
+            cam_dir = exp_dir / "calibration" / cam
+            if not cam_dir.is_dir():
+                continue
+            images = [
+                f for f in cam_dir.iterdir()
+                if f.suffix.lower() in IMAGE_EXTENSIONS
+            ]
+            if images:
+                return calibration_images_error(cam, len(images))
+        return (
+            "  No calibration takes for experiment "
+            f"'{self._project.active_experiment}' — add is_calibration rows to "
+            "trials.csv."
+        )
+
+    def _load_take_media(self) -> bool:
+        """Rebuild the takes and the browsable frame list. True if usable."""
+        self._takes = _build_takes(self._project)
+        if not self._takes:
+            self._log_msg(self._no_takes_message())
+            self._detect_btn.setEnabled(False)
+            self._cam_media = {}
+            return False
+
+        self._detect_btn.setEnabled(True)
+        merged, sizes, media = _scan_take_media(
+            self._takes, self._project.cameras, self._skip
+        )
+        self._cam_sizes = sizes
+        self._cam_media = media
+        if merged:
+            self._calib_provider.setup(merged, sizes, media)
+            self._current_frame = min(self._current_frame, len(merged) - 1)
+            self._show_frame(self._current_frame)
+            self._update_frame_nav()
+        return True
+
     def _rescan_raw_media(self) -> None:
-        try:
-            raw_merged, raw_sizes, raw_media = _scan_raw_media(
-                self._project.root,
-                self._project.active_experiment,
-                self._project.cameras,
-                self._skip,
-            )
-        except ValueError:
-            return
-        self._cam_sizes = raw_sizes
-        self._cam_media = raw_media
-        if not raw_merged:
-            return
-        self._calib_provider.setup(raw_merged, raw_sizes, raw_media)
-        self._current_frame = min(self._current_frame, len(raw_merged) - 1)
-        self._show_frame(self._current_frame)
-        self._update_frame_nav()
+        self._load_take_media()
 
     def _save_settings(self) -> None:
         """Write board + detection settings back to project.toml."""
@@ -534,11 +527,11 @@ class CalibrationView(QWidget):
         self._update_frame_nav()
         self._log_msg("=== Corner detection started ===")
 
+        self._takes = _build_takes(self._project)
         self._detection_worker = DetectionWorker(
-            project_root=self._project.root,
             cam_names=self._project.cameras,
             board_params=self._board_params(),
-            active_experiment=self._project.active_experiment,
+            takes=self._takes,
             skip=self._skip,
         )
         self._detection_worker.progress.connect(self._log_msg)
@@ -571,15 +564,26 @@ class CalibrationView(QWidget):
         self._cam_sizes = cam_sizes
         self._cam_media = cam_media
 
-        # Save corners for later reload
+        # Save corners for later reload: one file per take, plus the joint
+        # corners.csv holding every take's detections.
         exp_dir = self._project.root / "experiments" / self._project.active_experiment
+        take_names = [t.name for t in self._takes]
         for cam in self._project.cameras:
             cam_dir = exp_dir / "calibration" / cam
-            if cam_dir.is_dir():
-                try:
-                    save_corners(cam_dir, all_rows.get(cam, []))
-                except Exception as exc:
-                    self._log_msg(f"  Warning: could not save corners for {cam}: {exc}")
+            if not cam_dir.is_dir():
+                continue
+            rows = all_rows.get(cam, [])
+            try:
+                for take in take_names:
+                    take_rows = [
+                        r for r in rows
+                        if isinstance(r.get("framenum"), tuple)
+                        and r["framenum"][0] == take
+                    ]
+                    save_corners(cam_dir, take_rows, take=take)
+                save_corners(cam_dir, rows)
+            except Exception as exc:
+                self._log_msg(f"  Warning: could not save corners for {cam}: {exc}")
 
         # Merge rows across cameras
         try:
@@ -701,21 +705,8 @@ class CalibrationView(QWidget):
         self._calibrate_btn.setEnabled(False)
         self._clear_overlays()
 
-        # Always scan raw media to get cam_sizes and cam_media
-        self._detect_btn.setEnabled(True)
-        try:
-            raw_merged, raw_sizes, raw_media = _scan_raw_media(
-                self._project.root,
-                self._project.active_experiment,
-                self._project.cameras,
-                self._skip,
-            )
-        except ValueError as exc:
-            self._log_msg(f"  {exc}")
-            self._detect_btn.setEnabled(False)
-            raw_merged, raw_sizes, raw_media = [], {}, {}
-        self._cam_sizes = raw_sizes
-        self._cam_media = raw_media
+        # Rebuild takes and the browsable frame list for the new experiment
+        self._load_take_media()
 
         # Try loading saved corners per camera
         exp_dir = self._project.root / "experiments" / self._project.active_experiment
@@ -753,9 +744,13 @@ class CalibrationView(QWidget):
                     lbl.setText(str(len(rows)))
             self._calibrate_btn.setEnabled(bool(self._merged_rows))
             # Show only detected frames, consistent with post-detection behavior
-            self._calib_provider.setup(self._merged_rows, raw_sizes, raw_media)
-        else:
-            self._calib_provider.setup(raw_merged, raw_sizes, raw_media)
+            self._calib_provider.setup(
+                self._merged_rows, self._cam_sizes, self._cam_media
+            )
+            self._update_frame_nav()
+            self._show_frame(0)
+        # Without saved corners the provider already holds the raw take frames
+        # that _load_take_media() set up.
 
         # Load existing calibration to show reprojection errors
         calib_path = self._project.calibration_path()

@@ -9,6 +9,7 @@ Two-phase workflow:
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -66,21 +67,44 @@ def _draw_corners(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
     return out
 
 
+@dataclass
+class TakeVideo:
+    """One camera's video within a calibration take, with optional trimming."""
+
+    path: Path
+    start: int = 0
+    end: int | None = None
+
+
+@dataclass
+class CalibrationTake:
+    """One synchronized calibration recording across cameras."""
+
+    name: str
+    videos: dict[str, TakeVideo] = field(default_factory=dict)  # camera -> video
+
+
 class DetectionWorker(QThread):
-    """Scans experiments/{active}/calibration/{cam}/ folders and detects Charuco corners.
+    """Detects Charuco corners in the videos of each calibration take.
+
+    Takes come from the is_calibration rows of trials.csv, so cross-camera
+    correspondence is by take *name*. Detection rows are keyed
+    ``(take_name, frame_in_video)``, which is what aniposelib's merge_rows
+    groups on — a camera missing from a take leaves a gap instead of silently
+    shifting every later index, the way positional folder ordering did.
 
     Emits:
         progress(str)                         — log message
-        camera_done(cam, n)              — camera name, detection count
-        frame_progress(label, current, total)  — label text, frames processed in current video
+        camera_done(cam, n)                   — camera name, detection count
+        frame_progress(label, current, total)  — label, frames processed in current video
         finished(all_rows, cam_sizes, cam_media)
-            all_rows:  dict[cam_name, list[row]]  — raw detection rows per camera
-            cam_sizes: dict[cam_name, (w, h)]     — image size per camera
-            cam_media: dict[cam_name, list[Path]] — calibration media files per camera
+            all_rows:  dict[cam_name, list[row]]        — detection rows per camera
+            cam_sizes: dict[cam_name, (w, h)]           — frame size per camera
+            cam_media: dict[cam_name, dict[take, Path]] — video per camera per take
         error_occurred(str)                   — if a fatal error happens
 
     ``skip`` strides video input: exactly every Nth frame is decoded and
-    searched for corners. Image folders ignore it — every image is used.
+    searched for corners.
     """
 
     progress = Signal(str)
@@ -91,18 +115,16 @@ class DetectionWorker(QThread):
 
     def __init__(
         self,
-        project_root: Path,
         cam_names: list[str],
         board_params: dict,
-        active_experiment: str = "default",
+        takes: list[CalibrationTake],
         skip: int = 20,
         parent=None,
     ):
         super().__init__(parent)
-        self._root = Path(project_root)
         self._cam_names = cam_names
         self._board_params = board_params
-        self._active_experiment = active_experiment
+        self._takes = takes
         self._skip = skip
 
     def run(self):
@@ -117,83 +139,75 @@ class DetectionWorker(QThread):
                 dict_size=bp.get("dict_size", 50),
             )
 
-            all_rows: dict[str, list] = {}
+            all_rows: dict[str, list] = {cam: [] for cam in self._cam_names}
             cam_sizes: dict[str, tuple[int, int]] = {}
-            cam_media: dict[str, list[Path]] = {}
+            cam_media: dict[str, dict[str, Path]] = {cam: {} for cam in self._cam_names}
+
+            if not self._takes:
+                self.progress.emit("  No calibration takes found in trials.csv")
+                self.finished.emit(all_rows, cam_sizes, cam_media)
+                return
+
+            for take in self._takes:
+                missing = [c for c in self._cam_names if c not in take.videos]
+                if missing:
+                    self.progress.emit(
+                        f"  take '{take.name}': missing cameras {', '.join(missing)}"
+                    )
+
+                for cam_name in self._cam_names:
+                    tv = take.videos.get(cam_name)
+                    if tv is None:
+                        continue
+                    if not tv.path.is_file():
+                        raise FileNotFoundError(f'missing video file "{tv.path}"')
+
+                    cam_media[cam_name][take.name] = tv.path
+                    if cam_name not in cam_sizes:
+                        size = _read_media_size(tv.path)
+                        if size is not None:
+                            cam_sizes[cam_name] = size
+
+                    self.progress.emit(f"  {cam_name} [{take.name}]: detecting corners...")
+                    rows = self._detect_video(board, tv, take.name)
+                    all_rows[cam_name].extend(rows)
 
             for cam_name in self._cam_names:
-                cam_dir = self._root / "experiments" / self._active_experiment / "calibration" / cam_name
-                if not cam_dir.is_dir():
-                    self.progress.emit(f"  {cam_name}: no calibration folder, skipping")
-                    all_rows[cam_name] = []
-                    cam_media[cam_name] = []
-                    continue
-
-                files = sorted(cam_dir.iterdir())
-                image_files = [f for f in files if f.suffix.lower() in IMAGE_EXTENSIONS]
-                video_files = [f for f in files if f.suffix.lower() in VIDEO_EXTENSIONS]
-
-                if not image_files and not video_files:
-                    self.progress.emit(f"  {cam_name}: no media files found, skipping")
-                    all_rows[cam_name] = []
-                    cam_media[cam_name] = []
-                    continue
-
-                # Record size from the first file
-                first_file = (image_files or video_files)[0]
-                size = _read_media_size(first_file)
-                if size is not None:
-                    cam_sizes[cam_name] = size
-
-                rows: list = []
-
-                if image_files:
-                    raise ValueError(calibration_images_error(cam_name, len(image_files)))
-                    # Deprecated image path, kept for reference:
-                    cam_media[cam_name] = image_files
-                    self.progress.emit(
-                        f"  {cam_name}: detecting corners in {len(image_files)} images..."
-                    )
-                    image_paths = [str(f) for f in image_files]
-                    rows = board.detect_images(image_paths)
-
-
-                elif video_files:
-                    cam_media[cam_name] = video_files
-                    self.progress.emit(
-                        f"  {cam_name}: detecting corners in {len(video_files)} video(s)..."
-                    )
-                    for vi, vpath in enumerate(video_files):
-                        v_rows = self._detect_video(board, vpath, vi)
-                        rows.extend(v_rows)
-
-                all_rows[cam_name] = rows
-                self.progress.emit(f"  {cam_name}: {len(rows)} detections")
-                self.camera_done.emit(cam_name, len(rows))
+                n = len(all_rows[cam_name])
+                self.progress.emit(f"  {cam_name}: {n} detections")
+                self.camera_done.emit(cam_name, n)
 
             self.finished.emit(all_rows, cam_sizes, cam_media)
 
         except Exception as exc:
             self.error_occurred.emit(str(exc))
 
-    def _detect_video(self, board, vpath: Path, vi: int) -> list:
-        """Detect Charuco corners on every ``self._skip``-th frame of one video."""
-        cap = cv2.VideoCapture(str(vpath))
-        if not cap.isOpened():
-            raise FileNotFoundError(f'missing video file "{vpath}"')
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total < 10:
-            total = 0  # unknown length
-        update_every = max(1, total // 200) if total else 30
-        label = f"Detecting corners: {vpath.name}"
+    def _detect_video(self, board, tv: TakeVideo, take_name: str) -> list:
+        """Detect corners on every ``self._skip``-th frame of one take's video.
 
-        self.frame_progress.emit(label, 0, total)
+        Frame numbers in the returned rows are absolute video frame indices, so
+        they stay meaningful when a take is trimmed with start/end.
+        """
+        cap = cv2.VideoCapture(str(tv.path))
+        if not cap.isOpened():
+            raise FileNotFoundError(f'missing video file "{tv.path}"')
+
+        n_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        start = max(0, tv.start)
+        last = tv.end if tv.end is not None else (n_total - 1 if n_total > 0 else None)
+        span = (last - start + 1) if last is not None and last >= start else 0
+        update_every = max(1, span // 200) if span else 30
+        label = f"Detecting corners: {take_name} / {tv.path.name}"
+
+        self.frame_progress.emit(label, 0, span)
 
         v_rows: list = []
         framenum = 0
         last_emit = -update_every
         while True:
-            if framenum % self._skip != 0:
+            if last is not None and framenum > last:
+                break
+            if framenum < start or (framenum - start) % self._skip != 0:
                 # Demux without decoding: skipped frames are never converted.
                 if not cap.grab():
                     break
@@ -203,15 +217,17 @@ class DetectionWorker(QThread):
             if not ret:
                 break
             if framenum - last_emit >= update_every:
-                self.frame_progress.emit(label, framenum, total)
+                self.frame_progress.emit(label, framenum - start, span)
                 last_emit = framenum
             corners, ids = board.detect_image(frame)
             if corners is not None and len(corners) > 0:
-                v_rows.append({'framenum': (vi, framenum), 'corners': corners, 'ids': ids})
+                v_rows.append(
+                    {"framenum": (take_name, framenum), "corners": corners, "ids": ids}
+                )
             framenum += 1
 
         cap.release()
-        end = total or framenum
+        end = span or max(0, framenum - start)
         self.frame_progress.emit(label, end, end)
         return board.fill_points_rows(v_rows)
 

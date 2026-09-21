@@ -413,9 +413,12 @@ def _parse_rows(df: pd.DataFrame, cameras: list[str]) -> list[TrialInfo]:
         camera_videos = {}
         for cam in cameras:
             filename = str(row[cam])
-            start = int(row.get(f"{cam}_start", 0) or 0)
+            # A camera may be absent from a row (a calibration take that one
+            # camera did not record), leaving every cell blank.
+            start_val = row.get(f"{cam}_start", 0)
+            start = 0 if pd.isna(start_val) or start_val == "" else int(start_val)
             end_val = row.get(f"{cam}_end")
-            end = None if pd.isna(end_val) else int(end_val)
+            end = None if pd.isna(end_val) or end_val == "" else int(end_val)
             camera_videos[cam] = (filename, start, end)
         trials.append(TrialInfo(name=str(row["trial"]), camera_videos=camera_videos))
     return trials
