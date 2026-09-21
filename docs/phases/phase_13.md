@@ -1,8 +1,8 @@
-# Phase 12 — Multi-Instance Support and Cross-Camera Matching
+# Phase 13 — Multi-Instance Support and Cross-Camera Matching
 
 **Goal**: Allow multiple animal instances per frame, with explicit cross-camera and cross-frame identity tracking.
 
-**Status**: Not started. Phase 1–11 assume at most one instance per frame per camera (instance index always 0). This phase lifts that restriction.
+**Status**: Not started. Phases 1–12 assume at most one instance per frame per camera (instance index always 0). This phase lifts that restriction.
 
 ---
 
@@ -12,7 +12,7 @@ The data model already supports multiple instances: the 5-level row index `(expe
 
 ---
 
-## 12.1 Data model additions (`points.py`)
+## 13.1 Data model additions (`points.py`)
 
 ### `merge_instances(trial, frame, keep, discard) -> None`
 
@@ -36,20 +36,20 @@ def split_instance_camera(
 
 ---
 
-## 12.2 Right-click context menu restructuring (`label_view.py`)
+## 13.2 Right-click context menu restructuring (`label_view.py`)
 
 Replace the current "Add instance" submenu with two top-level items:
 
 | Menu item | Behaviour |
 |---|---|
 | **Add new instance** | Mints a new instance index. Fills *only this camera* using random / average / reprojected (current single-camera logic). |
-| **Add matching instance** | Enters **pick mode** (§12.3). After the user clicks an existing instance in any camera panel, initialises that instance's data in this camera using reprojected (if ≥2 other cameras have data) or random/average fallback. |
+| **Add matching instance** | Enters **pick mode** (§13.3). After the user clicks an existing instance in any camera panel, initialises that instance's data in this camera using reprojected (if ≥2 other cameras have data) or random/average fallback. |
 
 "Reprojected" moves out of the "Add" submenu: it becomes a fill action on an existing instance (Instances menu → Fill → Reprojected).
 
 ---
 
-## 12.3 Pick mode (`state.py`, `camera_panel.py`, `label_view.py`)
+## 13.3 Pick mode (`state.py`, `camera_panel.py`, `label_view.py`)
 
 Pick mode is a transient interaction state where clicking in any camera panel captures an instance index rather than placing a point.
 
@@ -84,7 +84,7 @@ def in_pick_mode(self) -> bool: ...
 
 ---
 
-## 12.4 Instances menu additions (`main_window.py`, `label_view.py`)
+## 13.4 Instances menu additions (`main_window.py`, `label_view.py`)
 
 | Item | Behaviour |
 |---|---|
@@ -97,7 +97,7 @@ Enable/disable rules:
 
 ---
 
-## 12.5 Cross-frame instance tracking (future)
+## 13.5 Cross-frame instance tracking (future)
 
 Each frame currently maintains instance indices independently. For sequences with many frames it would be useful to propagate identity forward (instance 0 stays the same animal across frames). Two approaches:
 
@@ -105,11 +105,11 @@ Each frame currently maintains instance indices independently. For sequences wit
 
 **Automatic tracking**: run a nearest-neighbour or Hungarian-algorithm match between consecutive frames based on 3D position; surface conflicts for manual resolution. Requires at least sparse 3D data from triangulation.
 
-This sub-phase is deferred until the per-frame multi-instance UI (§12.2–12.4) is stable.
+This sub-phase is deferred until the per-frame multi-instance UI (§13.2–13.4) is stable.
 
 ---
 
-## 12.6 Migration from single-instance data
+## 13.6 Migration from single-instance data
 
 Existing `points.csv` files produced during Phase 1–11 always have instance index 0. No migration is needed — they load and display correctly under the new system.
 
@@ -117,8 +117,8 @@ Existing `points.csv` files produced during Phase 1–11 always have instance in
 
 ## Implementation order
 
-1. §12.1 — `PointsStore.merge_instances` + `split_instance_camera` + unit tests
-2. §12.3 — Pick mode in `AppState` and `CameraPanel`
-3. §12.2 — Right-click menu restructure
-4. §12.4 — Instances menu additions
-5. §12.5 — Cross-frame tracking (separate sub-phase)
+1. §13.1 — `PointsStore.merge_instances` + `split_instance_camera` + unit tests
+2. §13.3 — Pick mode in `AppState` and `CameraPanel`
+3. §13.2 — Right-click menu restructure
+4. §13.4 — Instances menu additions
+5. §13.5 — Cross-frame tracking (separate sub-phase)

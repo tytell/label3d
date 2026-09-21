@@ -1,12 +1,12 @@
-# Phases 10–11
+# Phases 11–12
 
 ---
 
-## Phase 10 — Export
+## Phase 11 — Export
 
 **Goal**: Export labeled data back to external formats.
 
-### 10.1 Export view (`widgets/export_view.py`)
+### 11.1 Export view (`widgets/export_view.py`)
 - [ ] Format dropdown (populated from adapter registry)
 - [ ] Trial selector (all / specific)
 - [ ] Instance type checkboxes (user / predicted)
@@ -19,7 +19,7 @@
 
 ---
 
-## Phase 11 — Polish and Robustness
+## Phase 12 — Polish and Robustness
 
 - [ ] **Undo/redo**: Command pattern — each point edit creates `UndoCommand(trial, frame, instance, bodypart, camera, old_value, new_value)` on `QUndoStack`; `Ctrl+Z`/`Ctrl+Shift+Z`
 - [ ] **Auto-save**: `PointsStore` writes `points.csv` every 30s if dirty + on app close; backup to `.points.csv.bak` before overwriting
@@ -30,7 +30,6 @@
 - [x] **Settings persistence** (`QSettings`, INI format):
   - App-level (`~/.config/label3d/label3d.ini`): window geometry, last-opened project path
   - Project-level (`.label3d_session.ini` in project root, gitignored): current trial/frame, camera layout, per-camera zoom/pan
-- [ ] **Calibration frame extraction**: `setup_project` extracts every Nth frame from calibration videos as image stills
 - [ ] **Toolbar and zoom UX**:
   - `QToolBar` with standard actions: Open Project, Save, Zoom In/Out, Fit View
   - **Drag-box zoom**: rubber-band rectangle on right-click-drag → `fitInView()`
