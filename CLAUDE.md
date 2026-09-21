@@ -58,4 +58,4 @@ uv run python <script>  # run any script in the project venv
 
 ## Implementation phases
 
-Phases 1–8 complete. Phase 9 (axis alignment) is next. Phase 9 (axis alignment) — geometry helpers and CameraPanel pick mode done, UI widget not yet created. See [docs/phases/phase_9.md](docs/phases/phase_9.md) for the current phase spec, [docs/phases/phase_8.md](docs/phases/phase_8.md) for the finished SLP sync work, [docs/phases/phase_10_11.md](docs/phases/phase_10_11.md) for export and polish.
+Phases 1–8 complete. Phase 9 (axis alignment) is next — geometry helpers and CameraPanel pick mode done, UI widget not yet created. See [docs/phases/phase_9.md](docs/phases/phase_9.md) for the current phase spec, [docs/phases/phase_8.md](docs/phases/phase_8.md) for the finished SLP sync work, [docs/phases/phase_10_11.md](docs/phases/phase_10_11.md) for export and polish.
