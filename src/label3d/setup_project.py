@@ -347,6 +347,33 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
         lines.append("Calibration: none found")
     lines.append("")
 
+    # Multi-group split
+    if assignment.needs_split:
+        n = len(assignment.calibration_groups)
+        lines.append(f"Multiple calibration groups detected ({n}):")
+        for prefix in sorted(assignment.calibration_groups):
+            cam_dict = assignment.calibration_groups[prefix]
+            parts = []
+            for cam in config.camera_names:
+                n_cam = len(cam_dict.get(cam, []))
+                flag = "" if n_cam else " !"
+                parts.append(f"{cam}: {n_cam}{flag}")
+            group_trials = sorted(
+                tn for tn, pre in assignment.trial_prefix.items() if pre == prefix
+            )
+            lines.append(f"  [{prefix}]  calibration — " + "  ".join(parts))
+            if group_trials:
+                lines.append(f"    trials: {', '.join(group_trials)}")
+            else:
+                lines.append("    trials: (none)")
+        unassigned = sorted(
+            tn for tn, pre in assignment.trial_prefix.items()
+            if pre not in assignment.calibration_groups
+        )
+        if unassigned:
+            lines.append(f"  trials with no matching group: {', '.join(unassigned)}")
+        lines.append("")
+
     # SLP files
     if assignment.slp_files:
         lines.append(f"SLP files ({len(assignment.slp_files)} trials):")
