@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 
@@ -24,8 +25,13 @@ from PySide6.QtWidgets import (
 )
 
 from label3d.workers.slp_sync_worker import SlpReadWorker, SlpWriteWorker
-from label3d.workers.triangulation_worker import TriangulationWorker
+from label3d.workers.triangulation_worker import (
+    AllExperimentsTriangulationWorker,
+    TriangulationWorker,
+)
 
+from label3d.geometry import load_cameras
+from label3d.points import PointsStore
 from label3d.project import Project
 from label3d.state import ProjectState
 from label3d.video import FrameProvider
@@ -34,6 +40,8 @@ from label3d.widgets.camera_grid import CameraGrid, LayoutMode
 from label3d.widgets.frame_controls import FrameControls
 from label3d.widgets.label_view import LabelView
 from label3d.widgets.slp_setup_dialog import SlpSetupDialog
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -48,6 +56,7 @@ class MainWindow(QMainWindow):
         self._pending_session: tuple[int, dict[str, QRectF], list[int], list[list[int]]] | None = None
         self._tri_queue: list[tuple[str, list[int]]] = []
         self._merge_tri_worker = None
+        self._all_tri_worker = None
 
         self.setWindowTitle(f"label3d — {project.root.name}")
         self.resize(1200, 800)
@@ -280,6 +289,11 @@ class MainWindow(QMainWindow):
         self._action_add_reprojected.triggered.connect(
             self._label_view._do_reprojected_all_cameras
         )
+
+        inst_menu.addSeparator()
+
+        triangulate_all = inst_menu.addAction("Triangulate all experiments...")
+        triangulate_all.triggered.connect(self._do_triangulate_all_experiments)
 
         inst_menu.addSeparator()
 
@@ -656,6 +670,78 @@ class MainWindow(QMainWindow):
         # Restore zoom after any view change has settled
         if zoom_rects:
             self._camera_grid.set_all_scene_rects(zoom_rects)
+
+    # -- Triangulate all experiments ------------------------------------------
+
+    def _do_triangulate_all_experiments(self) -> None:
+        """Re-triangulate every labeled frame of every experiment and save points.csv."""
+        reply = QMessageBox.question(
+            self,
+            "Triangulate all experiments?",
+            "Re-triangulate every labeled frame in every experiment and write the "
+            "results to each experiment's points.csv?\n\n"
+            "Experiments without a calibration.toml are skipped.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if self._project.points is not None:
+            self._project.points.save_if_changed()
+
+        # Stores and calibrations are built here, in the main thread.
+        jobs = []
+        skipped = []
+        for name, exp in self._project.experiments.items():
+            calib_path = self._project.calibration_path(name)
+            csv_path = exp.root / "points.csv"
+            if name == self._project.active_experiment and self._project.points is not None:
+                store = self._project.points
+            elif csv_path.exists():
+                store = PointsStore.from_csv(csv_path)
+            else:
+                continue
+            if not calib_path.exists():
+                skipped.append(name)
+                continue
+            try:
+                cameras = load_cameras(calib_path)
+            except Exception as exc:
+                logger.warning(f"Could not load calibration for {name}: {exc}")
+                skipped.append(name)
+                continue
+            jobs.append((name, cameras, store))
+
+        if not jobs:
+            QMessageBox.information(
+                self, "Nothing to triangulate",
+                "No experiment has both a calibration.toml and labeled points.",
+            )
+            return
+
+        progress = self._busy_dialog("Triangulating…", "Triangulate all experiments")
+        self._all_tri_worker = AllExperimentsTriangulationWorker(jobs, parent=self)
+        self._all_tri_worker.progress.connect(
+            lambda done, total: progress.setLabelText(f"Triangulating frame {done} of {total}…")
+        )
+        self._all_tri_worker.finished.connect(
+            lambda n: self._on_triangulate_all_done(n, jobs, skipped, progress)
+        )
+        self._all_tri_worker.error_occurred.connect(
+            lambda msg: self._on_slp_error("Triangulation failed", msg, progress)
+        )
+        self._all_tri_worker.start()
+
+    def _on_triangulate_all_done(self, n_frames: int, jobs, skipped, progress) -> None:
+        progress.close()
+        for _name, _cameras, store in jobs:
+            store.save_if_changed()
+        self._all_tri_worker = None
+        message = f"Triangulated {n_frames} frame(s) in {len(jobs)} experiment(s)"
+        if skipped:
+            message += f"; skipped {', '.join(sorted(skipped))} (no calibration)"
+        self._status_bar.showMessage(message)
+        self._state.frame_changed.emit(self._state.current_frame)
 
     # -- SLP sync ------------------------------------------------------------
 

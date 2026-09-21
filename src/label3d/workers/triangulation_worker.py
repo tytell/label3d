@@ -68,3 +68,55 @@ class TriangulationWorker(QThread):
             self.finished.emit()
         except Exception as exc:
             self.error_occurred.emit(str(exc))
+
+
+class AllExperimentsTriangulationWorker(QThread):
+    """Triangulates every labeled frame of several experiments in a background thread.
+
+    Each job is (experiment_name, cameras, points_store).  Stores are created in
+    the main thread and only written to here; saving happens in the main thread.
+
+    Emits:
+        progress(int, int)   — (frames_done, total_frames)
+        finished(int)        — total frames triangulated
+        error_occurred(str)  — on fatal error
+    """
+
+    progress = Signal(int, int)
+    finished = Signal(int)
+    error_occurred = Signal(str)
+
+    def __init__(
+        self,
+        jobs: list[tuple[str, dict[str, CameraParams], PointsStore]],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._jobs = jobs
+
+    def run(self):
+        try:
+            frames = [
+                (store, cameras, trial, frame)
+                for _name, cameras, store in self._jobs
+                for trial, frame in _labeled_frames(store)
+            ]
+            total = len(frames)
+            for done, (store, cameras, trial, frame) in enumerate(frames):
+                for inst in store.get_instances(trial, frame):
+                    triangulate_frame(cameras, store, trial, frame, inst)
+                self.progress.emit(done + 1, total)
+            self.finished.emit(total)
+        except Exception as exc:
+            logger.exception("Triangulating all experiments failed")
+            self.error_occurred.emit(str(exc))
+
+
+def _labeled_frames(store: PointsStore) -> list[tuple[str, int]]:
+    """Every (trial, frame) with data in a store, for its own experiment."""
+    try:
+        exp_df = store.df.loc[store.experiment_name]
+    except KeyError:
+        return []
+    pairs = exp_df.index.droplevel(["instance", "bodypart"]).unique()
+    return [(str(trial), int(frame)) for trial, frame in pairs]

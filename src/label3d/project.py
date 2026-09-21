@@ -169,9 +169,10 @@ class Project:
         filename, _, _ = trial.camera_videos[camera]
         return self.root / "experiments" / self.active_experiment / "videos" / filename
 
-    def calibration_path(self) -> Path:
-        """Path to the active experiment's calibration.toml."""
-        return self.root / "experiments" / self.active_experiment / "calibration.toml"
+    def calibration_path(self, experiment: str | None = None) -> Path:
+        """Path to an experiment's calibration.toml (default: the active one)."""
+        name = experiment or self.active_experiment
+        return self.root / "experiments" / name / "calibration.toml"
 
     @property
     def slp_dir(self) -> Path:
