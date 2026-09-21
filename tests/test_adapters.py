@@ -191,8 +191,8 @@ class TestSleapSave:
         adapter = SleapAdapter()
         adapter.save(
             populated_store.df,
-            tmp_path,
             cameras=["cam1", "cam2", "cam3"],
+            output_dir=tmp_path,
             trials_df=trials_df,
         )
         slp_files = list(tmp_path.glob("*.slp"))
@@ -204,8 +204,8 @@ class TestSleapSave:
         adapter = SleapAdapter()
         adapter.save(
             populated_store.df,
-            out_dir,
             cameras=["cam1", "cam2", "cam3"],
+            output_dir=out_dir,
             trials_df=trials_df,
         )
         assert out_dir.exists()
@@ -215,8 +215,8 @@ class TestSleapSave:
         adapter = SleapAdapter()
         adapter.save(
             populated_store.df,
-            out_dir,
             cameras=["cam1", "cam2", "cam3"],
+            output_dir=out_dir,
             trials_df=trials_df,
         )
         slp_files = list(out_dir.glob("*.slp"))
@@ -227,8 +227,8 @@ class TestSleapSave:
         adapter = SleapAdapter()
         adapter.save(
             populated_store.df,
-            tmp_path,
             cameras=["cam1", "cam2", "cam3"],
+            output_dir=tmp_path,
             trials_df=trials_df,
         )
 

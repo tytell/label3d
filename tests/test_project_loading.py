@@ -8,13 +8,14 @@ from pathlib import Path
 import pytest
 
 from label3d.project import Project
-from tests.conftest import TEST_PROJECT
+from tests.conftest import TEST_PROJECT, requires_test_project
 
 
 # ---------------------------------------------------------------------------
 # Successful loads from the synthetic test project
 # ---------------------------------------------------------------------------
 
+@requires_test_project
 class TestProjectLoad:
     def test_loads_cameras(self):
         proj = Project.load(TEST_PROJECT)
@@ -48,6 +49,7 @@ class TestProjectLoad:
 # Missing optional files — graceful degradation
 # ---------------------------------------------------------------------------
 
+@requires_test_project
 class TestMissingOptionalFiles:
     def test_missing_skeleton_json_is_none(self, tmp_path):
         """No skeleton.json → project.skeleton is None, no error raised."""
@@ -99,6 +101,7 @@ class TestLoadErrors:
 # Path edge cases
 # ---------------------------------------------------------------------------
 
+@requires_test_project
 class TestPathEdgeCases:
     def test_load_project_path_with_spaces(self, tmp_path):
         spaced = tmp_path / "my project 2024"

@@ -25,31 +25,52 @@ def qapp():
 # Paths to synthetic test project
 # ---------------------------------------------------------------------------
 
-TEST_PROJECT = Path(__file__).parent.parent / "test_project"
+TEST_PROJECT = Path(__file__).parent.parent / "projects" / "test_project"
+
+MISSING_TEST_PROJECT_REASON = (
+    f"synthetic test project not found at {TEST_PROJECT}; "
+    "generate it with: uv run python generate_synthetic.py synthetic_config.toml"
+)
+
+# Decorator for tests that reach for TEST_PROJECT directly rather than via a fixture.
+requires_test_project = pytest.mark.skipif(
+    not TEST_PROJECT.exists(), reason=MISSING_TEST_PROJECT_REASON
+)
+
+
+def _require_test_project() -> None:
+    """Skip the calling test when the (gitignored) synthetic project is absent."""
+    if not TEST_PROJECT.exists():
+        pytest.skip(MISSING_TEST_PROJECT_REASON)
 
 
 @pytest.fixture
 def test_project_path() -> Path:
+    _require_test_project()
     return TEST_PROJECT
 
 
 @pytest.fixture
 def skeleton_json_path() -> Path:
+    _require_test_project()
     return TEST_PROJECT / "skeleton.json"
 
 
 @pytest.fixture
 def points_csv_path() -> Path:
+    _require_test_project()
     return TEST_PROJECT / "experiments" / "exp1" / "points.csv"
 
 
 @pytest.fixture
 def trials_csv_path() -> Path:
+    _require_test_project()
     return TEST_PROJECT / "trials.csv"
 
 
 @pytest.fixture
 def slp_dir() -> Path:
+    _require_test_project()
     return TEST_PROJECT / "slp"
 
 
@@ -117,4 +138,4 @@ def trials_df(trials_csv_path) -> pd.DataFrame:
 
 @pytest.fixture
 def slp_files(slp_dir) -> list[Path]:
-    return sorted(slp_dir.glob("cam[123]_trial1.slp"))
+    return sorted(slp_dir.glob("cam[123].slp"))
