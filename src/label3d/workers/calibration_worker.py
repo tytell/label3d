@@ -69,6 +69,9 @@ class DetectionWorker(QThread):
             cam_sizes: dict[cam_name, (w, h)]     — image size per camera
             cam_media: dict[cam_name, list[Path]] — calibration media files per camera
         error_occurred(str)                   — if a fatal error happens
+
+    ``skip`` strides video input: exactly every Nth frame is decoded and
+    searched for corners. Image folders ignore it — every image is used.
     """
 
     progress = Signal(str)
@@ -163,7 +166,7 @@ class DetectionWorker(QThread):
             self.error_occurred.emit(str(exc))
 
     def _detect_video(self, board, vpath: Path, vi: int) -> list:
-        """Detect Charuco corners in a single video, emitting frame_progress."""
+        """Detect Charuco corners on every ``self._skip``-th frame of one video."""
         cap = cv2.VideoCapture(str(vpath))
         if not cap.isOpened():
             raise FileNotFoundError(f'missing video file "{vpath}"')
@@ -176,22 +179,24 @@ class DetectionWorker(QThread):
         self.frame_progress.emit(label, 0, total)
 
         v_rows: list = []
-        go = int(self._skip / 2)
         framenum = 0
+        last_emit = -update_every
         while True:
+            if framenum % self._skip != 0:
+                # Demux without decoding: skipped frames are never converted.
+                if not cap.grab():
+                    break
+                framenum += 1
+                continue
             ret, frame = cap.read()
             if not ret:
                 break
-            if framenum % update_every == 0:
+            if framenum - last_emit >= update_every:
                 self.frame_progress.emit(label, framenum, total)
-            if framenum % self._skip != 0 and go <= 0:
-                framenum += 1
-                continue
+                last_emit = framenum
             corners, ids = board.detect_image(frame)
             if corners is not None and len(corners) > 0:
-                go = int(self._skip / 2)
                 v_rows.append({'framenum': (vi, framenum), 'corners': corners, 'ids': ids})
-            go = max(0, go - 1)
             framenum += 1
 
         cap.release()

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
@@ -56,6 +56,9 @@ _CHARUCO_DEFAULTS = {
     "marker_bits": 4,
     "dict_size": 50,
 }
+
+# Detect Charuco corners on every Nth video frame (ignored for image folders).
+_FRAME_SKIP_DEFAULT = 20
 
 
 def _scan_raw_media(
@@ -233,7 +236,6 @@ class CalibrationView(QWidget):
         self._project = project
 
         # ── State ────────────────────────────────────────────────────────
-        self._skip: int = 1  # aniposelib detect_video ignores skip; extract frames in setup_project instead
         self._all_rows: dict[str, list] | None = None
         self._cam_sizes: dict[str, tuple[int, int]] = {}
         self._cam_media: dict[str, list[Path]] = {}
@@ -295,6 +297,32 @@ class CalibrationView(QWidget):
         form.addRow("Dict size:", self._dict_size)
 
         left_layout.addWidget(board_group)
+
+        # Detection settings group
+        detect_group = QGroupBox("Detection")
+        detect_form = QFormLayout(detect_group)
+        calib_cfg = project.config.get("calibration", {})
+        self._skip_spin = QSpinBox()
+        self._skip_spin.setRange(1, 500)
+        self._skip_spin.setValue(calib_cfg.get("frame_skip", _FRAME_SKIP_DEFAULT))
+        self._skip_spin.setToolTip(
+            "Detect corners on every Nth video frame. "
+            "Image folders always use every image."
+        )
+        detect_form.addRow("Video frame step:", self._skip_spin)
+        left_layout.addWidget(detect_group)
+
+        # Persist board + detection settings a moment after the last edit.
+        self._settings_timer = QTimer(self)
+        self._settings_timer.setSingleShot(True)
+        self._settings_timer.setInterval(500)
+        self._settings_timer.timeout.connect(self._save_settings)
+        for sb in (
+            self._sq_x, self._sq_y, self._sq_len, self._mk_len,
+            self._mk_bits, self._dict_size,
+        ):
+            sb.valueChanged.connect(self._settings_timer.start)
+        self._skip_spin.valueChanged.connect(self._on_skip_changed)
 
         # Per-camera detection count labels
         cam_group = QGroupBox("Detection counts")
@@ -412,9 +440,10 @@ class CalibrationView(QWidget):
         raw_merged, raw_sizes, raw_media = _scan_raw_media(
             project.root, project.active_experiment, project.cameras, self._skip
         )
+        self._cam_media = raw_media
+        self._update_skip_enabled()
         if raw_merged:
             self._cam_sizes = raw_sizes
-            self._cam_media = raw_media
             self._calib_provider.setup(raw_merged, raw_sizes, raw_media)
             self._show_frame(0)
             self._update_frame_nav()
@@ -435,6 +464,55 @@ class CalibrationView(QWidget):
             "marker_bits": self._mk_bits.value(),
             "dict_size": self._dict_size.value(),
         }
+
+    @property
+    def _skip(self) -> int:
+        """Stride between video frames offered for corner detection."""
+        return self._skip_spin.value()
+
+    def _media_is_images(self) -> bool:
+        """True if the active experiment's calibration media are still images."""
+        return any(
+            files and files[0].suffix.lower() in IMAGE_EXTENSIONS
+            for files in self._cam_media.values()
+        )
+
+    def _update_skip_enabled(self) -> None:
+        self._skip_spin.setEnabled(not self._media_is_images())
+
+    def _on_skip_changed(self) -> None:
+        self._settings_timer.start()
+        # The browsable frame list is built from the same stride, so it has to
+        # follow — but only while it still shows raw media, not detections.
+        if self._all_rows is None:
+            self._rescan_raw_media()
+
+    def _rescan_raw_media(self) -> None:
+        raw_merged, raw_sizes, raw_media = _scan_raw_media(
+            self._project.root,
+            self._project.active_experiment,
+            self._project.cameras,
+            self._skip,
+        )
+        self._cam_sizes = raw_sizes
+        self._cam_media = raw_media
+        self._update_skip_enabled()
+        if not raw_merged:
+            return
+        self._calib_provider.setup(raw_merged, raw_sizes, raw_media)
+        self._current_frame = min(self._current_frame, len(raw_merged) - 1)
+        self._show_frame(self._current_frame)
+        self._update_frame_nav()
+
+    def _save_settings(self) -> None:
+        """Write board + detection settings back to project.toml."""
+        try:
+            self._project.save_config_sections({
+                "charuco": self._board_params(),
+                "calibration": {"frame_skip": self._skip},
+            })
+        except Exception as exc:
+            self._log_msg(f"  Warning: could not save settings: {exc}")
 
     # ── Detection ─────────────────────────────────────────────────────────
 
@@ -631,6 +709,7 @@ class CalibrationView(QWidget):
         )
         self._cam_sizes = raw_sizes
         self._cam_media = raw_media
+        self._update_skip_enabled()
 
         # Try loading saved corners per camera
         exp_dir = self._project.root / "experiments" / self._project.active_experiment

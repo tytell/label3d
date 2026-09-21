@@ -187,14 +187,18 @@ class Project:
         """SLP file assignments from the [slp] section of project.toml."""
         return SlpMapping.from_config(self.config)
 
-    def save_slp_mapping(self, mapping: SlpMapping) -> None:
-        """Write the [slp] section to project.toml, keeping all other sections."""
+    def save_config_sections(self, sections: dict[str, dict]) -> None:
+        """Merge top-level sections into project.toml, keeping all others."""
         config_path = self.root / "project.toml"
         config = toml.load(config_path) if config_path.exists() else {}
-        config["slp"] = mapping.to_config()
+        config.update(sections)
         with open(config_path, "w") as f:
             toml.dump(config, f)
         self.config = config
+
+    def save_slp_mapping(self, mapping: SlpMapping) -> None:
+        """Write the [slp] section to project.toml, keeping all other sections."""
+        self.save_config_sections({"slp": mapping.to_config()})
 
     def experiment_points_df(self, experiment: str) -> pd.DataFrame:
         """Points for an experiment: the live store if active, else its points.csv."""

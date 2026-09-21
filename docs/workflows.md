@@ -40,7 +40,7 @@ experiments/{name}/
 ├── calibration.toml # written here after calibration
 ```
 
-For video input: `CharucoBoard.detect_video(vidname, skip=20)`. For image folders: `CharucoBoard.detect_images(images)`.
+For video input, `DetectionWorker` walks the video itself and runs `CharucoBoard.detect_image()` on exactly every Nth frame — the stride comes from the "Video frame step" spinbox in the calibration panel and persists as `frame_skip` in the `[calibration]` section of `project.toml` (default 20). Skipped frames are demuxed but never decoded. For image folders: `CharucoBoard.detect_images(images)` over every image in the folder, with no stride.
 
 ### Calibration UI
 
@@ -65,7 +65,7 @@ For video input: `CharucoBoard.detect_video(vidname, skip=20)`. For image folder
 ```python
 all_rows = []
 for cam_name in cam_names:
-    rows = board.detect_video(source, skip=skip)
+    rows = detect_rows(board, source, skip=skip)  # every Nth frame for video, all images for a folder
     all_rows.append(rows)
 
 cameras = [Camera(name=n) for n in cam_names]
