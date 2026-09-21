@@ -1,4 +1,4 @@
-"""Tests for SLP file mapping (Phase 8.6) and merge rules (Phase 8.8)."""
+"""Tests for SLP file mapping (8.6), merge rules (8.8) and mapping edits (8.9)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from label3d.slp_sync import (
     SlpBlock,
     SlpFileSpec,
     SlpMapping,
+    SlpMappingEditor,
     compact_blocks,
     compute_merge,
     video_cells,
@@ -402,3 +403,54 @@ class TestMergeInstanceMatching:
         slp.index = slp.index.set_levels(["1"], level="trial")
         r = compute_merge(store, slp)
         assert not r.changed_frames and not r.conflicts
+
+
+# ---------------------------------------------------------------------------
+# SlpMappingEditor (Phase 8.9) — the worked example from phase_8.md
+# ---------------------------------------------------------------------------
+
+class TestSlpMappingEditor:
+    def _editor(self) -> SlpMappingEditor:
+        return SlpMappingEditor(SlpMapping(files=[]), _trials_df(), CAMERAS)
+
+    def test_preset_per_camera_gives_one_file_per_camera(self):
+        editor = self._editor()
+        editor.apply_preset("{camera}.slp")
+        assert sorted(p.name for p in editor.files) == ["cam0.slp", "cam1.slp", "cam2.slp"]
+        assert all(len(editor.cells_of(p)) == len(TRIALS) for p in editor.files)
+
+    def test_preset_join_split_reproduces_example(self):
+        """Preset per camera → join cam0+cam1 → split trials 4–5 into their own file."""
+        editor = self._editor()
+        editor.apply_preset("{camera}.slp")
+        joined = editor.join([Path("slp/cam0.slp"), Path("slp/cam1.slp")])
+        assert joined == Path("slp/cam0.slp")
+        assert len(editor.files) == 2
+
+        late = editor.split_by_trial(joined, {(EXP, "t4"), (EXP, "t5")})
+        assert late is not None
+        assert len(editor.files) == 3
+
+        editor.rename(joined, Path("slp/cam0_cam1_early.slp"))
+        editor.rename(late, Path("slp/cam0_cam1_late.slp"))
+
+        assert editor.errors() == []
+        assert editor.mapping().cell_map() == _example_mapping().cell_map()
+
+    def test_split_by_camera_undoes_a_join(self):
+        editor = self._editor()
+        editor.apply_preset("{camera}.slp")
+        joined = editor.join([Path("slp/cam0.slp"), Path("slp/cam1.slp")])
+        new_paths = editor.split_by_camera(joined)
+        assert len(new_paths) == 2
+        assert {c[2] for c in editor.cells_of(new_paths[0])} == {"cam0"}
+        assert {c[2] for c in editor.cells_of(new_paths[1])} == {"cam1"}
+
+    def test_split_by_trial_that_moves_everything_is_refused(self):
+        editor = self._editor()
+        editor.apply_preset("{camera}.slp")
+        assert editor.split_by_trial(Path("slp/cam0.slp"), {(EXP, t) for t in TRIALS}) is None
+
+    def test_errors_report_unassigned_cells(self):
+        editor = SlpMappingEditor(SlpMapping(files=[]), _trials_df(), CAMERAS)
+        assert editor.errors() == [f"{len(TRIALS) * len(CAMERAS)} video(s) unassigned"]

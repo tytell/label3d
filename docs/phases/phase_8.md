@@ -287,7 +287,9 @@ The prompt becomes "Sync with Sleap before closing?" with Sync / Discard / Cance
 
 **As implemented:** `_sync_on_close()` does read → `_confirm_merge()` → `apply_merge()` → `write_slp_files()` synchronously and returns False when the conflict dialog is cancelled, which leaves the window open.  No re-triangulation on close.
 
-## 8.13 Unit tests (`tests/test_sleap_adapter.py`, `tests/test_slp_sync.py`) — partial
+## 8.13 Unit tests (`tests/test_sleap_adapter.py`, `tests/test_slp_sync.py`, `tests/test_project_sync.py`) ✓
+
+**As implemented (8.13):** `tests/test_slp_sync.py` gained `TestSlpMappingEditor` — the preset → join → split-by-trial sequence that builds the 3-file example, split-by-camera, a refused split, and the unassigned-cells error.  New `tests/test_project_sync.py` builds a temp project (2 trials x 2 cameras, one file per camera) and covers: the mapping is complete, every mapped file is written, a mapped file that does not exist reads as empty, a write → read round trip reports no changes and no conflicts, a label only in the SLP file comes back as new, an edited point is a conflict, and Use SLEAP takes the SLP value.  It also runs `AllExperimentsTriangulationWorker` against a hand-written 2-camera calibration and checks the 3D columns reach points.csv.
 
 Done with 8.6–8.8 (52 tests): the mapping round trip, missing and duplicate cells, block compaction (the test builds the example's final mapping directly; the per-camera → join → split steps get tested with 8.9), every row of the merge table, the frame rules, instance matching, adapter tests 1–7 below, and a save → load → merge round trip that must give no changes and no conflicts.
 
