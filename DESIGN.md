@@ -19,8 +19,8 @@ A cross-platform desktop app for:
 | [docs/testing.md](docs/testing.md) | Test modules and testing conventions |
 | [docs/synthetic_data.md](docs/synthetic_data.md) | Synthetic data generator: module layout, output structure, charuco image generation |
 | [docs/phases/phase_8.md](docs/phases/phase_8.md) | Phase 8 — SLP write-back (completed) |
-| [docs/phases/phase_9.md](docs/phases/phase_9.md) | **Phase 9 — Calibration Takes** (current; not started) |
-| [docs/phases/phase_10.md](docs/phases/phase_10.md) | Phase 10 — Axis Alignment (partially implemented) |
+| [docs/phases/phase_9.md](docs/phases/phase_9.md) | Phase 9 — Calibration Takes (completed) |
+| [docs/phases/phase_10.md](docs/phases/phase_10.md) | **Phase 10 — Axis Alignment** (current; partially implemented) |
 | [docs/phases/phase_11_12.md](docs/phases/phase_11_12.md) | Phases 11–12: Export, Polish and robustness |
 | [docs/phases/phase_13.md](docs/phases/phase_13.md) | Phase 13 — Multi-instance support and cross-camera matching |
 | [docs/phases/archive/phases_1_7.md](docs/phases/archive/phases_1_7.md) | Phases 1–7 (completed; archived for reference) |
@@ -39,7 +39,7 @@ A cross-platform desktop app for:
 | 6 | Hierarchical (multi-experiment) projects | ✓ Complete |
 | 7 | SLP import + instance init strategies | ✓ Complete |
 | 8 | SLP write-back (File > Sync with Sleap) | ✓ Complete |
-| 9 | Calibration takes | Not started |
+| 9 | Calibration takes | ✓ Complete |
 | 10 | Axis alignment | Partial — geometry helpers done, UI widget not created |
 | 11 | Export view | Not started |
 | 12 | Polish and robustness | Not started |

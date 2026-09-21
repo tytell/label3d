@@ -997,13 +997,12 @@ class CalibrationView(QWidget):
     def _representative_frame_info(
         self, frame_idx: int
     ) -> tuple[str, tuple[int, int] | None]:
-        """Return (display_label, (video_idx, frame_in_video)) for frame_idx.
+        """Return (display_label, (take_name, frame_in_video)) for frame_idx.
 
         Falls back to the provider's raw rows when no corners are detected yet.
         Returns ("—", None) when frame_idx is out of range.
-        For image-based calibration returns ("Image N", None).
-        For single-video: ("Frame N", (0, N)).
-        For multi-video: ("{stem}, frame N", (vi, N)).
+        With one take: ("Frame N", (take, N)).
+        With several: ("{take}, frame N", (take, N)).
         """
         rows = self._merged_rows if self._merged_rows else self._calib_provider.merged_rows
         if not rows or frame_idx < 0 or frame_idx >= len(rows):
@@ -1019,13 +1018,11 @@ class CalibrationView(QWidget):
                 return f"Image {frame_idx + 1}", None
 
             framenum = row.get("framenum")
-            if framenum is not None:
-                vi, fi = framenum if isinstance(framenum, tuple) else (0, int(framenum))
-                cam_files = self._cam_media.get(cam, [])
-                if len(cam_files) > 1 and vi < len(cam_files):
-                    stem = cam_files[vi].stem
-                    return f"{stem}, frame {fi}", (vi, fi)
-                return f"Frame {fi}", (vi, fi)
+            if isinstance(framenum, tuple):
+                take_name, fi = framenum
+                if len(self._cam_media.get(cam, {})) > 1:
+                    return f"{take_name}, frame {fi}", (take_name, fi)
+                return f"Frame {fi}", (take_name, fi)
 
         return f"{frame_idx + 1}", None
 

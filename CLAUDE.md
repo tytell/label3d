@@ -29,8 +29,9 @@ project/
     └── points.csv
 ```
 
-- `trials.csv` — **global**, at project root; columns `experiment, trial, cam0, cam0_start, cam0_end, cam1, …`; trial names are local to each experiment (disambiguated by the `experiment` column)
-- `experiments/{name}/calibration.toml` — aniposelib `CameraGroup.dump()` format
+- `trials.csv` — **global**, at project root; columns `experiment, trial, is_calibration, cam0, cam0_start, cam0_end, cam1, …`; trial names are local to each experiment (disambiguated by the `experiment` column). `is_calibration = True` rows are **calibration takes** (one synchronized calibration recording, e.g. `PreCal` / `PostCal`); their videos live in `calibration/{cam}/`, not `videos/`. Any column that is not `experiment`, `trial`, `is_calibration` or a `*_start`/`*_end` suffix is read as a camera name
+- `experiments/{name}/calibration.toml` — aniposelib `CameraGroup.dump()` format; the solution in use. Per-take solutions go to `experiments/{name}/calibration_takes/{take}.toml`, per-take corners to `calibration/{cam}/corners_{take}.csv`
+- **Calibration is video-only** — image-based calibration is deprecated and raises
 - `experiments/{name}/videos/` — video files for that experiment's trials (no trials.csv here)
 - `experiments/{name}/points.csv` — pandas MultiIndex CSV; row index `(experiment, trial, frame, instance, bodypart)` (5-level); column MultiIndex `(view, coord)` where cameras have `{x, y, xr, yr, state}` and `"3d"` pseudo-camera has `{x, y, z}`; `state` ∈ `{set, predicted, not_set, not_visible}`
 - `skeleton.json` — `{nodes, edges, symmetries, node_offsets_cm}` (shared at project root)
@@ -58,4 +59,4 @@ uv run python <script>  # run any script in the project venv
 
 ## Implementation phases
 
-Phases 1–8 complete. Phase 9 (calibration takes) is next — see [docs/phases/phase_9.md](docs/phases/phase_9.md) for the current phase spec. Phase 10 (axis alignment, [docs/phases/phase_10.md](docs/phases/phase_10.md)) is partially done: geometry helpers and CameraPanel pick mode exist, the UI widget does not. [docs/phases/phase_8.md](docs/phases/phase_8.md) covers the finished SLP sync work, [docs/phases/phase_11_12.md](docs/phases/phase_11_12.md) export and polish, [docs/phases/phase_13.md](docs/phases/phase_13.md) multi-instance support.
+Phases 1–9 complete. Phase 10 (axis alignment, [docs/phases/phase_10.md](docs/phases/phase_10.md)) is next and partially done: geometry helpers and CameraPanel pick mode exist, the UI widget does not. [docs/phases/phase_9.md](docs/phases/phase_9.md) covers the finished calibration-take work. [docs/phases/phase_8.md](docs/phases/phase_8.md) covers the finished SLP sync work, [docs/phases/phase_11_12.md](docs/phases/phase_11_12.md) export and polish, [docs/phases/phase_13.md](docs/phases/phase_13.md) multi-instance support.
