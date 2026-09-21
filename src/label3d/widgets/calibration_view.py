@@ -14,6 +14,8 @@ import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -25,6 +27,8 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -40,13 +44,20 @@ from label3d.project import Project
 from label3d.video import VideoReader
 from label3d.widgets.camera_grid import CameraGrid
 from label3d.widgets.charuco_overlay import CharucoOverlay
+from label3d.calibration_compare import (
+    compare_calibrations,
+    drift_thresholds,
+    drift_warnings,
+)
 from label3d.workers.calibration_worker import (
     IMAGE_EXTENSIONS,
+    JOINT_TAKE,
     VIDEO_EXTENSIONS,
     CalibrationTake,
-    CalibrationWorker,
     DetectionWorker,
+    MultiTakeCalibrationWorker,
     TakeVideo,
+    rows_for_take,
     calibration_images_error,
 )
 
@@ -226,6 +237,7 @@ class CalibrationView(QWidget):
         # ── State ────────────────────────────────────────────────────────
         self._all_rows: dict[str, list] | None = None
         self._takes: list[CalibrationTake] = []
+        self._take_results: list = []   # list[TakeCalibration], joint last
         self._cam_sizes: dict[str, tuple[int, int]] = {}
         self._cam_media: dict[str, dict[str, Path]] = {}
         self._merged_rows: list[dict] = []
@@ -238,7 +250,7 @@ class CalibrationView(QWidget):
         self._selected_corner: int | None = None
 
         self._detection_worker: DetectionWorker | None = None
-        self._calibration_worker: CalibrationWorker | None = None
+        self._calibration_worker: MultiTakeCalibrationWorker | None = None
 
         # ── Layout ───────────────────────────────────────────────────────
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
@@ -297,6 +309,43 @@ class CalibrationView(QWidget):
         self._skip_spin.setToolTip("Detect corners on every Nth video frame.")
         detect_form.addRow("Video frame step:", self._skip_spin)
         left_layout.addWidget(detect_group)
+
+        # Calibration takes group
+        takes_group = QGroupBox("Calibration takes")
+        takes_layout = QVBoxLayout(takes_group)
+
+        self._take_combo = QComboBox()
+        self._take_combo.setToolTip(
+            "Which calibration solution to use. Each take is calibrated on its "
+            "own and all takes jointly."
+        )
+        self._take_combo.currentTextChanged.connect(self._on_take_selected)
+        takes_layout.addWidget(self._take_combo)
+
+        self._take_table = QTableWidget(0, 5)
+        self._take_table.setHorizontalHeaderLabels(
+            ["Take", "Dets", "Error px", "Rot °", "Base %"]
+        )
+        self._take_table.verticalHeader().setVisible(False)
+        self._take_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._take_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
+        self._take_table.setMaximumHeight(140)
+        takes_layout.addWidget(self._take_table)
+
+        self._drift_label = QLabel()
+        self._drift_label.setWordWrap(True)
+        self._drift_label.setVisible(False)
+        self._drift_label.setStyleSheet("color: #b45309; font-weight: bold;")
+        takes_layout.addWidget(self._drift_label)
+
+        self._use_take_btn = QPushButton("Use selected take")
+        self._use_take_btn.setEnabled(False)
+        self._use_take_btn.clicked.connect(self._on_use_take)
+        takes_layout.addWidget(self._use_take_btn)
+
+        left_layout.addWidget(takes_group)
 
         # Persist board + detection settings a moment after the last edit.
         self._settings_timer = QTimer(self)
@@ -621,11 +670,12 @@ class CalibrationView(QWidget):
         self._calibrate_btn.setEnabled(False)
         self._log_msg("=== Calibration started ===")
 
-        self._calibration_worker = CalibrationWorker(
+        self._calibration_worker = MultiTakeCalibrationWorker(
             cam_names=self._project.cameras,
             cam_sizes=self._cam_sizes,
             all_rows=self._all_rows,
             board_params=self._board_params(),
+            take_names=[t.name for t in self._takes],
         )
         self._calibration_worker.progress.connect(self._log_msg)
         self._calibration_worker.finished.connect(self._on_calibrate_finished)
@@ -634,24 +684,141 @@ class CalibrationView(QWidget):
         self._progress_bar.setVisible(True)
         self._calibration_worker.start()
 
-    def _on_calibrate_finished(self, cgroup, mean_error: float, frame_errors: dict):
+    def _on_calibrate_finished(self, results: list):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setVisible(False)
         self._progress_label.setVisible(False)
-        self._frame_errors = frame_errors
-        self._error_label.setText(f"Reprojection error: {mean_error:.3f} px")
-        self._apply_calibration(cgroup)
+        self._take_results = results
+        self._calibrate_btn.setEnabled(True)
+
+        if not results:
+            self._log_msg("=== Calibration produced no solutions ===")
+            return
+
+        self._save_take_calibrations(results)
+        self._populate_take_table(results)
         self._log_msg("=== Calibration complete ===")
+
+        # Default to the joint solution, which the worker emits last.
+        self._take_combo.blockSignals(True)
+        self._take_combo.clear()
+        self._take_combo.addItems([r.name for r in results])
+        self._take_combo.setCurrentText(results[-1].name)
+        self._take_combo.blockSignals(False)
+        self._use_take_btn.setEnabled(True)
+        self._on_take_selected(results[-1].name)
+        self._on_use_take()
+
+    def _save_take_calibrations(self, results: list) -> None:
+        """Write each take's solution to calibration_takes/{take}.toml."""
+        exp_dir = self._project.root / "experiments" / self._project.active_experiment
+        takes_dir = exp_dir / "calibration_takes"
+        try:
+            takes_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            self._log_msg(f"  Warning: could not create {takes_dir}: {exc}")
+            return
+        for result in results:
+            safe = result.name.replace(" ", "_").replace("(", "").replace(")", "")
+            try:
+                result.cgroup.dump(str(takes_dir / f"{safe}.toml"))
+            except Exception as exc:
+                self._log_msg(f"  Warning: could not save take '{result.name}': {exc}")
+
+    def _populate_take_table(self, results: list) -> None:
+        """Fill the comparison table and flag takes that drifted."""
+        joint = results[-1]
+        rot_thresh, base_thresh = drift_thresholds(self._project.config)
+
+        self._take_table.setRowCount(len(results))
+        all_warnings: list[str] = []
+
+        for row, result in enumerate(results):
+            if result is joint:
+                rot_txt, base_txt, flagged = "—", "—", False
+            else:
+                drifts = compare_calibrations(joint.cgroup, result.cgroup)
+                max_rot = max((d.rotation_deg for d in drifts), default=0.0)
+                max_base = max((d.baseline_pct for d in drifts), default=0.0)
+                rot_txt, base_txt = f"{max_rot:.2f}", f"{max_base:.1f}"
+                warnings = drift_warnings(
+                    result.name, drifts, rot_thresh, base_thresh
+                )
+                all_warnings.extend(warnings)
+                flagged = bool(warnings)
+
+            cells = [
+                result.name,
+                str(result.n_rows),
+                f"{result.error:.3f}",
+                rot_txt,
+                base_txt,
+            ]
+            for col, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                if flagged:
+                    item.setForeground(Qt.GlobalColor.red)
+                self._take_table.setItem(row, col, item)
+
+        self._take_table.resizeColumnsToContents()
+
+        if all_warnings:
+            self._drift_label.setText(
+                "Calibration differs between takes — a camera may have moved "
+                "during the experiment. Consider using a single take.\n"
+                + "\n".join(all_warnings)
+            )
+            self._drift_label.setVisible(True)
+            for msg in all_warnings:
+                self._log_msg(f"  ! {msg}")
+        else:
+            self._drift_label.setVisible(False)
+
+    def _selected_take(self):
+        """The TakeCalibration currently chosen in the combo, or None."""
+        name = self._take_combo.currentText()
+        for result in self._take_results:
+            if result.name == name:
+                return result
+        return None
+
+    def _on_take_selected(self, name: str) -> None:
+        """Show the chosen take's solution without committing it to disk."""
+        result = self._selected_take()
+        if result is None:
+            return
+        self._frame_errors = result.frame_errors
+        self._error_label.setText(f"Reprojection error: {result.error:.3f} px")
+        self._apply_calibration(result.cgroup)
+        self._show_frame(self._current_frame)
+
+    def _on_use_take(self) -> None:
+        """Write the chosen solution to calibration.toml and corners.csv."""
+        result = self._selected_take()
+        if result is None:
+            return
 
         out_path = self._project.calibration_path()
         try:
-            cgroup.dump(str(out_path))
-            self._log_msg(f"Saved: {out_path}")
+            result.cgroup.dump(str(out_path))
+            self._log_msg(f"Saved [{result.name}]: {out_path}")
         except Exception as exc:
             self._log_msg(f"  Warning: could not save calibration: {exc}")
+            return
 
-        self._show_frame(self._current_frame)
-        self._calibrate_btn.setEnabled(True)
+        # corners.csv holds whatever produced the saved calibration.
+        exp_dir = self._project.root / "experiments" / self._project.active_experiment
+        rows_by_cam = self._all_rows or {}
+        if result.name != JOINT_TAKE:
+            rows_by_cam = rows_for_take(rows_by_cam, result.name)
+        for cam in self._project.cameras:
+            cam_dir = exp_dir / "calibration" / cam
+            if not cam_dir.is_dir():
+                continue
+            try:
+                save_corners(cam_dir, rows_by_cam.get(cam, []))
+            except Exception as exc:
+                self._log_msg(f"  Warning: could not save corners for {cam}: {exc}")
 
     # ── Calibration helpers ───────────────────────────────────────────────
 

@@ -232,6 +232,128 @@ class DetectionWorker(QThread):
         return board.fill_points_rows(v_rows)
 
 
+JOINT_TAKE = "All takes (joint)"
+
+
+@dataclass
+class TakeCalibration:
+    """One calibration solution — a single take, or all takes jointly."""
+
+    name: str
+    cgroup: object
+    error: float
+    frame_errors: dict
+    n_rows: int
+
+
+def _build_board(bp: dict) -> CharucoBoard:
+    return CharucoBoard(
+        squaresX=bp["squares_x"],
+        squaresY=bp["squares_y"],
+        square_length=bp["square_length"],
+        marker_length=bp["marker_length"],
+        marker_bits=bp.get("marker_bits", 4),
+        dict_size=bp.get("dict_size", 50),
+    )
+
+
+def calibrate_rows(
+    cam_names: list[str],
+    cam_sizes: dict[str, tuple[int, int]],
+    rows_by_cam: dict[str, list],
+    board: CharucoBoard,
+) -> tuple[object, float, dict]:
+    """Run bundle adjustment on one set of rows. Returns (cgroup, error, errors)."""
+    cameras = [Camera(name=n, size=cam_sizes.get(n)) for n in cam_names]
+    cgroup = CameraGroup(cameras)
+    rows_list = [rows_by_cam.get(cam, []) for cam in cam_names]
+    error = cgroup.calibrate_rows(rows_list, board, verbose=False)
+    _, frame_errors = compute_frame_errors(cgroup, board, rows_list, cam_names)
+    return cgroup, float(error), frame_errors
+
+
+def rows_for_take(rows_by_cam: dict[str, list], take: str) -> dict[str, list]:
+    """Subset of detection rows belonging to one take."""
+    return {
+        cam: [
+            r for r in rows
+            if isinstance(r.get("framenum"), tuple) and r["framenum"][0] == take
+        ]
+        for cam, rows in rows_by_cam.items()
+    }
+
+
+class MultiTakeCalibrationWorker(QThread):
+    """Calibrates each take on its own, then all takes jointly.
+
+    Comparing the per-take solutions is how a camera that moved during the
+    experiment gets caught: the joint solution would otherwise average the
+    before and after geometry into something that fits neither.
+
+    Emits:
+        progress(str)
+        finished(list[TakeCalibration])  — per take, joint last
+        error_occurred(str)
+    """
+
+    progress = Signal(str)
+    finished = Signal(object)
+    error_occurred = Signal(str)
+
+    def __init__(
+        self,
+        cam_names: list[str],
+        cam_sizes: dict[str, tuple[int, int]],
+        all_rows: dict[str, list],
+        board_params: dict,
+        take_names: list[str],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._cam_names = cam_names
+        self._cam_sizes = cam_sizes
+        self._all_rows = all_rows
+        self._board_params = board_params
+        self._take_names = take_names
+
+    def run(self):
+        try:
+            board = _build_board(self._board_params)
+            results: list[TakeCalibration] = []
+
+            for take in self._take_names:
+                rows = rows_for_take(self._all_rows, take)
+                n_rows = sum(len(r) for r in rows.values())
+                if n_rows == 0:
+                    self.progress.emit(f"  take '{take}': no detections, skipping")
+                    continue
+                self.progress.emit(f"  Calibrating take '{take}' ({n_rows} detections)...")
+                try:
+                    cgroup, error, frame_errors = calibrate_rows(
+                        self._cam_names, self._cam_sizes, rows, board
+                    )
+                except Exception as exc:
+                    self.progress.emit(f"  take '{take}' failed: {exc}")
+                    continue
+                self.progress.emit(f"    mean error: {error:.3f} px")
+                results.append(TakeCalibration(take, cgroup, error, frame_errors, n_rows))
+
+            n_all = sum(len(r) for r in self._all_rows.values())
+            self.progress.emit(f"  Calibrating all takes jointly ({n_all} detections)...")
+            cgroup, error, frame_errors = calibrate_rows(
+                self._cam_names, self._cam_sizes, self._all_rows, board
+            )
+            self.progress.emit(f"    mean error: {error:.3f} px")
+            results.append(
+                TakeCalibration(JOINT_TAKE, cgroup, error, frame_errors, n_all)
+            )
+
+            self.finished.emit(results)
+
+        except Exception as exc:
+            self.error_occurred.emit(str(exc))
+
+
 class CalibrationWorker(QThread):
     """Runs aniposelib bundle adjustment and computes per-corner errors.
 

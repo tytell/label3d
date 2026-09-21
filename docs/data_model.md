@@ -74,9 +74,27 @@ square_length = 30.0         # mm — side length of each chessboard square
 marker_length = 22.0         # mm — side length of ArUco markers within squares
 marker_bits = 4              # ArUco marker bit depth (4, 5, 6, or 7)
 dict_size = 50               # ArUco dictionary size (50, 100, 250, 1000)
+
+[calibration]
+frame_skip = 20              # detect corners on every Nth video frame
+rotation_drift_deg = 0.5     # flag takes whose relative rotation differs by more
+baseline_drift_pct = 1.0     # flag takes whose camera baseline differs by more
 ```
 
-The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init__` parameters.
+The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init__` parameters. Both sections are written back by the calibration panel when the user changes a value.
+
+`[calibration]` drift thresholds are compared per camera *pair* between each take's solution and the joint solution: intrinsics should be identical across takes, so what moves when a camera is bumped is the relative rotation and the baseline between pairs. Exceeding either threshold flags the take in the comparison table.
+
+### Calibration outputs
+
+| Path | Contents |
+|---|---|
+| `experiments/{exp}/calibration.toml` | the solution in use — written when the user picks a take |
+| `experiments/{exp}/calibration_takes/{take}.toml` | each take's own solution, plus the joint one |
+| `experiments/{exp}/calibration/{cam}/corners_{take}.csv` | detected corners for one take |
+| `experiments/{exp}/calibration/{cam}/corners.csv` | corners behind the solution in `calibration.toml` |
+
+Corner rows are keyed `source_key = "{take}:{frame}"`, so cross-camera correspondence is by take name and absolute video frame.
 
 ### Videos and trials
 

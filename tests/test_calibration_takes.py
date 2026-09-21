@@ -152,3 +152,95 @@ class TestCornersIO:
 
     def test_missing_file_returns_none(self, tmp_path):
         assert load_corners(tmp_path, take="Nope") is None
+
+
+# --- Drift comparison between takes ---
+
+
+class _FakeCamera:
+    def __init__(self, name, rvec, tvec):
+        self._name, self._r, self._t = name, np.asarray(rvec, float), np.asarray(tvec, float)
+
+    def get_name(self):
+        return self._name
+
+    def get_rotation(self):
+        return self._r
+
+    def get_translation(self):
+        return self._t
+
+
+class _FakeGroup:
+    def __init__(self, cameras):
+        self.cameras = cameras
+
+
+def _group(specs):
+    return _FakeGroup([_FakeCamera(n, r, t) for n, r, t in specs])
+
+
+BASE = [
+    ("cam1", [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+    ("cam2", [0.0, 0.5, 0.0], [-100.0, 0.0, 50.0]),
+]
+
+
+class TestDriftComparison:
+    def test_identical_calibrations_have_no_drift(self):
+        from label3d.calibration_compare import compare_calibrations
+
+        drifts = compare_calibrations(_group(BASE), _group(BASE))
+        assert len(drifts) == 1
+        assert drifts[0].rotation_deg == pytest.approx(0.0, abs=1e-9)
+        assert drifts[0].baseline_pct == pytest.approx(0.0, abs=1e-9)
+
+    def test_rotated_camera_reports_rotation(self):
+        from label3d.calibration_compare import compare_calibrations
+
+        moved = list(BASE)
+        # Rotate cam2 by 2 degrees about y, on top of its existing 0.5 rad.
+        moved[1] = ("cam2", [0.0, 0.5 + np.radians(2.0), 0.0], [-100.0, 0.0, 50.0])
+
+        drift = compare_calibrations(_group(BASE), _group(moved))[0]
+        assert drift.rotation_deg == pytest.approx(2.0, abs=1e-6)
+
+    def test_moved_camera_reports_baseline_change(self):
+        from label3d.calibration_compare import compare_calibrations
+
+        moved = list(BASE)
+        moved[1] = ("cam2", [0.0, 0.5, 0.0], [-110.0, 0.0, 50.0])
+
+        drift = compare_calibrations(_group(BASE), _group(moved))[0]
+        assert drift.baseline_other_cm != pytest.approx(drift.baseline_ref_cm)
+        assert drift.baseline_delta_cm > 0
+
+    def test_warnings_fire_only_past_threshold(self):
+        from label3d.calibration_compare import compare_calibrations, drift_warnings
+
+        nudged = list(BASE)
+        nudged[1] = ("cam2", [0.0, 0.5 + np.radians(0.1), 0.0], [-100.0, 0.0, 50.0])
+        small = compare_calibrations(_group(BASE), _group(nudged))
+        assert drift_warnings("PreCal", small, 0.5, 1.0) == []
+
+        bumped = list(BASE)
+        bumped[1] = ("cam2", [0.0, 0.5 + np.radians(3.0), 0.0], [-100.0, 0.0, 50.0])
+        big = compare_calibrations(_group(BASE), _group(bumped))
+        messages = drift_warnings("PreCal", big, 0.5, 1.0)
+        assert len(messages) == 1
+        assert "PreCal" in messages[0] and "cam1-cam2" in messages[0]
+
+    def test_thresholds_read_from_config(self):
+        from label3d.calibration_compare import drift_thresholds
+
+        assert drift_thresholds({}) == (0.5, 1.0)
+        assert drift_thresholds(
+            {"calibration": {"rotation_drift_deg": 2.0, "baseline_drift_pct": 5.0}}
+        ) == (2.0, 5.0)
+
+    def test_only_shared_cameras_compared(self):
+        from label3d.calibration_compare import compare_calibrations
+
+        three = BASE + [("cam3", [0.1, 0.0, 0.0], [0.0, -80.0, 40.0])]
+        drifts = compare_calibrations(_group(three), _group(BASE))
+        assert {(d.cam_a, d.cam_b) for d in drifts} == {("cam1", "cam2")}
