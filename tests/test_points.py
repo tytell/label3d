@@ -135,13 +135,13 @@ class TestSetPoint:
         assert abs(pt.y - 2.0) < 1e-9
 
     def test_marks_dirty(self, empty_store):
-        assert not empty_store.dirty
+        assert not empty_store.changed
         empty_store.set_point("trial1", 0, 0, "snout", "cam1", 1.0, 2.0)
-        assert empty_store.dirty
+        assert empty_store.changed
 
     def test_emits_changed_signal(self, empty_store):
         received = []
-        empty_store.changed.connect(lambda: received.append(1))
+        empty_store.data_changed.connect(lambda: received.append(1))
         empty_store.set_point("trial1", 0, 0, "snout", "cam1", 1.0, 2.0)
         assert len(received) == 1
 
@@ -185,11 +185,11 @@ class TestSetNotVisible:
 
     def test_marks_dirty(self, empty_store):
         empty_store.set_not_visible("trial1", 0, 0, "snout", "cam1")
-        assert empty_store.dirty
+        assert empty_store.changed
 
     def test_emits_changed_signal(self, empty_store):
         received = []
-        empty_store.changed.connect(lambda: received.append(1))
+        empty_store.data_changed.connect(lambda: received.append(1))
         empty_store.set_not_visible("trial1", 0, 0, "snout", "cam1")
         assert len(received) == 1
 
@@ -223,13 +223,13 @@ class TestDeletePoint:
         empty_store.delete_point("trial1", 99, 0, "snout", "cam1")  # no error
 
     def test_marks_dirty(self, store_with_one_point):
-        store_with_one_point._dirty = False
+        store_with_one_point._changed = False
         store_with_one_point.delete_point("trial1", 0, 0, "snout", "cam1")
-        assert store_with_one_point.dirty
+        assert store_with_one_point.changed
 
     def test_emits_changed_signal(self, store_with_one_point):
         received = []
-        store_with_one_point.changed.connect(lambda: received.append(1))
+        store_with_one_point.data_changed.connect(lambda: received.append(1))
         store_with_one_point.delete_point("trial1", 0, 0, "snout", "cam1")
         assert len(received) == 1
 
@@ -292,7 +292,7 @@ class TestInstanceLevel:
 
     def test_add_instance_marks_dirty(self, empty_store):
         empty_store.add_instance("trial1", 0, BODYPARTS)
-        assert empty_store.dirty
+        assert empty_store.changed
 
     def test_delete_instance_removes_rows(self, empty_store):
         empty_store.add_instance("trial1", 0, BODYPARTS)
@@ -336,9 +336,9 @@ class TestThreeDApi:
         assert abs(float(row[("3d", "z")]) - 3.0) < 1e-9
 
     def test_set_3d_marks_dirty(self, store_with_one_point):
-        store_with_one_point._dirty = False
+        store_with_one_point._changed = False
         store_with_one_point.set_3d("trial1", 0, 0, "snout", 1.0, 2.0, 3.0)
-        assert store_with_one_point.dirty
+        assert store_with_one_point.changed
 
     def test_set_3d_nonexistent_row_is_noop(self, empty_store):
         empty_store.set_3d("trial1", 0, 0, "snout", 1.0, 2.0, 3.0)
@@ -399,44 +399,44 @@ class TestCache:
 
 class TestDirtyAndSave:
     def test_starts_clean(self, empty_store):
-        assert not empty_store.dirty
+        assert not empty_store.changed
 
     def test_dirty_after_set_point(self, empty_store):
         empty_store.set_point("trial1", 0, 0, "snout", "cam1", 1.0, 2.0)
-        assert empty_store.dirty
+        assert empty_store.changed
 
     def test_clean_after_to_csv(self, empty_store, tmp_path):
         empty_store.set_point("trial1", 0, 0, "snout", "cam1", 1.0, 2.0)
-        assert empty_store.dirty
+        assert empty_store.changed
         empty_store.to_csv(tmp_path / "p.csv")
-        assert not empty_store.dirty
+        assert not empty_store.changed
 
-    def test_save_if_dirty_writes_file(self, empty_store, tmp_path):
+    def test_save_if_changed_writes_file(self, empty_store, tmp_path):
         dest = tmp_path / "save_test.csv"
         empty_store.set_point("trial1", 0, 0, "snout", "cam1", 1.0, 2.0)
         empty_store._save_path = dest
-        empty_store.save_if_dirty()
+        empty_store.save_if_changed()
         assert dest.exists()
 
-    def test_save_if_dirty_creates_backup(self, empty_store, tmp_path):
+    def test_save_if_changed_creates_backup(self, empty_store, tmp_path):
         dest = tmp_path / "points.csv"
         # Write initial file so backup is possible
         empty_store.to_csv(dest)
         # Mutate and save again
         empty_store.set_point("trial1", 0, 0, "snout", "cam1", 1.0, 2.0)
-        empty_store.save_if_dirty()
+        empty_store.save_if_changed()
         assert (tmp_path / "points.csv.bak").exists()
 
-    def test_save_if_dirty_noop_when_clean(self, empty_store, tmp_path):
+    def test_save_if_changed_noop_when_clean(self, empty_store, tmp_path):
         dest = tmp_path / "points.csv"
         empty_store._save_path = dest
-        empty_store.save_if_dirty()  # dirty=False, save_path set — should not write
+        empty_store.save_if_changed()  # dirty=False, save_path set — should not write
         assert not dest.exists()
 
-    def test_save_if_dirty_noop_without_path(self, empty_store):
+    def test_save_if_changed_noop_without_path(self, empty_store):
         empty_store.set_point("trial1", 0, 0, "snout", "cam1", 1.0, 2.0)
         assert empty_store._save_path is None
-        empty_store.save_if_dirty()  # no error — just silently skips
+        empty_store.save_if_changed()  # no error — just silently skips
 
 
 # ---------------------------------------------------------------------------

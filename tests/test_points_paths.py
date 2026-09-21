@@ -75,7 +75,7 @@ class TestPathsWithSpaces:
         store.to_csv(dest)
         # Mutate and trigger backup
         store.set_point("trial1", 0, 0, "snout", CAMERAS[0], 99.0, 99.0)
-        store.save_if_dirty()
+        store.save_if_changed()
         bak = spaced_dir / "points.csv.bak"
         assert bak.exists()
 
