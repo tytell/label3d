@@ -129,7 +129,7 @@ Intrinsics should be identical across takes; extrinsics are what move when a cam
 
 ### UI
 
-- [x] Take selector in the calibration panel: "All takes (joint)" plus one entry per take
+- [x] Take selector in the calibration panel: one entry per take plus "All takes (joint)". Filled as soon as the takes load, so it also filters the browsed frames before any calibration exists; selecting a take shows only that take's frames and, once calibrated, previews its solution
 - [x] Comparison table — per-take reprojection error, rotation drift, baseline drift, each against the joint solution
 - [x] Warning banner when a threshold trips, naming the camera pair and the takes involved
 - [x] Selecting a take and saving writes that solution to `calibration.toml` and its corners to `corners.csv`

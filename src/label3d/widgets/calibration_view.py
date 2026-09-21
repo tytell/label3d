@@ -75,6 +75,26 @@ _CHARUCO_DEFAULTS = {
 _FRAME_SKIP_DEFAULT = 20
 
 
+def row_take(row: dict) -> str | None:
+    """Which take a merged detection row belongs to, from any camera's key."""
+    for cell in row.values():
+        framenum = cell.get("framenum")
+        if isinstance(framenum, tuple):
+            return framenum[0]
+    return None
+
+
+def take_row_indices(rows: list[dict], take: str | None) -> list[int]:
+    """Positions in `rows` belonging to `take`; all of them for the joint view.
+
+    Returning indices rather than rows keeps the mapping back to the unfiltered
+    list, which reprojection errors are keyed by.
+    """
+    if not take or take == JOINT_TAKE:
+        return list(range(len(rows)))
+    return [i for i, r in enumerate(rows) if row_take(r) == take]
+
+
 def _build_takes(project: Project) -> list[CalibrationTake]:
     """Build detection takes from the is_calibration rows of trials.csv."""
     takes: list[CalibrationTake] = []
@@ -238,6 +258,8 @@ class CalibrationView(QWidget):
         self._all_rows: dict[str, list] | None = None
         self._takes: list[CalibrationTake] = []
         self._take_results: list = []   # list[TakeCalibration], joint last
+        self._browse_rows: list[dict] = []  # every frame, before take filtering
+        self._display_map: list[int] = []   # display index -> index in _browse_rows
         self._cam_sizes: dict[str, tuple[int, int]] = {}
         self._cam_media: dict[str, dict[str, Path]] = {}
         self._merged_rows: list[dict] = []
@@ -537,12 +559,48 @@ class CalibrationView(QWidget):
         )
         self._cam_sizes = sizes
         self._cam_media = media
-        if merged:
-            self._calib_provider.setup(merged, sizes, media)
-            self._current_frame = min(self._current_frame, len(merged) - 1)
-            self._show_frame(self._current_frame)
-            self._update_frame_nav()
+        self._populate_take_combo()
+        self._set_browse_rows(merged)
         return True
+
+    def _populate_take_combo(self) -> None:
+        """List the takes as soon as they are known, joint entry last."""
+        names = [t.name for t in self._takes] + [JOINT_TAKE]
+        current = self._take_combo.currentText()
+        self._take_combo.blockSignals(True)
+        self._take_combo.clear()
+        self._take_combo.addItems(names)
+        self._take_combo.setCurrentText(current if current in names else JOINT_TAKE)
+        self._take_combo.blockSignals(False)
+
+    def _set_browse_rows(self, rows: list[dict]) -> None:
+        """Replace the full frame list and show the selected take's slice."""
+        self._browse_rows = rows
+        self._current_frame = 0
+        self._refresh_display()
+
+    def _full_index(self, display_idx: int) -> int:
+        """Translate a displayed frame position back to the merged-row index."""
+        if 0 <= display_idx < len(self._display_map):
+            return self._display_map[display_idx]
+        return display_idx
+
+    def _refresh_display(self) -> None:
+        """Show only the frames of the selected take (all of them if joint)."""
+        # Reprojection errors are keyed by position in the *unfiltered* merged
+        # list, so filtering the display needs a map back to it.
+        keep = take_row_indices(self._browse_rows, self._take_combo.currentText())
+        self._display_map = keep
+        rows = [self._browse_rows[i] for i in keep]
+
+        self._calib_provider.setup(rows, self._cam_sizes, self._cam_media)
+        if rows:
+            self._current_frame = min(self._current_frame, len(rows) - 1)
+            self._show_frame(self._current_frame)
+        else:
+            self._current_frame = 0
+            self._clear_overlays()
+        self._update_frame_nav()
 
     def _rescan_raw_media(self) -> None:
         self._load_take_media()
@@ -648,11 +706,9 @@ class CalibrationView(QWidget):
             f"{len(self._merged_rows)} merged frames ==="
         )
 
-        # Set up CalibFrameProvider and show first frame
-        self._calib_provider.setup(self._merged_rows, cam_sizes, cam_media)
-        self._current_frame = 0
-        self._update_frame_nav()
-        self._show_frame(0)
+        # Browse the detected frames, filtered to the selected take
+        self._populate_take_combo()
+        self._set_browse_rows(self._merged_rows)
 
         self._progress_bar.setVisible(False)
         self._progress_label.setVisible(False)
@@ -700,12 +756,8 @@ class CalibrationView(QWidget):
         self._log_msg("=== Calibration complete ===")
 
         # Default to the joint solution, which the worker emits last.
-        self._take_combo.blockSignals(True)
-        self._take_combo.clear()
-        self._take_combo.addItems([r.name for r in results])
-        self._take_combo.setCurrentText(results[-1].name)
-        self._take_combo.blockSignals(False)
         self._use_take_btn.setEnabled(True)
+        self._take_combo.setCurrentText(results[-1].name)
         self._on_take_selected(results[-1].name)
         self._on_use_take()
 
@@ -783,11 +835,27 @@ class CalibrationView(QWidget):
         return None
 
     def _on_take_selected(self, name: str) -> None:
-        """Show the chosen take's solution without committing it to disk."""
+        """Switch the browsed frames to this take, and preview its solution.
+
+        The combo is filled as soon as the takes load, so this runs before any
+        calibration exists — in that case it only changes what is displayed.
+        """
         result = self._selected_take()
+        self._current_frame = 0
+        self._refresh_display()   # builds _display_map for this take
+
         if result is None:
             return
-        self._frame_errors = result.frame_errors
+
+        # A single take's errors are keyed by position within that take's own
+        # rows; overlays look them up by index into the full merged list.
+        if result.name == JOINT_TAKE:
+            self._frame_errors = result.frame_errors
+        else:
+            self._frame_errors = {
+                self._full_index(i): errs
+                for i, errs in result.frame_errors.items()
+            }
         self._error_label.setText(f"Reprojection error: {result.error:.3f} px")
         self._apply_calibration(result.cgroup)
         self._show_frame(self._current_frame)
@@ -911,11 +979,7 @@ class CalibrationView(QWidget):
                     lbl.setText(str(len(rows)))
             self._calibrate_btn.setEnabled(bool(self._merged_rows))
             # Show only detected frames, consistent with post-detection behavior
-            self._calib_provider.setup(
-                self._merged_rows, self._cam_sizes, self._cam_media
-            )
-            self._update_frame_nav()
-            self._show_frame(0)
+            self._set_browse_rows(self._merged_rows)
         # Without saved corners the provider already holds the raw take frames
         # that _load_take_media() set up.
 
@@ -957,9 +1021,15 @@ class CalibrationView(QWidget):
         # Display images
         self._calib_grid.update_frame(frame_idx)
 
-        # Update charuco overlays
-        merged_row = self._merged_rows[frame_idx] if 0 <= frame_idx < len(self._merged_rows) else {}
-        cam_errors = self._frame_errors.get(frame_idx, {})
+        # Update charuco overlays. frame_idx is a position in the filtered
+        # display; corners and errors are keyed by the merged-row index.
+        full_idx = self._full_index(frame_idx)
+        merged_row = (
+            self._merged_rows[full_idx]
+            if 0 <= full_idx < len(self._merged_rows)
+            else {}
+        )
+        cam_errors = self._frame_errors.get(full_idx, {})
 
         for cam in self._project.cameras:
             overlay = self._charuco_overlays.get(cam)
@@ -1004,7 +1074,7 @@ class CalibrationView(QWidget):
         With one take: ("Frame N", (take, N)).
         With several: ("{take}, frame N", (take, N)).
         """
-        rows = self._merged_rows if self._merged_rows else self._calib_provider.merged_rows
+        rows = self._calib_provider.merged_rows
         if not rows or frame_idx < 0 or frame_idx >= len(rows):
             return "—", None
 
@@ -1036,8 +1106,9 @@ class CalibrationView(QWidget):
             return
 
         # Look up the corner's pixel position
-        if 0 <= self._current_frame < len(self._merged_rows):
-            merged_row = self._merged_rows[self._current_frame]
+        full_idx = self._full_index(self._current_frame)
+        if 0 <= full_idx < len(self._merged_rows):
+            merged_row = self._merged_rows[full_idx]
         else:
             return
         

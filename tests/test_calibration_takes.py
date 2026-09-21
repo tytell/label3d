@@ -244,3 +244,52 @@ class TestDriftComparison:
         three = BASE + [("cam3", [0.1, 0.0, 0.0], [0.0, -80.0, 40.0])]
         drifts = compare_calibrations(_group(three), _group(BASE))
         assert {(d.cam_a, d.cam_b) for d in drifts} == {("cam1", "cam2")}
+
+
+# --- Browsing frames one take at a time ---
+
+
+def _merged(take: str, frame: int, cams=("cam1", "cam2")) -> dict:
+    return {c: {"framenum": (take, frame)} for c in cams}
+
+
+class TestTakeDisplayFilter:
+    def test_row_take_reads_any_camera(self):
+        from label3d.widgets.calibration_view import row_take
+
+        assert row_take(_merged("PreCal", 20)) == "PreCal"
+        # A row only one camera saw still reports its take
+        assert row_take({"cam2": {"framenum": ("PostCal", 40)}}) == "PostCal"
+        assert row_take({}) is None
+
+    def test_filter_selects_one_take(self):
+        from label3d.widgets.calibration_view import take_row_indices
+
+        rows = [
+            _merged("PreCal", 0), _merged("PostCal", 0),
+            _merged("PreCal", 20), _merged("PostCal", 20),
+        ]
+        assert take_row_indices(rows, "PreCal") == [0, 2]
+        assert take_row_indices(rows, "PostCal") == [1, 3]
+
+    def test_joint_shows_every_frame(self):
+        from label3d.widgets.calibration_view import JOINT_TAKE, take_row_indices
+
+        rows = [_merged("PreCal", 0), _merged("PostCal", 0)]
+        assert take_row_indices(rows, JOINT_TAKE) == [0, 1]
+        assert take_row_indices(rows, None) == [0, 1]
+        assert take_row_indices(rows, "") == [0, 1]
+
+    def test_indices_map_back_to_unfiltered_rows(self):
+        """The map is what keeps reprojection errors aligned when filtering."""
+        from label3d.widgets.calibration_view import take_row_indices
+
+        rows = [_merged("A", 0), _merged("B", 0), _merged("B", 20), _merged("A", 20)]
+        keep = take_row_indices(rows, "B")
+        assert keep == [1, 2]
+        assert [rows[i] for i in keep] == [rows[1], rows[2]]
+
+    def test_unknown_take_shows_nothing(self):
+        from label3d.widgets.calibration_view import take_row_indices
+
+        assert take_row_indices([_merged("PreCal", 0)], "Missing") == []
