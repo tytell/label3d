@@ -27,6 +27,15 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".cine"}
 
 
+def calibration_images_error(cam_name: str, n_images: int) -> str:
+    """Message for the deprecated image-based calibration path."""
+    return (
+        f"Image-based calibration is deprecated: camera '{cam_name}' has "
+        f"{n_images} calibration image(s) and no video. Calibration must come "
+        "from videos, which are matched into takes in trials.csv."
+    )
+
+
 def _read_media_size(path: Path) -> tuple[int, int] | None:
     """Return (width, height) of an image or video file, or None on failure."""
     ext = path.suffix.lower()
@@ -139,6 +148,8 @@ class DetectionWorker(QThread):
                 rows: list = []
 
                 if image_files:
+                    raise ValueError(calibration_images_error(cam_name, len(image_files)))
+                    # Deprecated image path, kept for reference:
                     cam_media[cam_name] = image_files
                     self.progress.emit(
                         f"  {cam_name}: detecting corners in {len(image_files)} images..."

@@ -221,12 +221,13 @@ def write_flat_folder(
     experiments: list[dict],
     strategy: str,
     calib_keyword: str = "calib",
+    calib_keywords: list[str] | None = None,
     charuco_config: dict | None = None,
 ) -> Path:
     """Reorganize a multi-experiment project into a flat folder for testing setup_project.
 
     Copies videos from all experiments, the single per-camera .slp files, and
-    calibration images from each experiment into a single flat directory with
+    calibration videos from each experiment into a single flat directory with
     collision-free filenames. Also writes a setup_config.toml.
 
     Args:
@@ -235,13 +236,22 @@ def write_flat_folder(
         cam_names: Ordered list of camera names
         experiments: List of dicts with keys "name", "trial_name", "num_frames"
         strategy: Naming strategy — "number", "datestamp", or "datestamp_simple"
-        calib_keyword: Keyword used to tag calibration files
+        calib_keyword: Legacy single keyword used to tag calibration files
+        calib_keywords: Take keywords (e.g. ["PreCal", "PostCal"]); each names one
+            calibration take. Defaults to charuco_config["takes"], else [calib_keyword]
         charuco_config: Charuco board config dict (optional, for setup_config.toml)
 
     Returns:
         Path to the flat folder
     """
     flat_dir.mkdir(parents=True, exist_ok=True)
+
+    if calib_keywords:
+        takes = list(calib_keywords)
+    elif charuco_config and charuco_config.get("takes"):
+        takes = list(charuco_config["takes"])
+    else:
+        takes = [calib_keyword]
 
     base_time = 51667.519576
     time_offset_per_cam = 0.003
@@ -270,8 +280,8 @@ def write_flat_folder(
             if src.exists():
                 shutil.copy2(str(src), str(flat_dir / f"{cam_name}.slp"))
 
-    # --- Copy calibration images from each experiment ---
-    # Files are already named {calib_keyword}_{exp}_{cam}_board_NNN.png, so copy as-is.
+    # --- Copy calibration media from each experiment ---
+    # Files are already named to carry the experiment, take and camera, so copy as-is.
     for exp in experiments:
         exp_name = exp["name"]
         calib_dir = project_dir / "experiments" / exp_name / "calibration"
@@ -279,9 +289,9 @@ def write_flat_folder(
             for cam_name in cam_names:
                 cam_calib = calib_dir / cam_name
                 if cam_calib.is_dir():
-                    for img in sorted(cam_calib.iterdir()):
-                        if img.is_file():
-                            shutil.copy2(str(img), str(flat_dir / img.name))
+                    for media in sorted(cam_calib.iterdir()):
+                        if media.is_file():
+                            shutil.copy2(str(media), str(flat_dir / media.name))
 
     # --- Write setup_config.toml ---
     exp_names = [e["name"] for e in experiments]
@@ -299,6 +309,7 @@ def write_flat_folder(
             "output_dir": str(flat_dir.parent / f"{flat_dir.name}_project"),
             "camera_names": cam_names,
             "calib_keyword": calib_keyword,
+            "calib_keywords": takes,
             "experiment_keywords": exp_names,
             "match_strategy": match_strategy,
             "datestamp_window_sec": datestamp_window if "datestamp" in strategy else 0.0,

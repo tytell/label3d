@@ -1,7 +1,7 @@
 """Synthetic test data generator for label3d."""
 
 from synthetic.cameras import build_cameras, load_config
-from synthetic.charuco import generate_charuco_images
+from synthetic.charuco import generate_charuco_images, generate_charuco_videos
 from synthetic.checks import run_sanity_checks
 from synthetic.motion import compute_body_poses, compute_world_points
 from synthetic.projection import project_all_frames, project_points
@@ -21,6 +21,7 @@ __all__ = [
     "compute_body_poses",
     "compute_world_points",
     "generate_charuco_images",
+    "generate_charuco_videos",
     "load_config",
     "project_all_frames",
     "project_points",

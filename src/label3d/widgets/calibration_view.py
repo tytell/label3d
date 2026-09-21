@@ -45,6 +45,7 @@ from label3d.workers.calibration_worker import (
     VIDEO_EXTENSIONS,
     CalibrationWorker,
     DetectionWorker,
+    calibration_images_error,
 )
 
 # Default Charuco board params (from DESIGN.md)
@@ -107,6 +108,13 @@ def _scan_raw_media(
     )
 
     if is_image:
+        cam, files = next(
+            (c, cam_media[c])
+            for c in cam_names
+            if cam_media.get(c) and cam_media[c][0].suffix.lower() in IMAGE_EXTENSIONS
+        )
+        raise ValueError(calibration_images_error(cam, len(files)))
+        # Deprecated image path, kept for reference:
         max_n = max((len(cam_media.get(c, [])) for c in cam_names), default=0)
         merged: list[dict] = []
         for i in range(max_n):
@@ -305,10 +313,7 @@ class CalibrationView(QWidget):
         self._skip_spin = QSpinBox()
         self._skip_spin.setRange(1, 500)
         self._skip_spin.setValue(calib_cfg.get("frame_skip", _FRAME_SKIP_DEFAULT))
-        self._skip_spin.setToolTip(
-            "Detect corners on every Nth video frame. "
-            "Image folders always use every image."
-        )
+        self._skip_spin.setToolTip("Detect corners on every Nth video frame.")
         detect_form.addRow("Video frame step:", self._skip_spin)
         left_layout.addWidget(detect_group)
 
@@ -436,17 +441,21 @@ class CalibrationView(QWidget):
                 panel._charuco_overlay = overlay
                 self._charuco_overlays[cam] = overlay
 
-        # Pre-populate frame provider so images appear before corner detection
-        raw_merged, raw_sizes, raw_media = _scan_raw_media(
-            project.root, project.active_experiment, project.cameras, self._skip
-        )
-        self._cam_media = raw_media
-        self._update_skip_enabled()
-        if raw_merged:
-            self._cam_sizes = raw_sizes
-            self._calib_provider.setup(raw_merged, raw_sizes, raw_media)
-            self._show_frame(0)
-            self._update_frame_nav()
+        # Pre-populate frame provider so frames appear before corner detection
+        try:
+            raw_merged, raw_sizes, raw_media = _scan_raw_media(
+                project.root, project.active_experiment, project.cameras, self._skip
+            )
+        except ValueError as exc:
+            self._log_msg(f"  {exc}")
+            self._detect_btn.setEnabled(False)
+        else:
+            self._cam_media = raw_media
+            if raw_merged:
+                self._cam_sizes = raw_sizes
+                self._calib_provider.setup(raw_merged, raw_sizes, raw_media)
+                self._show_frame(0)
+                self._update_frame_nav()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -470,16 +479,6 @@ class CalibrationView(QWidget):
         """Stride between video frames offered for corner detection."""
         return self._skip_spin.value()
 
-    def _media_is_images(self) -> bool:
-        """True if the active experiment's calibration media are still images."""
-        return any(
-            files and files[0].suffix.lower() in IMAGE_EXTENSIONS
-            for files in self._cam_media.values()
-        )
-
-    def _update_skip_enabled(self) -> None:
-        self._skip_spin.setEnabled(not self._media_is_images())
-
     def _on_skip_changed(self) -> None:
         self._settings_timer.start()
         # The browsable frame list is built from the same stride, so it has to
@@ -488,15 +487,17 @@ class CalibrationView(QWidget):
             self._rescan_raw_media()
 
     def _rescan_raw_media(self) -> None:
-        raw_merged, raw_sizes, raw_media = _scan_raw_media(
-            self._project.root,
-            self._project.active_experiment,
-            self._project.cameras,
-            self._skip,
-        )
+        try:
+            raw_merged, raw_sizes, raw_media = _scan_raw_media(
+                self._project.root,
+                self._project.active_experiment,
+                self._project.cameras,
+                self._skip,
+            )
+        except ValueError:
+            return
         self._cam_sizes = raw_sizes
         self._cam_media = raw_media
-        self._update_skip_enabled()
         if not raw_merged:
             return
         self._calib_provider.setup(raw_merged, raw_sizes, raw_media)
@@ -701,15 +702,20 @@ class CalibrationView(QWidget):
         self._clear_overlays()
 
         # Always scan raw media to get cam_sizes and cam_media
-        raw_merged, raw_sizes, raw_media = _scan_raw_media(
-            self._project.root,
-            self._project.active_experiment,
-            self._project.cameras,
-            self._skip,
-        )
+        self._detect_btn.setEnabled(True)
+        try:
+            raw_merged, raw_sizes, raw_media = _scan_raw_media(
+                self._project.root,
+                self._project.active_experiment,
+                self._project.cameras,
+                self._skip,
+            )
+        except ValueError as exc:
+            self._log_msg(f"  {exc}")
+            self._detect_btn.setEnabled(False)
+            raw_merged, raw_sizes, raw_media = [], {}, {}
         self._cam_sizes = raw_sizes
         self._cam_media = raw_media
-        self._update_skip_enabled()
 
         # Try loading saved corners per camera
         exp_dir = self._project.root / "experiments" / self._project.active_experiment

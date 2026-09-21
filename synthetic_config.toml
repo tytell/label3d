@@ -116,6 +116,9 @@ marker_length = 17.0         # mm — side length of ArUco markers within square
 marker_bits = 5              # ArUco marker bit depth (4, 5, 6, or 7)
 dict_size = 50               # ArUco dictionary size (50, 100, 250, 1000)
 num_images = 12              # number of board poses to render per camera
+takes = ["PreCal", "PostCal"]  # calibration takes — one video per take per camera
+frames_per_pose = 20         # frames each pose is held for in the calibration video
+fps = 30                     # frame rate of the generated calibration videos
 board_image_resolution = 2000 # px — resolution of the generated flat board image
 background_color = [40, 40, 40]  # RGB background for calibration images
 

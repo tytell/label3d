@@ -229,6 +229,122 @@ def _render_board_in_camera(
     return output
 
 
+def _board_corners_world(
+    pos: np.ndarray,
+    R_board: np.ndarray,
+    board_width_cm: float,
+    board_height_cm: float,
+) -> np.ndarray:
+    """Four board corners in the world frame for one pose, centered on pos."""
+    half_w, half_h = board_width_cm / 2, board_height_cm / 2
+    local_corners = np.array([
+        [-half_w, -half_h, 0],  # top-left
+        [ half_w, -half_h, 0],  # top-right
+        [ half_w,  half_h, 0],  # bottom-right
+        [-half_w,  half_h, 0],  # bottom-left
+    ], dtype=np.float64)
+    return (R_board @ local_corners.T).T + pos
+
+
+def generate_charuco_videos(
+    charuco_cfg: dict,
+    cameras: dict,
+    output_dir: Path,
+    experiment_name: str = "",
+    takes: list[str] | None = None,
+) -> dict[str, list[Path]]:
+    """Generate synthetic Charuco calibration videos, one per (camera, take).
+
+    Videos are written to output_dir/calibration/{cam_name}/ as
+    {experiment_name}_{take}_{cam_name}.mp4. All cameras in a take see the same
+    board poses at the same frame numbers, so the takes are simultaneous
+    recordings in the sense Phase 9 matching expects.
+
+    Each board pose is held for `frames_per_pose` frames so that detecting every
+    Nth frame (the calibration panel's default stride) samples every pose.
+
+    Returns {take: [written paths]}.
+    """
+    takes = takes or charuco_cfg.get("takes", ["PreCal", "PostCal"])
+    frames_per_pose = charuco_cfg.get("frames_per_pose", 20)
+    fps = charuco_cfg.get("fps", 30)
+
+    board, board_img = _make_charuco_board(charuco_cfg)
+    bg_color = charuco_cfg.get("background_color", [40, 40, 40])
+    base_seed = charuco_cfg.get("placement", {}).get("seed", 91571)
+
+    square_length_cm = charuco_cfg["square_length"] / 10.0
+    board_width_cm = charuco_cfg["squares_x"] * square_length_cm
+    board_height_cm = charuco_cfg["squares_y"] * square_length_cm
+
+    cal_dir = output_dir / "calibration"
+    written: dict[str, list[Path]] = {}
+
+    for ti, take in enumerate(takes):
+        # A different pose set per take, but identical across cameras within one.
+        rng = np.random.default_rng(base_seed + ti)
+        poses = _compute_board_poses(charuco_cfg, cameras, rng)
+        written[take] = []
+
+        for cam_name, cam in cameras.items():
+            cam_dir = cal_dir / cam_name
+            cam_dir.mkdir(parents=True, exist_ok=True)
+
+            w, h = cam["resolution"]
+            name = "_".join(p for p in (experiment_name, take, cam_name) if p) + ".mp4"
+            out_path = cam_dir / name
+
+            writer = cv2.VideoWriter(
+                str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h)
+            )
+            if not writer.isOpened():
+                raise RuntimeError(f"Could not open video writer for {out_path}")
+
+            for pos, R_board in poses:
+                corners_3d = _board_corners_world(
+                    pos, R_board, board_width_cm, board_height_cm
+                )
+                img = _render_board_in_camera(board_img, corners_3d, cam, bg_color)
+                for _ in range(frames_per_pose):
+                    writer.write(img)
+            writer.release()
+
+            written[take].append(out_path)
+            n_frames = len(poses) * frames_per_pose
+            print(f"  {out_path.name} ({n_frames} frames, {len(poses)} poses)")
+
+    _verify_charuco_videos(charuco_cfg, written, frames_per_pose)
+    return written
+
+
+def _verify_charuco_videos(
+    charuco_cfg: dict, written: dict[str, list[Path]], frames_per_pose: int
+) -> None:
+    """Check that one frame per board pose is detectable in each written video."""
+    print("\nCharuco video detection verification...")
+    board, _ = _make_charuco_board(charuco_cfg)
+    detector = cv2.aruco.CharucoDetector(board)
+    num_poses = charuco_cfg["num_images"]
+
+    for take, paths in written.items():
+        for path in paths:
+            cap = cv2.VideoCapture(str(path))
+            detected = 0
+            for pi in range(num_poses):
+                # Sample the middle of each held pose.
+                cap.set(cv2.CAP_PROP_POS_FRAMES, pi * frames_per_pose + frames_per_pose // 2)
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                corners, ids, _, _ = detector.detectBoard(frame)
+                if corners is not None and len(corners) > 0:
+                    detected += 1
+            cap.release()
+            ratio = detected / num_poses if num_poses else 0
+            status = "OK" if ratio >= 0.8 else "LOW"
+            print(f"  [{take}] {path.name}: {detected}/{num_poses} poses ({ratio:.0%})  {status}")
+
+
 def generate_charuco_images(
     charuco_cfg: dict,
     cameras: dict,
@@ -268,18 +384,9 @@ def generate_charuco_images(
         cam_dir.mkdir(parents=True, exist_ok=True)
 
         for pi, (pos, R_board) in enumerate(poses):
-            # Board corners in world frame (centered on pos)
-            # Local corners: centered, X along width, Y along height
-            half_w, half_h = board_width_cm / 2, board_height_cm / 2
-            local_corners = np.array([
-                [-half_w, -half_h, 0],  # top-left
-                [ half_w, -half_h, 0],  # top-right
-                [ half_w,  half_h, 0],  # bottom-right
-                [-half_w,  half_h, 0],  # bottom-left
-            ], dtype=np.float64)
-
-            # Transform to world
-            corners_3d = (R_board @ local_corners.T).T + pos
+            corners_3d = _board_corners_world(
+                pos, R_board, board_width_cm, board_height_cm
+            )
 
             # Check that at least some of the board is visible
             corners_2d = project_points(corners_3d, cam["K"], cam["R"], cam["t"], cam["dist"])

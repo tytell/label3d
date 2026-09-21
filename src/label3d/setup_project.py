@@ -123,6 +123,16 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         else:
             assignment.unmatched.append(f)
 
+    if calib_images:
+        names = ", ".join(sorted(f.name for _, f in calib_images)[:5])
+        raise ValueError(
+            f"Image-based calibration is deprecated: found {len(calib_images)} "
+            f"calibration image(s) in {source} ({names}"
+            f"{', ...' if len(calib_images) > 5 else ''}). "
+            "Calibration must come from videos, which are matched into takes. "
+            "Remove the images or record calibration video instead."
+        )
+
     # Build calibration dict
     for camera, f in calib_videos:
         assignment.calibration.setdefault(camera, []).append(f)

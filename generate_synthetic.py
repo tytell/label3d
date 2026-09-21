@@ -50,7 +50,7 @@ from synthetic import (
     build_cameras,
     compute_body_poses,
     compute_world_points,
-    generate_charuco_images,
+    generate_charuco_videos,
     load_config,
     project_all_frames,
     run_sanity_checks,
@@ -189,12 +189,12 @@ def main():
         )
         print(f"    {points_csv_path}")
 
-        # Charuco calibration images (per-experiment since cameras differ)
+        # Charuco calibration videos (per-experiment since cameras differ)
         if charuco_cfg and not args.no_charuco:
-            print("  Generating Charuco calibration images...")
-            generate_charuco_images(
+            print("  Generating Charuco calibration videos...")
+            generate_charuco_videos(
                 charuco_cfg, cameras, experiment_dir,
-                experiment_name=exp_name, calib_keyword="calib",
+                experiment_name=exp_name,
             )
 
         # Sanity checks

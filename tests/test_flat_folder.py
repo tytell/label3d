@@ -55,6 +55,17 @@ class TestMakeFlatFilename:
             _make_flat_filename("cam1", "exp1", 0, "badstrategy", "mp4")
 
 
+CALIB_TAKES = ["PreCal", "PostCal"]
+
+
+def _trial_videos(names) -> list[str]:
+    """Trial .mp4 names only — calibration takes are videos too now."""
+    return [
+        n for n in names
+        if n.endswith(".mp4") and not any(t in n for t in CALIB_TAKES)
+    ]
+
+
 # --- Integration tests: write_flat_folder ---
 
 
@@ -77,13 +88,14 @@ def fake_project(tmp_path: Path) -> tuple[Path, list[str], list[dict]]:
         for cam in cam_names:
             (videos / f"{cam}_{exp_name}_{trial}.mp4").write_bytes(b"\x00" * 64)
 
-        # experiments/{exp}/calibration/{cam}/ — names already carry the keyword
+        # experiments/{exp}/calibration/{cam}/ — one video per take, names
+        # already carry the experiment, take keyword and camera
         calib = exp_dir / "calibration"
         for cam in cam_names:
             cam_dir = calib / cam
             cam_dir.mkdir(parents=True)
-            for i in range(3):
-                name = f"calib_{exp_name}_{cam}_board_{i:03d}.png"
+            for take in CALIB_TAKES:
+                name = f"{exp_name}_{take}_{cam}.mp4"
                 (cam_dir / name).write_bytes(b"\x00" * 16)
 
     # slp/ (at project root, one file per camera)
@@ -107,16 +119,20 @@ class TestWriteFlatFolder:
         assert "cam1.slp" in names
         assert "cam2.slp" in names
 
-    def test_calibration_files_have_calib_keyword(self, fake_project, tmp_path):
+    def test_calibration_files_carry_take_keywords(self, fake_project, tmp_path):
         proj, cam_names, experiments = fake_project
         flat = tmp_path / "flat"
-        write_flat_folder(proj, flat, cam_names, experiments, strategy="number", calib_keyword="calib")
+        write_flat_folder(
+            proj, flat, cam_names, experiments,
+            strategy="number", calib_keywords=CALIB_TAKES,
+        )
 
         names = {f.name for f in flat.iterdir()}
-        calib_files = [n for n in names if n.startswith("calib_")]
-        # 2 cameras × 3 board images = 6 calibration files
-        assert len(calib_files) == 6
-        assert all("calib_" in n for n in calib_files)
+        calib_files = [n for n in names if any(t in n for t in CALIB_TAKES)]
+        # 2 cameras x 2 takes = 4 calibration videos
+        assert len(calib_files) == 4
+        for take in CALIB_TAKES:
+            assert sum(1 for n in calib_files if take in n) == len(cam_names)
 
     def test_datestamp_creates_yh_names(self, fake_project, tmp_path):
         proj, cam_names, experiments = fake_project
@@ -124,7 +140,7 @@ class TestWriteFlatFolder:
         write_flat_folder(proj, flat, cam_names, experiments, strategy="datestamp")
 
         names = {f.name for f in flat.iterdir()}
-        mp4s = [n for n in names if n.endswith(".mp4")]
+        mp4s = _trial_videos(names)
         assert len(mp4s) == 2
         assert all("Y" in n and "H" in n for n in mp4s)
 
@@ -134,7 +150,7 @@ class TestWriteFlatFolder:
         write_flat_folder(proj, flat, cam_names, experiments, strategy="datestamp_simple")
 
         names = {f.name for f in flat.iterdir()}
-        mp4s = [n for n in names if n.endswith(".mp4")]
+        mp4s = _trial_videos(names)
         assert len(mp4s) == 2
         # Should NOT have Y...H... format
         assert all("Y" not in n for n in mp4s)
