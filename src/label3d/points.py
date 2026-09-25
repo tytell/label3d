@@ -130,12 +130,14 @@ class PointsStore(QObject):
         df = pd.read_csv(path, header=[0, 1], index_col=[0, 1, 2, 3, 4])
         df.index.names = INDEX_NAMES
         # Ensure frame and instance are int
+        # experiment/trial are names, not numbers: all-digit ones ("20260619")
+        # are read as int64 and would not match the strings from trials.csv.
         df.index = df.index.set_levels(
-            [df.index.levels[0],          # experiment: keep as-is
-             df.index.levels[1],          # trial: keep as-is
+            [df.index.levels[0].astype(str),  # experiment
+             df.index.levels[1].astype(str),  # trial
              df.index.levels[2].astype(int),  # frame
              df.index.levels[3].astype(int),  # instance
-             df.index.levels[4]],         # bodypart: keep as-is
+             df.index.levels[4].astype(str)],  # bodypart
         )
         # Ensure numeric columns are float
         for cam in df.columns.get_level_values(0).unique():

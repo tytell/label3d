@@ -85,7 +85,10 @@ class Project:
         if not trials_path.exists():
             raise FileNotFoundError(f"trials.csv not found at {trials_path}")
 
-        trials_df = pd.read_csv(trials_path)
+        # experiment and trial names are keys everywhere downstream (dict keys,
+        # path components, points.csv index levels), so they must stay strings —
+        # an all-digit name like "20260619" is otherwise inferred as int64.
+        trials_df = pd.read_csv(trials_path, dtype={"experiment": str, "trial": str})
         cameras = _extract_cameras(trials_df.columns.tolist())
 
         # --- project.toml at project root ---
