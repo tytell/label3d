@@ -57,12 +57,28 @@ class TestMissingOptionalFiles:
         proj = Project.load(tmp_path)
         assert proj.skeleton is None
 
-    def test_missing_points_csv_is_none(self, tmp_path):
-        """No points.csv → project.points is None, no error raised."""
+    def test_missing_points_csv_gives_empty_store(self, tmp_path):
+        """No points.csv → an empty store ready to label into, no error raised."""
         _copy_project_without(TEST_PROJECT, tmp_path,
                                exclude={"experiments/exp1/points.csv"})
         proj = Project.load(tmp_path)
-        assert proj.points is None
+        assert proj.points is not None
+        assert proj.points.df.empty
+
+    def test_missing_points_csv_store_knows_where_to_save(self, tmp_path):
+        """The empty store carries the path its first save should write to."""
+        _copy_project_without(TEST_PROJECT, tmp_path,
+                               exclude={"experiments/exp1/points.csv"})
+        proj = Project.load(tmp_path)
+        assert proj.points._save_path == tmp_path / "experiments/exp1/points.csv"
+
+    def test_missing_points_csv_store_has_the_experiment_cameras(self, tmp_path):
+        """Columns come from the experiment, so points can be set immediately."""
+        _copy_project_without(TEST_PROJECT, tmp_path,
+                               exclude={"experiments/exp1/points.csv"})
+        proj = Project.load(tmp_path)
+        views = set(proj.points.df.columns.get_level_values("view"))
+        assert views == set(proj.cameras) | {"3d"}
 
     def test_missing_calibration_toml_flagged(self, tmp_path):
         """No calibration.toml → has_calibration=False, no error."""
