@@ -51,6 +51,10 @@ class ExperimentInfo:
     camera_info: dict[str, CameraInfo] = field(default_factory=dict)
     # Calibration takes for this experiment, from the is_calibration rows
     calibration_takes: list[TrialInfo] = field(default_factory=list)
+    # Base directory for videos referenced in place rather than copied into the
+    # project, from the [video_roots] section of project.toml. None for the
+    # classic layout, where videos live in videos/ and cells are bare filenames.
+    video_root: Path | None = None
 
 
 @dataclass
@@ -84,6 +88,18 @@ class Project:
         trials_df = pd.read_csv(trials_path)
         cameras = _extract_cameras(trials_df.columns.tolist())
 
+        # --- project.toml at project root ---
+        # Read before the experiment loop: [video_roots] is needed to resolve
+        # video paths while trial lengths are computed below.
+        config: dict = {}
+        config_path = root / "project.toml"
+        if config_path.exists():
+            config = toml.load(config_path)
+        video_roots = {
+            str(name): Path(str(value)).expanduser()
+            for name, value in config.get("video_roots", {}).items()
+        }
+
         # --- Build ExperimentInfo for each experiment ---
         if "experiment" in trials_df.columns:
             experiment_names = sorted(trials_df["experiment"].unique().tolist())
@@ -91,6 +107,7 @@ class Project:
             experiment_names = ["default"]
 
         experiments: dict[str, ExperimentInfo] = {}
+        missing: list[str] = []
         for exp_name in experiment_names:
             exp_dir = root / "experiments" / exp_name
 
@@ -101,8 +118,12 @@ class Project:
 
             exp_trials = _parse_trials(exp_rows, cameras)
             videos_dir = exp_dir / "videos"
+            video_root = video_roots.get(exp_name)
             for trial in exp_trials:
-                _resolve_trial_length(trial, videos_dir)
+                _resolve_trial_length(trial, videos_dir, video_root, root)
+            missing.extend(
+                _missing_references(exp_name, exp_trials, video_root, videos_dir, root)
+            )
 
             # Calibration take videos live under calibration/{cam}/, not
             # videos/, so their lengths are resolved on demand instead.
@@ -130,6 +151,17 @@ class Project:
                 has_calibration=has_calibration,
                 camera_info=camera_info,
                 calibration_takes=exp_takes,
+                video_root=video_root,
+            )
+
+        # Videos referenced outside the project must exist — a broken reference
+        # is a stale [video_roots] entry or an unmounted drive, and failing here
+        # names the trial and path instead of failing later inside OpenCV.
+        if missing:
+            raise FileNotFoundError(
+                "Referenced videos not found:\n  "
+                + "\n  ".join(missing)
+                + "\nCheck the [video_roots] section of project.toml."
             )
 
         active_experiment = experiment_names[0]
@@ -149,12 +181,11 @@ class Project:
                 points = PointsStore.from_csv(points_path)
             except Exception:
                 pass
-
-        # --- project.toml at project root ---
-        config: dict = {}
-        config_path = root / "project.toml"
-        if config_path.exists():
-            config = toml.load(config_path)
+        else:
+            points = PointsStore.create_empty(
+                cameras=active.cameras, bodyparts=[], experiment_name=active_experiment
+            )
+            points._save_path = points_path
 
         return cls(
             root=root,
@@ -173,17 +204,22 @@ class Project:
     def video_path(self, trial_name: str, camera: str) -> Path:
         """Resolve absolute path to a trial or calibration-take video.
 
-        Calibration takes live in calibration/{camera}/, trials in videos/.
+        Calibration takes live in calibration/{camera}/, trials in videos/ —
+        unless the cell names a path, in which case the video is referenced
+        where it already lives (see _resolve_video).
         """
         exp_dir = self.root / "experiments" / self.active_experiment
+        video_root = self.experiments[self.active_experiment].video_root
         try:
             trial = self.get_trial(trial_name)
         except KeyError:
             take = self.get_calibration_take(trial_name)
             filename, _, _ = take.camera_videos[camera]
-            return exp_dir / "calibration" / camera / filename
-        filename, _, _ = trial.camera_videos[camera]
-        return exp_dir / "videos" / filename
+            default_dir = exp_dir / "calibration" / camera
+        else:
+            filename, _, _ = trial.camera_videos[camera]
+            default_dir = exp_dir / "videos"
+        return _resolve_video(filename, video_root, default_dir, self.root)
 
     def calibration_path(self, experiment: str | None = None) -> Path:
         """Path to an experiment's calibration.toml (default: the active one)."""
@@ -328,7 +364,10 @@ class Project:
             except Exception:
                 self.points = None
         else:
-            self.points = None
+            self.points = PointsStore.create_empty(
+                cameras=exp.cameras, bodyparts=[], experiment_name=name
+            )
+            self.points._save_path = points_path
 
     @property
     def calibration_takes(self) -> list[TrialInfo]:
@@ -424,15 +463,86 @@ def _parse_rows(df: pd.DataFrame, cameras: list[str]) -> list[TrialInfo]:
     return trials
 
 
-def _resolve_trial_length(trial: TrialInfo, videos_dir: Path):
+def _is_blank_cell(cell: str) -> bool:
+    """True for a camera cell that names no video (blank, or pandas NaN)."""
+    return not cell or cell.strip().lower() in ("", "nan")
+
+
+def _resolve_video(
+    cell: str, video_root: Path | None, default_dir: Path, project_root: Path
+) -> Path:
+    """Resolve one trials.csv camera cell to a video path.
+
+    Three forms are accepted, in order:
+
+    1. an absolute path — used as is;
+    2. a path-valued cell, or any cell when the experiment has a ``video_root``
+       — resolved against that root, falling back to the project root;
+    3. a bare filename with no ``video_root`` — the classic layout, resolved
+       against ``default_dir`` (``videos/`` for trials, ``calibration/{cam}/``
+       for takes).
+
+    Projects written before external video references existed have no
+    ``video_root`` and only bare filenames, so they always take branch 3.
+    """
+    path = Path(cell)
+    if path.is_absolute():
+        return path
+    if video_root is not None:
+        return video_root / path
+    if len(path.parts) > 1:
+        return project_root / path
+    return default_dir / path
+
+
+def _is_external_cell(cell: str, video_root: Path | None) -> bool:
+    """True when a cell references a video outside the project's videos/ dir."""
+    if _is_blank_cell(cell):
+        return False
+    return video_root is not None or len(Path(cell).parts) > 1 or Path(cell).is_absolute()
+
+
+def _missing_references(
+    experiment: str,
+    trials: list[TrialInfo],
+    video_root: Path | None,
+    videos_dir: Path,
+    project_root: Path,
+) -> list[str]:
+    """Describe every external video reference that does not exist on disk.
+
+    Only external references are checked: a bare filename under videos/ may be
+    legitimately absent (a trial one camera did not record), and those projects
+    predate this check.
+    """
+    problems = []
+    for trial in trials:
+        for cam, (filename, _, _) in trial.camera_videos.items():
+            if not _is_external_cell(filename, video_root):
+                continue
+            path = _resolve_video(filename, video_root, videos_dir, project_root)
+            if not path.exists():
+                problems.append(f"{experiment}/{trial.name} [{cam}]: {path}")
+    return problems
+
+
+def _resolve_trial_length(
+    trial: TrialInfo,
+    videos_dir: Path,
+    video_root: Path | None = None,
+    project_root: Path | None = None,
+):
     """Compute trial length = min(end - start + 1) across cameras.
 
     If end is None, read frame count from the video file.
     """
+    root = project_root if project_root is not None else videos_dir.parent.parent
     lengths = []
     for cam, (filename, start, end) in trial.camera_videos.items():
         if end is None:
-            video_path = videos_dir / filename
+            if _is_blank_cell(filename):
+                continue
+            video_path = _resolve_video(filename, video_root, videos_dir, root)
             if video_path.exists():
                 cap = cv2.VideoCapture(str(video_path))
                 total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))

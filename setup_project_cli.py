@@ -5,6 +5,11 @@ Usage:
     uv run python setup_project_cli.py                  # interactive mode
     uv run python setup_project_cli.py config.toml      # config file mode
 
+    # from existing .slp files, videos referenced where they already live
+    # (see docs/project_setup_from_sleap.md)
+    uv run python setup_project_cli.py --from-slp labels/ \
+        --output /path/to/project --cameras left,right,bottom
+
 Config file format (TOML):
     [setup]
     source_dir = "/path/to/flat/folder"
@@ -18,6 +23,14 @@ Config file format (TOML):
     trial_keyword = "Trial"      # only for keyword strategy
     trial_regex = "([A-Z]+\\d+_\\d+)"  # only for regex strategy
     mtime_window_sec = 60.0      # only for mtime strategy
+
+    # SLP-first setup: give slp_files instead of source_dir
+    slp_files = ["/path/to/labels"]          # .slp files or folders holding them
+    video_mode = "reference"                 # "reference" | "copy" | "move"
+    video_search_dirs = ["/mnt/videos"]      # searched when a recorded path moved
+    allow_missing_videos = false             # true: proceed with the videos that were found
+    calibration_toml = "/path/calibration.toml"   # or calibration_dir to search
+    import_labels = true                     # import SLP labels into points.csv
 
     [project]
     name = "my_experiment"
@@ -43,7 +56,9 @@ import toml
 from label3d.setup_project import (
     SetupConfig,
     classify_files,
+    classify_slp_files,
     execute_setup,
+    import_labels,
     preview_assignment,
 )
 
@@ -170,17 +185,169 @@ def save_config_toml(config: SetupConfig, path: Path) -> None:
         setup["mtime_window_sec"] = config.mtime_window_sec
     elif config.match_strategy == "datestamp":
         setup["datestamp_window_sec"] = config.datestamp_window_sec
+    if config.slp_paths:
+        setup["slp_files"] = [str(p) for p in config.slp_paths]
+        setup["video_mode"] = config.effective_video_mode()
+        if config.video_search_dirs:
+            setup["video_search_dirs"] = [str(p) for p in config.video_search_dirs]
+        if config.allow_missing_videos:
+            setup["allow_missing_videos"] = True
+        if config.calibration_toml:
+            setup["calibration_toml"] = str(config.calibration_toml)
+        if config.calibration_dir:
+            setup["calibration_dir"] = str(config.calibration_dir)
     if config.charuco:
         data["charuco"] = config.charuco
     with open(path, "w") as f:
         toml.dump(data, f)
 
 
+def prompt_trial_matching() -> dict:
+    """Prompt for the trial-matching strategy and its parameters."""
+    match_strategy = prompt_choice(
+        "Trial matching strategy", ["keyword", "regex", "number", "datestamp", "mtime"]
+    )
+    settings = {
+        "match_strategy": match_strategy,
+        "trial_keyword": "Trial",
+        "trial_regex": "",
+        "mtime_window_sec": 60.0,
+        "datestamp_window_sec": 0.0,
+    }
+    if match_strategy == "keyword":
+        settings["trial_keyword"] = (
+            input("  Trial keyword (e.g. Trial, trial) [Trial]: ").strip() or "Trial"
+        )
+    elif match_strategy == "regex":
+        print("  Regex matched against filename stem; named group 'trial' or group 1 becomes the trial key.")
+        print("  Example: ([A-Z]+\\d+_\\d+) matches 'PS18_20' from 'PS18_20_Ventral.mp4'")
+        while not settings["trial_regex"]:
+            settings["trial_regex"] = input("  Pattern: ").strip()
+            if not settings["trial_regex"]:
+                print("  Please enter a pattern.")
+    elif match_strategy == "mtime":
+        settings["mtime_window_sec"] = prompt_float("  Clustering window (seconds)", 60.0)
+    elif match_strategy == "datestamp":
+        settings["datestamp_window_sec"] = prompt_float(
+            "  Timestamp tolerance (seconds, 0=exact match)", 0.0
+        )
+    return settings
+
+
+def run_interactive_slp(dry_run: bool = False, do_import: bool = True) -> None:
+    """Interactive setup from existing .slp files, referencing videos in place."""
+    print()
+    print("--- Source SLP files ---")
+    print("  Give a folder of .slp files, or one .slp file. The videos they")
+    print("  reference stay where they are; only the .slp files are copied in.")
+    slp_source = prompt_path("SLP file or folder", must_exist=True)
+    output_dir = prompt_path("Output project folder")
+    project_name = input(f"Project name [{output_dir.name}]: ").strip() or output_dir.name
+
+    print()
+    camera_names = prompt_list("Camera names (comma-separated, e.g. left,right,bottom)")
+    print("  Matched against each video's filename, then its parent folder name.")
+
+    print()
+    print("--- Video search ---")
+    print("  Extra folders to search when a .slp records a path the video has moved from.")
+    search_raw = input("Search folders (comma-separated, blank for none): ").strip()
+    video_search_dirs = [
+        Path(s.strip()).expanduser().resolve() for s in search_raw.split(",") if s.strip()
+    ]
+
+    allow_missing = input(
+        "Continue if some videos cannot be found? [y/N]: "
+    ).strip().lower() == "y"
+
+    print()
+    print("--- Experiment grouping ---")
+    experiment_keywords = prompt_optional_list(
+        "Experiment keywords, e.g. PS,BG (leave blank for single experiment [default])"
+    )
+
+    print()
+    print("--- Trial matching ---")
+    matching = prompt_trial_matching()
+
+    print()
+    print("--- Calibration ---")
+    print("  A calibration.toml or calibration videos beside the .slp files are")
+    print("  found automatically. Give another folder here, or leave blank.")
+    calib_raw = input("Calibration file or folder (blank to auto-detect): ").strip()
+    calibration_toml = None
+    calibration_dir = None
+    if calib_raw:
+        calib_path = Path(calib_raw).expanduser().resolve()
+        if calib_path.is_dir():
+            calibration_dir = calib_path
+        else:
+            calibration_toml = calib_path
+    calib_keywords = prompt_optional_list(
+        "Calibration keywords for calibration videos [calib]"
+    )
+
+    charuco = prompt_charuco()
+
+    config = SetupConfig(
+        source_dir=slp_source if slp_source.is_dir() else slp_source.parent,
+        output_dir=output_dir,
+        camera_names=camera_names,
+        calib_keyword=calib_keywords[0] if calib_keywords else "calib",
+        calib_keywords=calib_keywords,
+        experiment_keywords=experiment_keywords,
+        slp_paths=[slp_source],
+        video_mode="reference",
+        video_search_dirs=video_search_dirs,
+        allow_missing_videos=allow_missing,
+        calibration_toml=calibration_toml,
+        calibration_dir=calibration_dir,
+        charuco=charuco,
+        project_name=project_name,
+        **matching,
+    )
+
+    print("\nReading SLP files...")
+    assignment = classify_slp_files(config)
+
+    print()
+    print("-" * 60)
+    print(preview_assignment(config, assignment))
+    print("-" * 60)
+
+    if dry_run:
+        print("\nDry run — nothing was written.")
+        return
+
+    if assignment.missing_videos and not config.allow_missing_videos:
+        print(
+            f"\n{len(assignment.missing_videos)} video reference(s) could not be "
+            "resolved. Re-run with extra search folders, or with "
+            "--allow-missing-videos to use the videos that were found."
+        )
+        return
+    if assignment.missing_videos:
+        print(
+            f"\n{len(assignment.missing_videos)} video reference(s) could not be "
+            "resolved; those cameras will be left blank in trials.csv."
+        )
+
+    confirm = input("\nProceed? Videos stay where they are. [y/N]: ")
+    if confirm.strip().lower() != "y":
+        print("Aborted.")
+        return
+
+    result_dir = execute_setup(config, assignment)
+    print(f"\nProject created at: {result_dir}")
+    if do_import:
+        counts = import_labels(result_dir)
+        total = sum(counts.values())
+        print(f"Imported labels for {total} frame(s) from the SLP files.")
+    print("You can now open it with: uv run label3d", result_dir)
+
+
 def run_interactive(copy_files: bool = False, dry_run: bool = False) -> None:
-    """Run the setup utility in interactive mode."""
-    print("=" * 60)
-    print("label3d — Project Setup")
-    print("=" * 60)
+    """Run the setup utility in interactive mode (the banner is printed by main)."""
     print()
 
     source_dir = prompt_path("Source folder (flat folder with videos)", must_exist=True)
@@ -204,6 +371,10 @@ def run_interactive(copy_files: bool = False, dry_run: bool = False) -> None:
         print("  e.g. _(?P<take>(?:Pre|Post)Cal)_  (leave blank to use 'calib')")
         calib_regex = input("Calibration regex: ").strip()
     calib_keyword = calib_keywords[0] if calib_keywords else "calib"
+
+    allow_missing = input(
+        "Continue if some videos cannot be found? [y/N]: "
+    ).strip().lower() == "y"
 
     print()
     print("--- Experiment grouping ---")
@@ -292,13 +463,86 @@ def run_interactive(copy_files: bool = False, dry_run: bool = False) -> None:
     print("You can now open it with: uv run label3d", result_dir)
 
 
+def run_slp_setup(
+    config: SetupConfig, dry_run: bool = False, do_import: bool = True
+) -> None:
+    """Classify, preview and execute an SLP-first setup non-interactively."""
+    print("Reading SLP files...")
+    assignment = classify_slp_files(config)
+
+    print()
+    print(preview_assignment(config, assignment))
+    print()
+
+    if dry_run:
+        print("Dry run — nothing was written.")
+        return
+
+    result_dir = execute_setup(config, assignment)
+    print(f"Project created at: {result_dir}")
+    if do_import:
+        counts = import_labels(result_dir)
+        print(f"Imported labels for {sum(counts.values())} frame(s).")
+
+
+def slp_config_from_args(args) -> SetupConfig:
+    """Build a SetupConfig from the --from-slp command-line flags."""
+    if not args.output:
+        print("--from-slp requires --output", file=sys.stderr)
+        sys.exit(1)
+    if not args.cameras:
+        print("--from-slp requires --cameras", file=sys.stderr)
+        sys.exit(1)
+
+    slp_paths = [Path(p).expanduser().resolve() for p in args.from_slp]
+    output_dir = Path(args.output).expanduser().resolve()
+    calibration_toml = None
+    calibration_dir = None
+    if args.calibration:
+        calib_path = Path(args.calibration).expanduser().resolve()
+        if calib_path.is_dir():
+            calibration_dir = calib_path
+        else:
+            calibration_toml = calib_path
+
+    calib_keywords = [s.strip() for s in args.calib_keywords.split(",") if s.strip()]
+    return SetupConfig(
+        source_dir=slp_paths[0].parent,
+        output_dir=output_dir,
+        camera_names=[s.strip() for s in args.cameras.split(",") if s.strip()],
+        calib_keyword=calib_keywords[0] if calib_keywords else "calib",
+        calib_keywords=calib_keywords,
+        experiment_keywords=[
+            s.strip() for s in (args.experiments or "").split(",") if s.strip()
+        ],
+        match_strategy=args.match_strategy,
+        trial_keyword=args.trial_keyword,
+        trial_regex=args.trial_regex,
+        slp_paths=slp_paths,
+        video_mode=args.video_mode,
+        video_search_dirs=[
+            Path(d).expanduser().resolve() for d in (args.video_search_dir or [])
+        ],
+        allow_missing_videos=args.allow_missing_videos,
+        calibration_toml=calibration_toml,
+        calibration_dir=calibration_dir,
+        charuco=CHARUCO_DEFAULTS,
+        project_name=args.name or output_dir.name,
+    )
+
+
 def run_from_config(config_path: Path, copy_files: bool = False, dry_run: bool = False) -> None:
     """Run the setup utility from a TOML config file."""
     raw = toml.load(config_path)
     setup = raw.get("setup", {})
 
-    source_dir = Path(setup["source_dir"]).expanduser().resolve()
+    slp_files = [Path(p).expanduser().resolve() for p in setup.get("slp_files", [])]
     output_dir = Path(setup["output_dir"]).expanduser().resolve()
+    source_dir = (
+        Path(setup["source_dir"]).expanduser().resolve()
+        if setup.get("source_dir")
+        else slp_files[0].parent
+    )
 
     config = SetupConfig(
         source_dir=source_dir,
@@ -317,7 +561,27 @@ def run_from_config(config_path: Path, copy_files: bool = False, dry_run: bool =
         charuco=raw.get("charuco", CHARUCO_DEFAULTS),
         project_name=raw.get("project", {}).get("name", output_dir.name),
         copy_files=copy_files,
+        slp_paths=slp_files,
+        video_mode=setup.get("video_mode", "reference" if slp_files else ""),
+        video_search_dirs=[
+            Path(d).expanduser().resolve() for d in setup.get("video_search_dirs", [])
+        ],
+        allow_missing_videos=setup.get("allow_missing_videos", False),
+        calibration_toml=(
+            Path(setup["calibration_toml"]).expanduser().resolve()
+            if setup.get("calibration_toml")
+            else None
+        ),
+        calibration_dir=(
+            Path(setup["calibration_dir"]).expanduser().resolve()
+            if setup.get("calibration_dir")
+            else None
+        ),
     )
+
+    if slp_files:
+        run_slp_setup(config, dry_run=dry_run, do_import=setup.get("import_labels", True))
+        return
 
     print("Scanning files...")
     assignment = classify_files(config)
@@ -362,18 +626,84 @@ def main() -> None:
         default=False,
         help="Enable debug logging",
     )
+    slp = parser.add_argument_group(
+        "setup from SLP files",
+        "Build a project from existing .slp files, referencing their videos in place.",
+    )
+    slp.add_argument(
+        "--from-slp",
+        nargs="+",
+        metavar="PATH",
+        help=".slp files, or folders containing them",
+    )
+    slp.add_argument("--output", help="Output project folder (with --from-slp)")
+    slp.add_argument("--cameras", help="Comma-separated camera names (with --from-slp)")
+    slp.add_argument("--name", help="Project name (default: output folder name)")
+    slp.add_argument("--experiments", help="Comma-separated experiment keywords")
+    slp.add_argument(
+        "--match-strategy",
+        default="keyword",
+        choices=["keyword", "regex", "number", "datestamp", "mtime"],
+        help="How to group videos into trials (default: keyword)",
+    )
+    slp.add_argument("--trial-keyword", default="Trial", help="For --match-strategy keyword")
+    slp.add_argument("--trial-regex", default="", help="For --match-strategy regex")
+    slp.add_argument(
+        "--calib-keywords",
+        default="calib",
+        help="Comma-separated calibration take keywords (default: calib)",
+    )
+    slp.add_argument(
+        "--video-mode",
+        default="reference",
+        choices=["move", "copy", "reference"],
+        help="What to do with the videos (default: reference — leave them in place)",
+    )
+    slp.add_argument(
+        "--video-search-dir",
+        action="append",
+        metavar="DIR",
+        help="Extra folder to search when a recorded video path has moved (repeatable)",
+    )
+    slp.add_argument(
+        "--allow-missing-videos",
+        action="store_true",
+        default=False,
+        help="Set up the project from the videos that were found, leaving the "
+        "cameras whose videos are missing blank in trials.csv",
+    )
+    slp.add_argument("--calibration", help="calibration.toml, or a folder to search")
+    slp.add_argument(
+        "--no-import",
+        action="store_true",
+        default=False,
+        help="Do not import the SLP labels into points.csv",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.WARNING)
 
-    if args.config:
+    if args.from_slp:
+        run_slp_setup(
+            slp_config_from_args(args),
+            dry_run=args.dry_run,
+            do_import=not args.no_import,
+        )
+    elif args.config:
         config_path = Path(args.config)
         if not config_path.exists():
             print(f"Config file not found: {config_path}", file=sys.stderr)
             sys.exit(1)
         run_from_config(config_path, copy_files=args.copy, dry_run=args.dry_run)
     else:
-        run_interactive(copy_files=args.copy, dry_run=args.dry_run)
+        print("=" * 60)
+        print("label3d — Project Setup")
+        print("=" * 60)
+        source_kind = prompt_choice("Start from", ["videos", "slp"])
+        if source_kind == "slp":
+            run_interactive_slp(dry_run=args.dry_run, do_import=not args.no_import)
+        else:
+            run_interactive(copy_files=args.copy, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
