@@ -42,7 +42,7 @@ class SetupConfig:
     experiment_keywords: list[str] = field(default_factory=list)  # empty → single "default" experiment
     # Calibration take identification (Phase 9). Each keyword names one take,
     # e.g. ["PreCal", "PostCal"]; calib_regex is an alternative whose "take"
-    # group (or group 1) supplies the name.
+    # group, else group 1, else whole match supplies the name.
     calib_keywords: list[str] = field(default_factory=list)
     calib_regex: str = ""
     # Strategy used to separate takes when keywords/regex cannot; "" → match_strategy
@@ -311,8 +311,8 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         raise ValueError(
             "Could not determine the calibration take for: "
             f"{names}. Give each take its own keyword via calib_keywords "
-            "(e.g. [\"PreCal\", \"PostCal\"]), or set calib_regex with a "
-            "'take' group."
+            "(e.g. [\"PreCal\", \"PostCal\"]), or set calib_regex to a pattern "
+            "that matches each take's name."
         )
 
     # Warn about takes that are missing cameras
@@ -861,12 +861,16 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         else:
             videos_dir.mkdir(parents=True, exist_ok=True)
 
-        if not reference:
-            for cam, files in assignment.exp_calibration.get(exp_name, {}).items():
-                cam_dir = exp_dir / "calibration" / cam
-                cam_dir.mkdir(parents=True, exist_ok=True)
-                for f in files:
-                    transfer(str(f), str(cam_dir / f.name))
+        # Calibration videos always come into the project, even in reference
+        # mode: they are small, they come from calibration_dir rather than
+        # from the SLP references, and the project then owns its calibration
+        # inputs.  Referenced trial videos are still left where they are.
+        calib_transfer = shutil.copy2 if reference else transfer
+        for cam, files in assignment.exp_calibration.get(exp_name, {}).items():
+            cam_dir = exp_dir / "calibration" / cam
+            cam_dir.mkdir(parents=True, exist_ok=True)
+            for f in files:
+                calib_transfer(str(f), str(cam_dir / f.name))
 
         src_toml = assignment.calibration_toml.get(exp_name)
         if src_toml is not None:
@@ -886,12 +890,14 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
                         _fill_cell(row, cam, src.name)
             trials_rows.append(row)
 
-        # Calibration files have already been moved above, so only record them.
+        # Calibration files have already been copied above, so only record
+        # them — always by bare filename, since they now live in the project's
+        # calibration/{cam}/ regardless of the video mode.
         for take in sorted(assignment.calibration_takes.get(exp_name, {})):
             cam_files = assignment.calibration_takes[exp_name][take]
             row = _blank_row(exp_name, take, True, config.camera_names)
             for cam, src in cam_files.items():
-                _fill_cell(row, cam, _video_cell(src, video_root) if reference else src.name)
+                _fill_cell(row, cam, src.name)
             trials_rows.append(row)
 
     # Write trials.csv at project root with experiment column
@@ -1292,7 +1298,8 @@ def _identify_take(filename: str, keywords: list[str], regex: str) -> str | None
     """Stage 2: which calibration take does this file belong to?
 
     The matched keyword *is* the take name. With a regex, a named group "take"
-    (else group 1) supplies it. Returns None when the take is undetermined.
+    (else group 1, else the whole match) supplies it. Returns None when the
+    take is undetermined.
     """
     if regex:
         m = re.search(regex, Path(filename).stem, re.IGNORECASE)
@@ -1301,6 +1308,12 @@ def _identify_take(filename: str, keywords: list[str], regex: str) -> str | None
                 return m.group("take")
             if m.groups() and m.group(1):
                 return m.group(1)
+            if not m.groups():
+                # No capture group: the match itself names the take, so
+                # cal\d+ gives cal01, cal02, ...  _is_calibration accepts a
+                # group-less regex, so this stage must too or the files are
+                # found and then dropped as ambiguous.
+                return m.group(0)
 
     low = filename.lower()
     matches = [kw for kw in keywords if kw.lower() in low]

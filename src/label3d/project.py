@@ -219,6 +219,12 @@ class Project:
             take = self.get_calibration_take(trial_name)
             filename, _, _ = take.camera_videos[camera]
             default_dir = exp_dir / "calibration" / camera
+            # Calibration videos are copied into the project even when trial
+            # videos are referenced in place, so a cell naming a file in
+            # calibration/{camera}/ wins over the experiment's video_root.
+            local = default_dir / filename
+            if local.exists():
+                return local
         else:
             filename, _, _ = trial.camera_videos[camera]
             default_dir = exp_dir / "videos"

@@ -17,7 +17,7 @@ Config file format (TOML):
     camera_names = ["left", "right", "bottom"]
     calib_keyword = "calib"          # legacy single keyword
     calib_keywords = ["PreCal", "PostCal"]   # one keyword per calibration take
-    calib_regex = ""                 # alternative: regex with a "take" group
+    calib_regex = ""                 # alternative: regex naming each take, e.g. "cal\\d+"
     experiment_keywords = ["PS", "BG"]   # omit or [] for single experiment named "default"
     match_strategy = "keyword"   # "keyword" | "regex" | "number" | "datestamp" | "mtime"
     trial_keyword = "Trial"      # only for keyword strategy
@@ -367,7 +367,8 @@ def run_interactive(copy_files: bool = False, dry_run: bool = False) -> None:
     calib_keywords = prompt_optional_list("Calibration keywords")
     calib_regex = ""
     if not calib_keywords:
-        print("  No keywords given — supply a regex whose 'take' group names the take,")
+        print("  No keywords given — supply a regex naming each take; its 'take' group,")
+        print("  else group 1, else the whole match becomes the take name,")
         print("  e.g. _(?P<take>(?:Pre|Post)Cal)_  (leave blank to use 'calib')")
         calib_regex = input("Calibration regex: ").strip()
     calib_keyword = calib_keywords[0] if calib_keywords else "calib"
