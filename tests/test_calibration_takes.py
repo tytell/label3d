@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 import pytest
 
+from label3d.calibration_compare import noise_adjusted_thresholds, run_spread
 from label3d.calibration_io import corners_path, load_corners, save_corners
 from label3d.project import Project
 from label3d.widgets.calibration_view import (
@@ -19,7 +20,9 @@ from label3d.widgets.calibration_view import (
     take_range,
 )
 from label3d.widgets.frame_slider import FrameSlider
+from label3d.workers import calibration_worker
 from label3d.workers.calibration_worker import (
+    JOINT_TAKE,
     CalibrationTake,
     DetectionWorker,
     TakeVideo,
@@ -491,3 +494,64 @@ class TestSliderBounds:
         slider.resize(212, slider.height())
         slider.set_range(100)
         assert slider._bound_at(slider._frame_to_x(0)) is None
+
+
+def _rotated(deg: float):
+    """BASE with cam2 turned `deg` degrees further about y."""
+    return _group([BASE[0], ("cam2", [0.0, 0.5 + np.radians(deg), 0.0], BASE[1][2])])
+
+
+class TestRunSpread:
+    def test_spread_is_largest_pairwise_drift(self):
+        rot, base = run_spread([_group(BASE), _rotated(0.3), _rotated(1.0)])
+        assert rot == pytest.approx(1.0, abs=1e-6)
+        assert base == pytest.approx(0.0, abs=1e-9)
+
+    def test_single_run_has_no_spread(self):
+        assert run_spread([_group(BASE)]) == (0.0, 0.0)
+
+    def test_thresholds_rise_above_twice_the_spread(self):
+        # configured 0.5 deg / 1 %, runs disagreed by up to 1.2 deg / 0.2 %
+        rot, base = noise_adjusted_thresholds(0.5, 1.0, [(1.2, 0.2), (0.4, 0.1)])
+        assert rot == pytest.approx(2.4)
+        assert base == pytest.approx(1.0)   # spread too small to matter
+
+    def test_no_spread_keeps_configured_thresholds(self):
+        assert noise_adjusted_thresholds(0.5, 1.0, [(0.0, 0.0)]) == (0.5, 1.0)
+
+
+def _run_worker(monkeypatch, take_names, errors, n_repeats):
+    """Run MultiTakeCalibrationWorker with calibrate_rows returning `errors` in turn."""
+    results_iter = iter(errors)
+    monkeypatch.setattr(calibration_worker, "_build_board", lambda bp: None)
+    monkeypatch.setattr(
+        calibration_worker,
+        "calibrate_rows",
+        lambda cams, sizes, rows, board: (_rotated(0.0), next(results_iter), {}),
+    )
+    rows = {"cam1": [{"framenum": (t, 0)} for t in take_names]}
+    worker = calibration_worker.MultiTakeCalibrationWorker(
+        ["cam1", "cam2"], {}, rows, {}, take_names, n_repeats=n_repeats
+    )
+    out = []
+    worker.finished.connect(out.append)
+    worker.run()
+    return out[0]
+
+
+class TestRepeatedCalibration:
+    def test_keeps_lowest_error_run(self, monkeypatch, qapp):
+        results = _run_worker(monkeypatch, ["PreCal"], [0.9, 0.4, 0.7], n_repeats=3)
+        assert [r.name for r in results] == ["PreCal"]
+        assert results[0].error == pytest.approx(0.4)
+
+    def test_single_take_has_no_joint_solution(self, monkeypatch, qapp):
+        results = _run_worker(monkeypatch, ["PreCal"], [0.5], n_repeats=1)
+        assert [r.name for r in results] == ["PreCal"]
+
+    def test_several_takes_add_joint_last(self, monkeypatch, qapp):
+        results = _run_worker(
+            monkeypatch, ["PreCal", "PostCal"], [0.5, 0.6, 0.3, 0.2, 0.4, 0.5], n_repeats=2
+        )
+        assert [r.name for r in results] == ["PreCal", "PostCal", JOINT_TAKE]
+        assert [round(r.error, 1) for r in results] == [0.5, 0.2, 0.4]

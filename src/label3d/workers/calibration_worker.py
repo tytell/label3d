@@ -22,6 +22,7 @@ _log = logging.getLogger(__name__)
 from aniposelib.boards import CharucoBoard, merge_rows
 from aniposelib.cameras import Camera, CameraGroup
 
+from label3d.calibration_compare import run_spread
 from label3d.calibration_io import compute_frame_errors
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
@@ -260,6 +261,8 @@ class TakeCalibration:
     error: float
     frame_errors: dict
     n_rows: int
+    # Largest (rotation_deg, baseline_pct) between the repeated runs.
+    spread: tuple[float, float] = (0.0, 0.0)
 
 
 def _build_board(bp: dict) -> CharucoBoard:
@@ -322,11 +325,16 @@ class MultiTakeCalibrationWorker(QThread):
 
     Comparing the per-take solutions is how a camera that moved during the
     experiment gets caught: the joint solution would otherwise average the
-    before and after geometry into something that fits neither.
+    before and after geometry into something that fits neither. With a single
+    take the joint solution would be the same rows again, so it is skipped.
+
+    aniposelib's bundle adjustment subsamples at random, so each solution is
+    calibrated ``n_repeats`` times and the lowest-error run kept; the spread
+    between runs tells drift checks how much disagreement is just noise.
 
     Emits:
         progress(str)
-        finished(list[TakeCalibration])  — per take, joint last
+        finished(list[TakeCalibration])  — per take, joint last (if >1 take)
         error_occurred(str)
     """
 
@@ -341,6 +349,7 @@ class MultiTakeCalibrationWorker(QThread):
         all_rows: dict[str, list],
         board_params: dict,
         take_names: list[str],
+        n_repeats: int = 3,
         parent=None,
     ):
         super().__init__(parent)
@@ -349,6 +358,38 @@ class MultiTakeCalibrationWorker(QThread):
         self._all_rows = all_rows
         self._board_params = board_params
         self._take_names = take_names
+        self._n_repeats = max(1, n_repeats)
+
+    def _calibrate_repeated(
+        self, name: str, rows: dict[str, list], board
+    ) -> TakeCalibration:
+        """Calibrate `rows` n_repeats times; keep the lowest-error run."""
+        n_rows = sum(len(r) for r in rows.values())
+        self.progress.emit(f"  Calibrating {name} ({n_rows} detections)...")
+        runs = []
+        for i in range(self._n_repeats):
+            try:
+                cgroup, error, frame_errors = calibrate_rows(
+                    self._cam_names, self._cam_sizes, rows, board
+                )
+            except Exception as exc:
+                self.progress.emit(f"    run {i + 1}/{self._n_repeats} failed: {exc}")
+                continue
+            self.progress.emit(
+                f"    run {i + 1}/{self._n_repeats}: mean error {error:.3f} px"
+            )
+            runs.append((error, cgroup, frame_errors))
+        if not runs:
+            raise RuntimeError(f"every calibration run of {name} failed")
+
+        error, cgroup, frame_errors = min(runs, key=lambda r: r[0])
+        spread = run_spread([r[1] for r in runs])
+        if len(runs) > 1:
+            self.progress.emit(
+                f"    kept {error:.3f} px; run-to-run spread "
+                f"{spread[0]:.2f} deg rotation, {spread[1]:.1f}% baseline"
+            )
+        return TakeCalibration(name, cgroup, error, frame_errors, n_rows, spread)
 
     def run(self):
         try:
@@ -357,30 +398,21 @@ class MultiTakeCalibrationWorker(QThread):
 
             for take in self._take_names:
                 rows = rows_for_take(self._all_rows, take)
-                n_rows = sum(len(r) for r in rows.values())
-                if n_rows == 0:
+                if sum(len(r) for r in rows.values()) == 0:
                     self.progress.emit(f"  take '{take}': no detections, skipping")
                     continue
-                self.progress.emit(f"  Calibrating take '{take}' ({n_rows} detections)...")
                 try:
-                    cgroup, error, frame_errors = calibrate_rows(
-                        self._cam_names, self._cam_sizes, rows, board
+                    results.append(
+                        self._calibrate_repeated(f"take '{take}'", rows, board)
                     )
+                    results[-1].name = take
                 except Exception as exc:
                     self.progress.emit(f"  take '{take}' failed: {exc}")
-                    continue
-                self.progress.emit(f"    mean error: {error:.3f} px")
-                results.append(TakeCalibration(take, cgroup, error, frame_errors, n_rows))
 
-            n_all = sum(len(r) for r in self._all_rows.values())
-            self.progress.emit(f"  Calibrating all takes jointly ({n_all} detections)...")
-            cgroup, error, frame_errors = calibrate_rows(
-                self._cam_names, self._cam_sizes, self._all_rows, board
-            )
-            self.progress.emit(f"    mean error: {error:.3f} px")
-            results.append(
-                TakeCalibration(JOINT_TAKE, cgroup, error, frame_errors, n_all)
-            )
+            if len(self._take_names) > 1:
+                joint = self._calibrate_repeated("all takes jointly", self._all_rows, board)
+                joint.name = JOINT_TAKE
+                results.append(joint)
 
             self.finished.emit(results)
 

@@ -50,6 +50,7 @@ from label3d.calibration_compare import (
     compare_calibrations,
     drift_thresholds,
     drift_warnings,
+    noise_adjusted_thresholds,
 )
 from label3d.workers.calibration_worker import (
     IMAGE_EXTENSIONS,
@@ -76,6 +77,9 @@ _CHARUCO_DEFAULTS = {
 
 # Detect Charuco corners on every Nth video frame (ignored for image folders).
 _FRAME_SKIP_DEFAULT = 20
+
+# Calibrate each solution this many times and keep the lowest-error run.
+_REPEATS_DEFAULT = 3
 
 
 def row_key(row: dict) -> tuple[str, int] | None:
@@ -423,6 +427,19 @@ class CalibrationView(QWidget):
         self._take_combo.currentTextChanged.connect(self._on_take_selected)
         takes_layout.addWidget(self._take_combo)
 
+        repeat_row = QHBoxLayout()
+        repeat_row.addWidget(QLabel("Repeat calibration:"))
+        self._repeat_spin = QSpinBox()
+        self._repeat_spin.setRange(1, 20)
+        self._repeat_spin.setValue(int(calib_cfg.get("repeats", _REPEATS_DEFAULT)))
+        self._repeat_spin.setToolTip(
+            "Calibrate each take this many times and keep the lowest error. "
+            "Runs differ because bundle adjustment samples at random; their "
+            "spread keeps that noise from being reported as camera drift."
+        )
+        repeat_row.addWidget(self._repeat_spin, stretch=1)
+        takes_layout.addLayout(repeat_row)
+
         self._take_table = QTableWidget(0, 5)
         self._take_table.setHorizontalHeaderLabels(
             ["Take", "Dets", "Error px", "Rot °", "Base %"]
@@ -455,7 +472,7 @@ class CalibrationView(QWidget):
         self._settings_timer.timeout.connect(self._save_settings)
         for sb in (
             self._sq_x, self._sq_y, self._sq_len, self._mk_len,
-            self._mk_bits, self._dict_size,
+            self._mk_bits, self._dict_size, self._repeat_spin,
         ):
             sb.valueChanged.connect(self._settings_timer.start)
         self._skip_spin.valueChanged.connect(self._on_skip_changed)
@@ -658,13 +675,18 @@ class CalibrationView(QWidget):
         return True
 
     def _populate_take_combo(self) -> None:
-        """List the takes as soon as they are known, joint entry last."""
-        names = [t.name for t in self._takes] + [JOINT_TAKE]
+        """List the takes as soon as they are known, joint entry last.
+
+        With a single take the joint solution is that take, so it is not offered.
+        """
+        names = [t.name for t in self._takes]
+        if len(names) > 1:
+            names.append(JOINT_TAKE)
         current = self._take_combo.currentText()
         self._take_combo.blockSignals(True)
         self._take_combo.clear()
         self._take_combo.addItems(names)
-        self._take_combo.setCurrentText(current if current in names else JOINT_TAKE)
+        self._take_combo.setCurrentText(current if current in names else names[-1])
         self._take_combo.blockSignals(False)
 
     def _set_browse_rows(self, rows: list[dict]) -> None:
@@ -714,6 +736,7 @@ class CalibrationView(QWidget):
         """
         calibration = dict(self._project.config.get("calibration", {}))
         calibration["frame_skip"] = self._skip
+        calibration["repeats"] = self._repeat_spin.value()
         try:
             self._project.save_config_sections({
                 "charuco": self._board_params(),
@@ -896,6 +919,7 @@ class CalibrationView(QWidget):
             all_rows=self._calib_rows,
             board_params=self._board_params(),
             take_names=[t.name for t in self._takes],
+            n_repeats=self._repeat_spin.value(),
         )
         self._calibration_worker.progress.connect(self._log_msg)
         self._calibration_worker.finished.connect(self._on_calibrate_finished)
@@ -951,17 +975,31 @@ class CalibrationView(QWidget):
                 self._log_msg(f"  Warning: could not save take '{result.name}': {exc}")
 
     def _populate_take_table(self, results: list) -> None:
-        """Fill the comparison table and flag takes that drifted."""
-        joint = results[-1]
-        rot_thresh, base_thresh = drift_thresholds(self._project.config)
+        """Fill the comparison table and flag takes that drifted.
+
+        Takes are compared with the joint solution, when there is one. A drift
+        only counts if it also exceeds the run-to-run spread of the two
+        solutions (see noise_adjusted_thresholds), since repeated runs on the
+        same rows already disagree.
+        """
+        joint = results[-1] if results[-1].name == JOINT_TAKE else None
+        rot_cfg, base_cfg = drift_thresholds(self._project.config)
 
         self._take_table.setRowCount(len(results))
         all_warnings: list[str] = []
 
         for row, result in enumerate(results):
-            if result is joint:
+            if joint is None or result is joint:
                 rot_txt, base_txt, flagged = "—", "—", False
             else:
+                rot_thresh, base_thresh = noise_adjusted_thresholds(
+                    rot_cfg, base_cfg, [result.spread, joint.spread]
+                )
+                if (rot_thresh, base_thresh) != (rot_cfg, base_cfg):
+                    self._log_msg(
+                        f"  {result.name}: drift thresholds raised to "
+                        f"{rot_thresh:.2f} deg / {base_thresh:.1f}% by run-to-run spread"
+                    )
                 drifts = compare_calibrations(joint.cgroup, result.cgroup)
                 max_rot = max((d.rotation_deg for d in drifts), default=0.0)
                 max_base = max((d.baseline_pct for d in drifts), default=0.0)

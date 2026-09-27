@@ -17,6 +17,11 @@ import numpy as np
 DEFAULT_ROTATION_DRIFT_DEG = 0.5
 DEFAULT_BASELINE_DRIFT_PCT = 1.0
 
+# A drift must exceed this multiple of the run-to-run spread (the same rows
+# calibrated repeatedly) to count: aniposelib's bundle adjustment subsamples
+# randomly, so repeated runs on identical data already disagree somewhat.
+NOISE_FACTOR = 2.0
+
 
 @dataclass
 class PairDrift:
@@ -105,6 +110,32 @@ def compare_calibrations(reference, other) -> list[PairDrift]:
             baseline_other_cm=float(np.linalg.norm(t_oth)),
         ))
     return drifts
+
+
+def run_spread(cgroups: list) -> tuple[float, float]:
+    """Largest (rotation_deg, baseline_pct) between any two of `cgroups`.
+
+    Given repeated calibrations of the same rows, this is how much the
+    solution moves from randomness alone. (0, 0) for fewer than two.
+    """
+    rot, base = 0.0, 0.0
+    for a, b in combinations(cgroups, 2):
+        for d in compare_calibrations(a, b):
+            rot = max(rot, d.rotation_deg)
+            base = max(base, d.baseline_pct)
+    return rot, base
+
+
+def noise_adjusted_thresholds(
+    rotation_deg: float,
+    baseline_pct: float,
+    spreads: list[tuple[float, float]],
+    factor: float = NOISE_FACTOR,
+) -> tuple[float, float]:
+    """Raise the configured thresholds above `factor` x the run-to-run spread."""
+    noise_rot = max((s[0] for s in spreads), default=0.0)
+    noise_base = max((s[1] for s in spreads), default=0.0)
+    return max(rotation_deg, factor * noise_rot), max(baseline_pct, factor * noise_base)
 
 
 def drift_thresholds(config: dict) -> tuple[float, float]:
