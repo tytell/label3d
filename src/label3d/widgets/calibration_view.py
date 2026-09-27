@@ -228,8 +228,8 @@ class CalibFrameProvider:
 
     row['framenum'] is (take_name, synchronized_frame); the camera's video and
     start offset come from that take, and the frame read is
-    synchronized_frame + start. Returns a black frame when a camera has no
-    detection at the given index.
+    synchronized_frame + start. Every camera in the take is shown, whether or
+    not it detected corners in that frame; black only when it has no video.
     """
 
     def __init__(self):
@@ -261,10 +261,7 @@ class CalibFrameProvider:
             return blank
 
         merged_row = self._merged[frame_idx]
-        if camera not in merged_row:
-            return blank
-
-        row = merged_row[camera]
+        row = merged_row.get(camera, {})
 
         # Image file path available
         fname = row.get("fname")
@@ -275,11 +272,9 @@ class CalibFrameProvider:
                 return blank
             return img
 
-        # Video — framenum is (take_name, synchronized_frame)
-        framenum = row.get("framenum")
-        if framenum is None:
-            return blank
-
+        # Video — framenum is (take_name, synchronized_frame). A camera with no
+        # corners in this frame has no cell, but its video still has the frame.
+        framenum = row.get("framenum") or row_key(merged_row)
         if not isinstance(framenum, tuple):
             return blank
         take_name, sync_frame = framenum
@@ -408,9 +403,12 @@ class CalibrationView(QWidget):
         self._end_spin.setToolTip(
             "Last synchronized frame of this take used for calibration."
         )
+        range_row = QHBoxLayout()
+        range_row.addWidget(self._start_spin, stretch=1)
+        range_row.addWidget(QLabel("–"))
+        range_row.addWidget(self._end_spin, stretch=1)
         detect_form.addRow("Range of take:", self._range_take_label)
-        detect_form.addRow("Start frame:", self._start_spin)
-        detect_form.addRow("End frame:", self._end_spin)
+        detect_form.addRow("Frames:", range_row)
         left_layout.addWidget(detect_group)
 
         # Calibration takes group

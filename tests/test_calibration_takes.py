@@ -379,6 +379,15 @@ class TestSynchronizedFrames:
         finally:
             provider.close()
 
+    def test_camera_without_detection_still_shows_its_frame(self, offset_take):
+        """A merged row only cam1 detected in must still show cam2's image."""
+        provider = CalibFrameProvider()
+        provider.setup([_merged("PreCal", 5, cams=("cam1",))], {}, [offset_take])
+        try:
+            assert _frame_index(provider.get_frame("cam2", 0)) == 8
+        finally:
+            provider.close()
+
 
 class TestNearestRow:
     ROWS = [_merged("A", 0), _merged("A", 20), _merged("B", 0), _merged("B", 40)]
