@@ -44,6 +44,7 @@ from label3d.project import Project
 from label3d.video import VideoReader
 from label3d.widgets.camera_grid import CameraGrid
 from label3d.widgets.charuco_overlay import CharucoOverlay
+from label3d.widgets.frame_slider import FrameSlider
 from label3d.calibration_compare import (
     compare_calibrations,
     drift_thresholds,
@@ -75,13 +76,32 @@ _CHARUCO_DEFAULTS = {
 _FRAME_SKIP_DEFAULT = 20
 
 
-def row_take(row: dict) -> str | None:
-    """Which take a merged detection row belongs to, from any camera's key."""
+def row_key(row: dict) -> tuple[str, int] | None:
+    """(take, synchronized_frame) of a merged detection row, from any camera."""
     for cell in row.values():
         framenum = cell.get("framenum")
         if isinstance(framenum, tuple):
-            return framenum[0]
+            return framenum
     return None
+
+
+def row_take(row: dict) -> str | None:
+    """Which take a merged detection row belongs to, from any camera's key."""
+    key = row_key(row)
+    return key[0] if key else None
+
+
+def nearest_row(rows: list[dict], take: str, frame: int) -> int | None:
+    """Index of the row in `take` whose frame is closest to `frame`, or None."""
+    best, best_dist = None, None
+    for i, row in enumerate(rows):
+        key = row_key(row)
+        if key is None or key[0] != take:
+            continue
+        dist = abs(key[1] - frame)
+        if best_dist is None or dist < best_dist:
+            best, best_dist = i, dist
+    return best
 
 
 def take_row_indices(rows: list[dict], take: str | None) -> list[int]:
@@ -112,16 +132,18 @@ def _build_takes(project: Project) -> list[CalibrationTake]:
 
 def _scan_take_media(
     takes: list[CalibrationTake], cam_names: list[str], skip: int
-) -> tuple[list[dict], dict]:
+) -> tuple[list[dict], dict, dict]:
     """Build a browsable frame list from the takes, before any detection runs.
 
     Frames are keyed (take_name, synchronized_frame) exactly as detection keys
     them, so the browser visits what detection will visit. Returns
-    (merged_rows, cam_sizes) ready for CalibFrameProvider.setup().
+    (merged_rows, cam_sizes, take_lengths); take_lengths is the number of
+    synchronized frames in each take, counting the longest camera.
     """
     cam_sizes: dict[str, tuple[int, int]] = {}
     cam_keys: dict[str, set] = {cam: set() for cam in cam_names}
     ordered_keys: list[tuple[str, int]] = []
+    take_lengths: dict[str, int] = {take.name: 0 for take in takes}
 
     for take in takes:
         for cam in cam_names:
@@ -140,6 +162,7 @@ def _scan_take_media(
 
             start = max(0, tv.start)
             last = tv.end if tv.end is not None else total - 1
+            take_lengths[take.name] = max(take_lengths[take.name], last - start + 1)
             for frame in range(0, last - start + 1, skip):
                 key = (take.name, frame)
                 if key not in cam_keys[cam]:
@@ -155,7 +178,7 @@ def _scan_take_media(
         {cam: {"framenum": key} for cam in cam_names if key in cam_keys[cam]}
         for key in unique_keys
     ]
-    return merged, cam_sizes
+    return merged, cam_sizes, take_lengths
 
 
 # ── Frame provider for calibration images / video frames ─────────────────────
@@ -261,6 +284,7 @@ class CalibrationView(QWidget):
         self._browse_rows: list[dict] = []  # every frame, before take filtering
         self._display_map: list[int] = []   # display index -> index in _browse_rows
         self._cam_sizes: dict[str, tuple[int, int]] = {}
+        self._take_lengths: dict[str, int] = {}  # synchronized frames per take
         self._merged_rows: list[dict] = []
         self._frame_errors: dict[int, dict[str, np.ndarray]] = {}
         self._cgroup = None
@@ -455,11 +479,15 @@ class CalibrationView(QWidget):
             btn.setFixedWidth(32)
             btn.setEnabled(False)
 
+        # Seekbar over one take's synchronized frames; rows mark detections.
+        self._slider = FrameSlider()
+        self._slider.set_cameras(project.cameras)
+        self._slider.frame_changed.connect(self._on_slider_seek)
+
         nav_layout.addWidget(self._first_btn)
         nav_layout.addWidget(self._prev_btn)
-        nav_layout.addStretch()
         nav_layout.addWidget(self._frame_label)
-        nav_layout.addStretch()
+        nav_layout.addWidget(self._slider, stretch=1)
         nav_layout.addWidget(self._next_btn)
         nav_layout.addWidget(self._last_btn)
         right_layout.addWidget(nav)
@@ -552,10 +580,11 @@ class CalibrationView(QWidget):
             return False
 
         self._detect_btn.setEnabled(True)
-        merged, sizes = _scan_take_media(
+        merged, sizes, lengths = _scan_take_media(
             self._takes, self._project.cameras, self._skip
         )
         self._cam_sizes = sizes
+        self._take_lengths = lengths
         self._populate_take_combo()
         self._set_browse_rows(merged)
         return True
@@ -1057,6 +1086,50 @@ class CalibrationView(QWidget):
                 self._frame_label.setText(f"{label} / {n}")
         else:
             self._frame_label.setText("—")
+        self._update_slider()
+
+    def _slider_take(self) -> str | None:
+        """The take the slider spans: the current frame's, else the selected one."""
+        rows = self._calib_provider.merged_rows
+        if 0 <= self._current_frame < len(rows):
+            take = row_take(rows[self._current_frame])
+            if take is not None:
+                return take
+        name = self._take_combo.currentText()
+        if name and name != JOINT_TAKE:
+            return name
+        return self._takes[0].name if self._takes else None
+
+    def _update_slider(self) -> None:
+        """Point the slider at the current frame's take, position, and detections."""
+        take = self._slider_take()
+        self._slider.set_range(max(0, self._take_lengths.get(take, 0) - 1))
+
+        rows = self._calib_provider.merged_rows
+        key = row_key(rows[self._current_frame]) if self._current_frame < len(rows) else None
+        self._slider.set_value(key[1] if key and key[0] == take else 0)
+
+        # Rows only carry corners once detection has run (or corners loaded).
+        marks: dict[str, dict[int, str]] = {cam: {} for cam in self._project.cameras}
+        for row in rows:
+            key = row_key(row)
+            if key is None or key[0] != take:
+                continue
+            for cam, cell in row.items():
+                if cell.get("corners") is not None and cam in marks:
+                    marks[cam][key[1]] = "user"
+        self._slider.set_marks(marks)
+
+    def _on_slider_seek(self, frame: int) -> None:
+        """Jump to the listed frame nearest the clicked synchronized frame."""
+        take = self._slider_take()
+        idx = nearest_row(self._calib_provider.merged_rows, take, frame)
+        if idx is None:
+            self._update_slider()
+        elif idx != self._current_frame:
+            self._show_frame(idx)
+        else:
+            self._update_slider()   # snap the handle back onto the listed frame
 
     def _representative_frame_info(
         self, frame_idx: int

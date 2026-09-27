@@ -10,7 +10,11 @@ import pytest
 
 from label3d.calibration_io import corners_path, load_corners, save_corners
 from label3d.project import Project
-from label3d.widgets.calibration_view import CalibFrameProvider, _scan_take_media
+from label3d.widgets.calibration_view import (
+    CalibFrameProvider,
+    _scan_take_media,
+    nearest_row,
+)
 from label3d.workers.calibration_worker import (
     CalibrationTake,
     DetectionWorker,
@@ -355,10 +359,11 @@ class TestSynchronizedFrames:
         assert frames["cam2"] == [("PreCal", s) for s in (0, 5, 10)]
 
     def test_browse_rows_use_synchronized_frames(self, offset_take):
-        merged, _ = _scan_take_media([offset_take], ["cam1", "cam2"], skip=5)
+        merged, _, lengths = _scan_take_media([offset_take], ["cam1", "cam2"], skip=5)
         keys = [row["cam1"]["framenum"] for row in merged]
         assert keys == [("PreCal", s) for s in (0, 5, 10, 15)]
         assert "cam2" not in merged[-1]   # cam2 ends at synchronized frame 13
+        assert lengths == {"PreCal": 20}  # the longest camera sets the take length
 
     def test_provider_reads_frame_plus_camera_offset(self, offset_take):
         provider = CalibFrameProvider()
@@ -368,3 +373,21 @@ class TestSynchronizedFrames:
             assert _frame_index(provider.get_frame("cam2", 0)) == 8
         finally:
             provider.close()
+
+
+class TestNearestRow:
+    ROWS = [_merged("A", 0), _merged("A", 20), _merged("B", 0), _merged("B", 40)]
+
+    def test_snaps_to_closest_frame_in_take(self):
+        assert nearest_row(self.ROWS, "A", 7) == 0
+        assert nearest_row(self.ROWS, "A", 13) == 1
+        assert nearest_row(self.ROWS, "B", 25) == 3
+
+    def test_ignores_other_takes(self):
+        """B's frame 0 is closer to 3 than A's 20, but the slider spans A only."""
+        rows = [_merged("A", 20), _merged("B", 0)]
+        assert nearest_row(rows, "A", 3) == 0
+
+    def test_no_rows_in_take(self):
+        assert nearest_row(self.ROWS, "C", 0) is None
+        assert nearest_row([], "A", 0) is None
