@@ -223,6 +223,23 @@ class TestLoad:
         assert (loaded[("cam1", "state")] == "set").any()
         assert not (loaded[("cam2", "state")] == "set").any()
 
+    def test_corrected_prediction_is_not_a_second_instance(self, tmp_path):
+        """A user instance made from a prediction replaces it, as in SLEAP."""
+        sk = sio.Skeleton(["head"])
+        video = sio.Video("cam1_t1.mp4", open_backend=False)
+        pred = sio.PredictedInstance.from_numpy(np.array([[10.0, 20.0]]), skeleton=sk, score=0.9)
+        other = sio.PredictedInstance.from_numpy(np.array([[50.0, 60.0]]), skeleton=sk, score=0.8)
+        user = sio.Instance.from_numpy(np.array([[11.0, 21.0]]), skeleton=sk)
+        user.from_predicted = pred
+        frame = sio.LabeledFrame(video=video, frame_idx=3, instances=[pred, other, user])
+        path = tmp_path / "x.slp"
+        sio.save_file(sio.Labels(labeled_frames=[frame]), str(path))
+
+        loaded = SleapAdapter().load([path], _trials_df(), CAMERAS)
+        states = loaded[("cam1", "state")].tolist()
+        xs = loaded[("cam1", "x")].tolist()
+        assert sorted(zip(states, xs)) == [("predicted", 50.0), ("set", 11.0)]
+
     def test_missing_mapped_file_treated_as_empty(self, tmp_path):
         loaded = SleapAdapter().load(
             None, _trials_df(), CAMERAS, mapping=_one_file_per_camera(), root=tmp_path

@@ -51,7 +51,10 @@ class SleapAdapter(PoseAdapter):
         are not assigned to that file are skipped.
 
         Within each frame and camera, instances with no finite points are
-        skipped and the rest are numbered 0, 1, … in file order.
+        skipped and the rest are numbered 0, 1, … in file order. A prediction
+        that a user instance was corrected from (its from_predicted) is
+        skipped too: as in SLEAP, the correction replaces it rather than
+        becoming a second instance.
         """
         cells_info = video_cells(trials, cameras)
         basename_to_cells = _build_basename_lookup(trials, cameras)
@@ -78,6 +81,13 @@ class SleapAdapter(PoseAdapter):
                         warned.add(video_basename)
                     matches = kept
 
+                replaced = {
+                    id(inst.from_predicted)
+                    for inst in lf.instances
+                    if not isinstance(inst, sio.PredictedInstance)
+                    and inst.from_predicted is not None
+                }
+
                 for cell in matches:
                     experiment_name, trial_name, cam_name = cell
                     global_frame = lf.frame_idx - cells_info[cell][1]
@@ -86,6 +96,8 @@ class SleapAdapter(PoseAdapter):
 
                     inst_idx = 0
                     for inst in lf.instances:
+                        if id(inst) in replaced:
+                            continue
                         pts = inst.numpy()  # (n_nodes, 2), NaN for missing
                         finite = np.isfinite(pts).all(axis=1)
                         if not finite.any():
