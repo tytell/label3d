@@ -4,11 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
 from label3d.calibration_io import corners_path, load_corners, save_corners
 from label3d.project import Project
+from label3d.widgets.calibration_view import CalibFrameProvider, _scan_take_media
+from label3d.workers.calibration_worker import (
+    CalibrationTake,
+    DetectionWorker,
+    TakeVideo,
+)
 
 CAMERAS = ["cam1", "cam2"]
 
@@ -293,3 +300,71 @@ class TestTakeDisplayFilter:
         from label3d.widgets.calibration_view import take_row_indices
 
         assert take_row_indices([_merged("PreCal", 0)], "Missing") == []
+
+
+def _write_counter_video(path: Path, n_frames: int) -> Path:
+    """Grey video whose frame i has brightness 10*i, so reads reveal the index."""
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter_fourcc(*"MJPG"), 30, (32, 24)
+    )
+    for i in range(n_frames):
+        writer.write(np.full((24, 32, 3), 10 * i, dtype=np.uint8))
+    writer.release()
+    return path
+
+
+def _frame_index(img: np.ndarray) -> int:
+    return round(float(img.mean()) / 10)
+
+
+@pytest.fixture
+def offset_take(tmp_path) -> CalibrationTake:
+    """cam2 started recording 3 frames before cam1, and stopped earlier.
+
+    cam1 has synchronized frames 0-19, cam2 only 0-13.
+    """
+    return CalibrationTake(
+        name="PreCal",
+        videos={
+            "cam1": TakeVideo(_write_counter_video(tmp_path / "c1.avi", 20), start=0),
+            "cam2": TakeVideo(_write_counter_video(tmp_path / "c2.avi", 17), start=3),
+        },
+    )
+
+
+class _AlwaysDetects:
+    """Stand-in board that finds one corner on every frame."""
+
+    def detect_image(self, frame):
+        return np.zeros((1, 1, 2), dtype=np.float32), np.zeros((1, 1), dtype=np.int32)
+
+    def fill_points_rows(self, rows):
+        return rows
+
+
+class TestSynchronizedFrames:
+    def test_detection_keys_rows_by_synchronized_frame(self, offset_take, qapp):
+        worker = DetectionWorker(["cam1", "cam2"], {}, [offset_take], skip=5)
+        board = _AlwaysDetects()
+        frames = {
+            cam: [r["framenum"] for r in worker._detect_video(board, tv, "PreCal")]
+            for cam, tv in offset_take.videos.items()
+        }
+        assert frames["cam1"] == [("PreCal", s) for s in (0, 5, 10, 15)]
+        # cam2 reads video frames 3, 8, 13 — the same instants as cam1's 0, 5, 10
+        assert frames["cam2"] == [("PreCal", s) for s in (0, 5, 10)]
+
+    def test_browse_rows_use_synchronized_frames(self, offset_take):
+        merged, _ = _scan_take_media([offset_take], ["cam1", "cam2"], skip=5)
+        keys = [row["cam1"]["framenum"] for row in merged]
+        assert keys == [("PreCal", s) for s in (0, 5, 10, 15)]
+        assert "cam2" not in merged[-1]   # cam2 ends at synchronized frame 13
+
+    def test_provider_reads_frame_plus_camera_offset(self, offset_take):
+        provider = CalibFrameProvider()
+        provider.setup([_merged("PreCal", 5)], {}, [offset_take])
+        try:
+            assert _frame_index(provider.get_frame("cam1", 0)) == 5
+            assert _frame_index(provider.get_frame("cam2", 0)) == 8
+        finally:
+            provider.close()

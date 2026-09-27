@@ -97,10 +97,9 @@ class DetectionWorker(QThread):
         progress(str)                         — log message
         camera_done(cam, n)                   — camera name, detection count
         frame_progress(label, current, total)  — label, frames processed in current video
-        finished(all_rows, cam_sizes, cam_media)
+        finished(all_rows, cam_sizes)
             all_rows:  dict[cam_name, list[row]]        — detection rows per camera
             cam_sizes: dict[cam_name, (w, h)]           — frame size per camera
-            cam_media: dict[cam_name, dict[take, Path]] — video per camera per take
         error_occurred(str)                   — if a fatal error happens
 
     ``skip`` strides video input: exactly every Nth frame is decoded and
@@ -110,7 +109,7 @@ class DetectionWorker(QThread):
     progress = Signal(str)
     camera_done = Signal(str, int)      # cam_name, n_dets
     frame_progress = Signal(str, int, int)  # label, current_frame, total_frames
-    finished = Signal(dict, dict, dict)         # all_rows, cam_sizes, cam_media
+    finished = Signal(dict, dict)               # all_rows, cam_sizes
     error_occurred = Signal(str)
 
     def __init__(
@@ -141,11 +140,10 @@ class DetectionWorker(QThread):
 
             all_rows: dict[str, list] = {cam: [] for cam in self._cam_names}
             cam_sizes: dict[str, tuple[int, int]] = {}
-            cam_media: dict[str, dict[str, Path]] = {cam: {} for cam in self._cam_names}
 
             if not self._takes:
                 self.progress.emit("  No calibration takes found in trials.csv")
-                self.finished.emit(all_rows, cam_sizes, cam_media)
+                self.finished.emit(all_rows, cam_sizes)
                 return
 
             for take in self._takes:
@@ -162,7 +160,6 @@ class DetectionWorker(QThread):
                     if not tv.path.is_file():
                         raise FileNotFoundError(f'missing video file "{tv.path}"')
 
-                    cam_media[cam_name][take.name] = tv.path
                     if cam_name not in cam_sizes:
                         size = _read_media_size(tv.path)
                         if size is not None:
@@ -177,7 +174,7 @@ class DetectionWorker(QThread):
                 self.progress.emit(f"  {cam_name}: {n} detections")
                 self.camera_done.emit(cam_name, n)
 
-            self.finished.emit(all_rows, cam_sizes, cam_media)
+            self.finished.emit(all_rows, cam_sizes)
 
         except Exception as exc:
             self.error_occurred.emit(str(exc))
@@ -185,8 +182,9 @@ class DetectionWorker(QThread):
     def _detect_video(self, board, tv: TakeVideo, take_name: str) -> list:
         """Detect corners on every ``self._skip``-th frame of one take's video.
 
-        Frame numbers in the returned rows are absolute video frame indices, so
-        they stay meaningful when a take is trimmed with start/end.
+        Frame numbers in the returned rows are *synchronized* take frames (video
+        frame minus the camera's start offset), so merge_rows pairs frames that
+        were recorded at the same instant even when cameras' offsets differ.
         """
         cap = cv2.VideoCapture(str(tv.path))
         if not cap.isOpened():
@@ -222,7 +220,11 @@ class DetectionWorker(QThread):
             corners, ids = board.detect_image(frame)
             if corners is not None and len(corners) > 0:
                 v_rows.append(
-                    {"framenum": (take_name, framenum), "corners": corners, "ids": ids}
+                    {
+                        "framenum": (take_name, framenum - start),
+                        "corners": corners,
+                        "ids": ids,
+                    }
                 )
             framenum += 1
 

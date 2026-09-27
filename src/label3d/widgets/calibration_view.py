@@ -112,15 +112,14 @@ def _build_takes(project: Project) -> list[CalibrationTake]:
 
 def _scan_take_media(
     takes: list[CalibrationTake], cam_names: list[str], skip: int
-) -> tuple[list[dict], dict, dict]:
+) -> tuple[list[dict], dict]:
     """Build a browsable frame list from the takes, before any detection runs.
 
-    Frames are keyed (take_name, frame) exactly as detection keys them, so the
-    browser visits what detection will visit. Returns
-    (merged_rows, cam_sizes, cam_media) ready for CalibFrameProvider.setup().
+    Frames are keyed (take_name, synchronized_frame) exactly as detection keys
+    them, so the browser visits what detection will visit. Returns
+    (merged_rows, cam_sizes) ready for CalibFrameProvider.setup().
     """
     cam_sizes: dict[str, tuple[int, int]] = {}
-    cam_media: dict[str, dict[str, Path]] = {cam: {} for cam in cam_names}
     cam_keys: dict[str, set] = {cam: set() for cam in cam_names}
     ordered_keys: list[tuple[str, int]] = []
 
@@ -129,7 +128,6 @@ def _scan_take_media(
             tv = take.videos.get(cam)
             if tv is None or not tv.path.is_file():
                 continue
-            cam_media[cam][take.name] = tv.path
 
             cap = cv2.VideoCapture(str(tv.path))
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
@@ -142,7 +140,7 @@ def _scan_take_media(
 
             start = max(0, tv.start)
             last = tv.end if tv.end is not None else total - 1
-            for frame in range(start, last + 1, skip):
+            for frame in range(0, last - start + 1, skip):
                 key = (take.name, frame)
                 if key not in cam_keys[cam]:
                     cam_keys[cam].add(key)
@@ -157,7 +155,7 @@ def _scan_take_media(
         {cam: {"framenum": key} for cam in cam_names if key in cam_keys[cam]}
         for key in unique_keys
     ]
-    return merged, cam_sizes, cam_media
+    return merged, cam_sizes
 
 
 # ── Frame provider for calibration images / video frames ─────────────────────
@@ -165,15 +163,16 @@ def _scan_take_media(
 class CalibFrameProvider:
     """Serves calibration images for each merged detection frame.
 
-    row['framenum'] is (take_name, frame_in_video); the video is looked up as
-    cam_media[camera][take_name]. Returns a black frame when a camera has no
+    row['framenum'] is (take_name, synchronized_frame); the camera's video and
+    start offset come from that take, and the frame read is
+    synchronized_frame + start. Returns a black frame when a camera has no
     detection at the given index.
     """
 
     def __init__(self):
         self._merged: list[dict] = []
         self._cam_sizes: dict[str, tuple[int, int]] = {}
-        self._cam_media: dict[str, list[Path]] = {}
+        self._takes: dict[str, CalibrationTake] = {}
         self._video_readers: dict[tuple, VideoReader] = {}
 
     @property
@@ -184,12 +183,12 @@ class CalibFrameProvider:
         self,
         merged_rows: list[dict],
         cam_sizes: dict[str, tuple[int, int]],
-        cam_media: dict[str, dict[str, Path]],
+        takes: list[CalibrationTake],
     ):
         self.close()
         self._merged = merged_rows
         self._cam_sizes = cam_sizes
-        self._cam_media = cam_media
+        self._takes = {take.name: take for take in takes}
 
     def get_frame(self, camera: str, frame_idx: int) -> np.ndarray | None:
         w, h = self._cam_sizes.get(camera, (640, 480))
@@ -213,27 +212,28 @@ class CalibFrameProvider:
                 return blank
             return img
 
-        # Video — framenum is (video_idx, frame_in_video)
+        # Video — framenum is (take_name, synchronized_frame)
         framenum = row.get("framenum")
         if framenum is None:
             return blank
 
         if not isinstance(framenum, tuple):
             return blank
-        take_name, frame_in_vid = framenum
+        take_name, sync_frame = framenum
 
-        path = self._cam_media.get(camera, {}).get(take_name)
-        if path is None:
+        take = self._takes.get(take_name)
+        tv = take.videos.get(camera) if take is not None else None
+        if tv is None:
             return blank
 
         reader_key = (camera, take_name)
         if reader_key not in self._video_readers:
             try:
-                self._video_readers[reader_key] = VideoReader(Path(path))
+                self._video_readers[reader_key] = VideoReader(tv.path)
             except IOError:
                 return blank
 
-        img = self._video_readers[reader_key].read_frame(frame_in_vid)
+        img = self._video_readers[reader_key].read_frame(sync_frame + max(0, tv.start))
         return img if img is not None else blank
 
     def n_frames(self) -> int:
@@ -261,7 +261,6 @@ class CalibrationView(QWidget):
         self._browse_rows: list[dict] = []  # every frame, before take filtering
         self._display_map: list[int] = []   # display index -> index in _browse_rows
         self._cam_sizes: dict[str, tuple[int, int]] = {}
-        self._cam_media: dict[str, dict[str, Path]] = {}
         self._merged_rows: list[dict] = []
         self._frame_errors: dict[int, dict[str, np.ndarray]] = {}
         self._cgroup = None
@@ -550,15 +549,13 @@ class CalibrationView(QWidget):
         if not self._takes:
             self._log_msg(self._no_takes_message())
             self._detect_btn.setEnabled(False)
-            self._cam_media = {}
             return False
 
         self._detect_btn.setEnabled(True)
-        merged, sizes, media = _scan_take_media(
+        merged, sizes = _scan_take_media(
             self._takes, self._project.cameras, self._skip
         )
         self._cam_sizes = sizes
-        self._cam_media = media
         self._populate_take_combo()
         self._set_browse_rows(merged)
         return True
@@ -593,7 +590,7 @@ class CalibrationView(QWidget):
         self._display_map = keep
         rows = [self._browse_rows[i] for i in keep]
 
-        self._calib_provider.setup(rows, self._cam_sizes, self._cam_media)
+        self._calib_provider.setup(rows, self._cam_sizes, self._takes)
         if rows:
             self._current_frame = min(self._current_frame, len(rows) - 1)
             self._show_frame(self._current_frame)
@@ -664,12 +661,9 @@ class CalibrationView(QWidget):
         else:
             self._progress_bar.setValue(0)
 
-    def _on_detect_finished(
-        self, all_rows: dict, cam_sizes: dict, cam_media: dict
-    ):
+    def _on_detect_finished(self, all_rows: dict, cam_sizes: dict):
         self._all_rows = all_rows
         self._cam_sizes = cam_sizes
-        self._cam_media = cam_media
 
         # Save corners for later reload: one file per take, plus the joint
         # corners.csv holding every take's detections.
@@ -1090,7 +1084,7 @@ class CalibrationView(QWidget):
             framenum = row.get("framenum")
             if isinstance(framenum, tuple):
                 take_name, fi = framenum
-                if len(self._cam_media.get(cam, {})) > 1:
+                if len(self._takes) > 1:
                     return f"{take_name}, frame {fi}", (take_name, fi)
                 return f"Frame {fi}", (take_name, fi)
 
