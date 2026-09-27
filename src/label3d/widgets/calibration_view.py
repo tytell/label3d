@@ -12,7 +12,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -310,7 +310,13 @@ class CalibFrameProvider:
 # ── Main view ─────────────────────────────────────────────────────────────────
 
 class CalibrationView(QWidget):
-    """Full calibration panel: board settings, detect, inspect, calibrate, save."""
+    """Full calibration panel: board settings, detect, inspect, calibrate, save.
+
+    Emits calibration_saved after writing the experiment's calibration.toml,
+    so views that loaded the old one can reload it.
+    """
+
+    calibration_saved = Signal()
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
@@ -1077,6 +1083,8 @@ class CalibrationView(QWidget):
         except Exception as exc:
             self._log_msg(f"  Warning: could not save calibration: {exc}")
             return
+        self._project.reload_calibration()
+        self.calibration_saved.emit()
 
         # corners.csv holds whatever produced the saved calibration.
         exp_dir = self._project.root / "experiments" / self._project.active_experiment

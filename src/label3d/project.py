@@ -132,19 +132,7 @@ class Project:
             # videos/, so their lengths are resolved on demand instead.
             exp_takes = _parse_calibration_takes(exp_rows, cameras)
 
-            calib_path = exp_dir / "calibration.toml"
-            has_calibration = False
-            camera_info: dict[str, CameraInfo] = {}
-            if calib_path.exists():
-                has_calibration = True
-                cal = toml.load(calib_path)
-                for key in sorted(cal.keys()):
-                    if key in ("metadata", "alignment"):
-                        continue
-                    section = cal[key]
-                    name = section.get("name", key)
-                    size = tuple(section.get("size", [0, 0]))
-                    camera_info[name] = CameraInfo(name=name, size=size)
+            has_calibration, camera_info = _read_camera_info(exp_dir / "calibration.toml")
 
             experiments[exp_name] = ExperimentInfo(
                 name=exp_name,
@@ -378,6 +366,20 @@ class Project:
             )
             self.points._save_path = points_path
 
+    def reload_calibration(self, experiment: str | None = None) -> None:
+        """Re-read an experiment's calibration.toml (default: the active one).
+
+        For a calibration written after the project was loaded.
+        """
+        name = experiment or self.active_experiment
+        exp = self.experiments[name]
+        exp.has_calibration, exp.camera_info = _read_camera_info(
+            self.calibration_path(name)
+        )
+        if name == self.active_experiment:
+            self.has_calibration = exp.has_calibration
+            self.camera_info = exp.camera_info
+
     @property
     def calibration_takes(self) -> list[TrialInfo]:
         """Calibration takes of the active experiment, in trials.csv order."""
@@ -408,6 +410,22 @@ class Project:
         trial = self.get_trial(trial_name)
         _, start, _ = trial.camera_videos[camera]
         return start
+
+
+def _read_camera_info(calib_path: Path) -> tuple[bool, dict[str, CameraInfo]]:
+    """(has_calibration, camera name -> CameraInfo) from a calibration.toml."""
+    if not calib_path.exists():
+        return False, {}
+    camera_info: dict[str, CameraInfo] = {}
+    cal = toml.load(calib_path)
+    for key in sorted(cal.keys()):
+        if key in ("metadata", "alignment"):
+            continue
+        section = cal[key]
+        name = section.get("name", key)
+        size = tuple(section.get("size", [0, 0]))
+        camera_info[name] = CameraInfo(name=name, size=size)
+    return True, camera_info
 
 
 # trials.csv columns that are metadata, not camera names.

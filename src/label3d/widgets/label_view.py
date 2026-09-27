@@ -133,6 +133,12 @@ class LabelView(QWidget):
             self._epipolar_cache = None
         self._view_3d.set_cameras(self._cameras)
 
+    def reload_calibration(self) -> None:
+        """Pick up a calibration.toml written during this session and redraw."""
+        self.reload_for_experiment()
+        self._update_all_overlays()
+        self._update_3d_view()
+
     # -- Overlay updates -------------------------------------------------------
 
     def _update_all_overlays(self):

@@ -137,6 +137,9 @@ class MainWindow(QMainWindow):
 
         # Calibration view
         self._calibration_view = CalibrationView(project)
+        self._calibration_view.calibration_saved.connect(
+            self._label_view.reload_calibration
+        )
 
         # Export stub
         _export_stub = QLabel("Export (coming soon)")

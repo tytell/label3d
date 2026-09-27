@@ -555,3 +555,19 @@ class TestRepeatedCalibration:
         )
         assert [r.name for r in results] == ["PreCal", "PostCal", JOINT_TAKE]
         assert [round(r.error, 1) for r in results] == [0.5, 0.2, 0.4]
+
+
+class TestReloadCalibration:
+    def test_calibration_written_after_load_is_picked_up(self, tmp_path, qapp):
+        _write_project(tmp_path, {"PreCal": {"cam1": "p1.mp4", "cam2": "p2.mp4"}})
+        project = Project.load(tmp_path)
+        assert not project.has_calibration
+
+        project.calibration_path().write_text(
+            '[cam_0]\nname = "cam1"\nsize = [640, 480]\n'
+            '[cam_1]\nname = "cam2"\nsize = [800, 600]\n'
+        )
+        project.reload_calibration()
+        assert project.has_calibration
+        assert project.experiments["exp1"].has_calibration
+        assert project.camera_info["cam2"].size == (800, 600)
