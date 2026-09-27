@@ -10,6 +10,8 @@ _COLOR_PREDICTED = QColor(1, 170, 247) # light blue — SLEAP predictions
 _COLOR_ROW_BG = QColor(220, 220, 220)  # row background
 _COLOR_GROOVE = QColor(160, 160, 160)  # groove line
 _COLOR_HANDLE = QColor(80, 80, 80)     # handle triangle
+_COLOR_BOUND = QColor(0, 110, 200)     # start/end markers and the span between
+_COLOR_OUTSIDE = QColor(255, 255, 255, 170)  # veil over frames outside the bounds
 
 _ROW_H = 4      # height of each camera row (px)
 _ROW_GAP = 1    # gap between rows (px)
@@ -18,6 +20,8 @@ _HANDLE_H = 8   # triangle height (px)
 _HANDLE_W = 10  # triangle base width (px)
 _V_PAD = 3      # top/bottom padding (px)
 _H_MARGIN = 6   # left/right margin so handle doesn't clip (px)
+_BOUND_W = 4    # width of a start/end bracket's foot (px)
+_BOUND_GRAB = 6 # how close (px) a press must be to grab a bound marker
 
 
 class FrameSlider(QWidget):
@@ -26,9 +30,13 @@ class FrameSlider(QWidget):
     Camera rows stack above a groove line; a triangle handle marks the current
     frame.  Colors match SLEAP: black for user labels, light blue for
     predicted-only frames.
+
+    Optional start/end bounds (set_bounds) draw as draggable brackets; frames
+    outside them are veiled.  Dragging a bracket emits bounds_changed.
     """
 
     frame_changed = Signal(int)
+    bounds_changed = Signal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -37,8 +45,11 @@ class FrameSlider(QWidget):
         self._camera_order: list[str] = []
         # {camera: {frame_index: 'user'|'predicted'}}
         self._marks: dict[str, dict[int, str]] = {}
+        self._bounds: tuple[int, int] | None = None
+        self._dragging: str | None = None  # 'start' | 'end' while dragging a bound
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMouseTracking(True)  # hover cursor over bound markers
         self._refresh_height()
 
     # -- Public API ------------------------------------------------------------
@@ -57,6 +68,8 @@ class FrameSlider(QWidget):
 
     def set_range(self, max_frame: int) -> None:
         self._max_frame = max(0, max_frame)
+        if self._bounds is not None:
+            self.set_bounds(*self._bounds)  # re-clamp to the new range
         self.update()
 
     def set_value(self, frame: int) -> None:
@@ -65,6 +78,20 @@ class FrameSlider(QWidget):
 
     def value(self) -> int:
         return self._current_frame
+
+    def set_bounds(self, start: int, end: int) -> None:
+        """Show draggable start/end markers (inclusive frames)."""
+        start = max(0, min(start, self._max_frame))
+        self._bounds = (start, max(start, min(end, self._max_frame)))
+        self.update()
+
+    def clear_bounds(self) -> None:
+        self._bounds = None
+        self._dragging = None
+        self.update()
+
+    def bounds(self) -> tuple[int, int] | None:
+        return self._bounds
 
     # -- Geometry helpers ------------------------------------------------------
 
@@ -93,6 +120,31 @@ class FrameSlider(QWidget):
         t = (x - _H_MARGIN) / w
         return round(max(0.0, min(1.0, t)) * self._max_frame)
 
+    def _bound_at(self, x: float) -> str | None:
+        """Which bound marker (if any) is within grabbing distance of x."""
+        if self._bounds is None:
+            return None
+        d_start = abs(x - self._frame_to_x(self._bounds[0]))
+        d_end = abs(x - self._frame_to_x(self._bounds[1]))
+        if min(d_start, d_end) > _BOUND_GRAB:
+            return None
+        # Coincident markers: pick the one the drag can move away from.
+        if d_start == d_end:
+            return "start" if x < self._frame_to_x(self._bounds[0]) else "end"
+        return "start" if d_start < d_end else "end"
+
+    def _drag_bound_to(self, x: float) -> None:
+        frame = self._x_to_frame(x)
+        start, end = self._bounds
+        if self._dragging == "start":
+            new = (min(frame, end), end)
+        else:
+            new = (start, max(frame, start))
+        if new != self._bounds:
+            self._bounds = new
+            self.update()
+            self.bounds_changed.emit(*new)
+
     # -- Painting --------------------------------------------------------------
 
     def paintEvent(self, _event) -> None:
@@ -115,6 +167,9 @@ class FrameSlider(QWidget):
         # Groove
         painter.fillRect(_H_MARGIN, groove_y, content_w, _GROOVE_H, _COLOR_GROOVE)
 
+        if self._bounds is not None:
+            self._paint_bounds(painter, groove_y)
+
         # Handle triangle (points downward from groove)
         hx = self._frame_to_x(self._current_frame)
         hy = groove_y + _GROOVE_H
@@ -130,22 +185,58 @@ class FrameSlider(QWidget):
 
         painter.end()
 
+    def _paint_bounds(self, painter: QPainter, groove_y: int) -> None:
+        """Veil frames outside the bounds and draw [ ] brackets at them."""
+        x0 = int(self._frame_to_x(self._bounds[0]))
+        x1 = int(self._frame_to_x(self._bounds[1]))
+        top = _V_PAD
+        bottom = groove_y + _GROOVE_H
+
+        painter.fillRect(_H_MARGIN, top, x0 - _H_MARGIN, bottom - top, _COLOR_OUTSIDE)
+        right = self.width() - _H_MARGIN
+        painter.fillRect(x1 + 1, top, right - x1 - 1, bottom - top, _COLOR_OUTSIDE)
+
+        painter.fillRect(x0, groove_y, x1 - x0 + 1, _GROOVE_H, _COLOR_BOUND)
+        # Each bracket: a 2px upright plus feet at top and bottom pointing inward.
+        for upright_x, foot_x in ((x0, x0), (x1 - 1, x1 - _BOUND_W + 1)):
+            painter.fillRect(upright_x, top, 2, bottom - top, _COLOR_BOUND)
+            painter.fillRect(foot_x, top, _BOUND_W, 2, _COLOR_BOUND)
+            painter.fillRect(foot_x, bottom - 2, _BOUND_W, 2, _COLOR_BOUND)
+
     # -- Mouse interaction -----------------------------------------------------
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            frame = self._x_to_frame(event.position().x())
+            x = event.position().x()
+            self._dragging = self._bound_at(x)
+            if self._dragging is not None:
+                return
+            frame = self._x_to_frame(x)
             self._current_frame = frame
             self.update()
             self.frame_changed.emit(frame)
 
     def mouseMoveEvent(self, event) -> None:
-        if event.buttons() & Qt.MouseButton.LeftButton:
-            frame = self._x_to_frame(event.position().x())
-            if frame != self._current_frame:
-                self._current_frame = frame
-                self.update()
-                self.frame_changed.emit(frame)
+        x = event.position().x()
+        if not event.buttons() & Qt.MouseButton.LeftButton:
+            over = self._bound_at(x) is not None
+            if over:
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+            else:
+                self.unsetCursor()
+            return
+        if self._dragging is not None:
+            self._drag_bound_to(x)
+            return
+        frame = self._x_to_frame(x)
+        if frame != self._current_frame:
+            self._current_frame = frame
+            self.update()
+            self.frame_changed.emit(frame)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = None
 
     def sizeHint(self) -> QSize:
         return QSize(200, self.height())

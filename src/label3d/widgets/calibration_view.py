@@ -59,6 +59,7 @@ from label3d.workers.calibration_worker import (
     MultiTakeCalibrationWorker,
     TakeVideo,
     rows_for_take,
+    rows_in_range,
     calibration_images_error,
 )
 
@@ -115,6 +116,41 @@ def take_row_indices(rows: list[dict], take: str | None) -> list[int]:
     return [i for i, r in enumerate(rows) if row_take(r) == take]
 
 
+def take_range(config: dict, experiment: str, take: str) -> tuple[int, int | None]:
+    """A take's calibration frame range from project.toml (end None = to the end).
+
+    Stored as [calibration.ranges."<experiment>"."<take>"] with start/end in
+    synchronized frames.
+    """
+    ranges = config.get("calibration", {}).get("ranges", {})
+    entry = ranges.get(experiment, {}).get(take, {})
+    end = entry.get("end")
+    return int(entry.get("start", 0)), (int(end) if end is not None else None)
+
+
+def rekey_frame_errors(
+    frame_errors: dict[int, dict],
+    rows_by_cam: dict[str, list],
+    cam_names: list[str],
+    full_rows: list[dict],
+) -> dict[int, dict]:
+    """Re-key errors from positions in merge_rows(rows_by_cam) to full_rows.
+
+    compute_frame_errors numbers frames by position in whatever rows it was
+    given; the view looks them up by index into the full merged list. Matching
+    on (take, frame) keeps the two aligned however the rows were filtered.
+    """
+    merged = merge_rows([rows_by_cam.get(c, []) for c in cam_names], cam_names=cam_names)
+    full_index = {row_key(row): i for i, row in enumerate(full_rows)}
+    rekeyed = {}
+    for pos, errs in frame_errors.items():
+        if 0 <= pos < len(merged):
+            idx = full_index.get(row_key(merged[pos]))
+            if idx is not None:
+                rekeyed[idx] = errs
+    return rekeyed
+
+
 def _build_takes(project: Project) -> list[CalibrationTake]:
     """Build detection takes from the is_calibration rows of trials.csv."""
     takes: list[CalibrationTake] = []
@@ -126,7 +162,8 @@ def _build_takes(project: Project) -> list[CalibrationTake]:
             videos[cam] = TakeVideo(
                 path=project.video_path(info.name, cam), start=start, end=end
             )
-        takes.append(CalibrationTake(name=info.name, videos=videos))
+        start, end = take_range(project.config, project.active_experiment, info.name)
+        takes.append(CalibrationTake(name=info.name, videos=videos, start=start, end=end))
     return takes
 
 
@@ -162,8 +199,10 @@ def _scan_take_media(
 
             start = max(0, tv.start)
             last = tv.end if tv.end is not None else total - 1
-            take_lengths[take.name] = max(take_lengths[take.name], last - start + 1)
-            for frame in range(0, last - start + 1, skip):
+            n_sync = last - start + 1
+            take_lengths[take.name] = max(take_lengths[take.name], n_sync)
+            stop = n_sync if take.end is None else min(n_sync, take.end + 1)
+            for frame in range(take.start, stop, skip):
                 key = (take.name, frame)
                 if key not in cam_keys[cam]:
                     cam_keys[cam].add(key)
@@ -286,6 +325,7 @@ class CalibrationView(QWidget):
         self._cam_sizes: dict[str, tuple[int, int]] = {}
         self._take_lengths: dict[str, int] = {}  # synchronized frames per take
         self._merged_rows: list[dict] = []
+        self._calib_rows: dict[str, list] = {}  # detections the last calibration used
         self._frame_errors: dict[int, dict[str, np.ndarray]] = {}
         self._cgroup = None
         self._epipolar_cache: EpipolarCache | None = None
@@ -353,6 +393,23 @@ class CalibrationView(QWidget):
         self._skip_spin.setValue(calib_cfg.get("frame_skip", _FRAME_SKIP_DEFAULT))
         self._skip_spin.setToolTip("Detect corners on every Nth video frame.")
         detect_form.addRow("Video frame step:", self._skip_spin)
+
+        # Per-take frame range; also shown as draggable brackets on the slider.
+        self._range_take_label = QLabel("—")
+        self._start_spin = QSpinBox()
+        self._end_spin = QSpinBox()
+        for sb in (self._start_spin, self._end_spin):
+            sb.setRange(0, 0)
+            sb.setKeyboardTracking(False)
+        self._start_spin.setToolTip(
+            "First synchronized frame of this take used for calibration."
+        )
+        self._end_spin.setToolTip(
+            "Last synchronized frame of this take used for calibration."
+        )
+        detect_form.addRow("Range of take:", self._range_take_label)
+        detect_form.addRow("Start frame:", self._start_spin)
+        detect_form.addRow("End frame:", self._end_spin)
         left_layout.addWidget(detect_group)
 
         # Calibration takes group
@@ -403,6 +460,15 @@ class CalibrationView(QWidget):
         ):
             sb.valueChanged.connect(self._settings_timer.start)
         self._skip_spin.valueChanged.connect(self._on_skip_changed)
+
+        # Rebuilding the raw frame list reopens every video, so wait for a
+        # range drag or edit to settle first.
+        self._range_timer = QTimer(self)
+        self._range_timer.setSingleShot(True)
+        self._range_timer.setInterval(300)
+        self._range_timer.timeout.connect(self._on_range_settled)
+        self._start_spin.valueChanged.connect(self._on_range_spin_changed)
+        self._end_spin.valueChanged.connect(self._on_range_spin_changed)
 
         # Per-camera detection count labels
         cam_group = QGroupBox("Detection counts")
@@ -483,6 +549,7 @@ class CalibrationView(QWidget):
         self._slider = FrameSlider()
         self._slider.set_cameras(project.cameras)
         self._slider.frame_changed.connect(self._on_slider_seek)
+        self._slider.bounds_changed.connect(self._on_slider_bounds_changed)
 
         nav_layout.addWidget(self._first_btn)
         nav_layout.addWidget(self._prev_btn)
@@ -629,17 +696,83 @@ class CalibrationView(QWidget):
         self._update_frame_nav()
 
     def _rescan_raw_media(self) -> None:
+        """Rebuild the raw frame list, staying near the frame being shown."""
+        rows = self._calib_provider.merged_rows
+        key = row_key(rows[self._current_frame]) if self._current_frame < len(rows) else None
         self._load_take_media()
+        if key is not None:
+            idx = nearest_row(self._calib_provider.merged_rows, key[0], key[1])
+            if idx is not None:
+                self._show_frame(idx)
 
     def _save_settings(self) -> None:
-        """Write board + detection settings back to project.toml."""
+        """Write board + detection settings back to project.toml.
+
+        [calibration] also holds the per-take ranges and drift thresholds, so
+        it is merged into rather than replaced.
+        """
+        calibration = dict(self._project.config.get("calibration", {}))
+        calibration["frame_skip"] = self._skip
         try:
             self._project.save_config_sections({
                 "charuco": self._board_params(),
-                "calibration": {"frame_skip": self._skip},
+                "calibration": calibration,
             })
         except Exception as exc:
             self._log_msg(f"  Warning: could not save settings: {exc}")
+
+    # ── Per-take frame range ──────────────────────────────────────────────
+
+    def _take_by_name(self, name: str | None) -> CalibrationTake | None:
+        return next((t for t in self._takes if t.name == name), None)
+
+    def _on_range_spin_changed(self) -> None:
+        start, end = self._start_spin.value(), self._end_spin.value()
+        # Keep start <= end by moving whichever spin box was not edited.
+        if start > end:
+            other = self._end_spin if self.sender() is self._start_spin else self._start_spin
+            other.blockSignals(True)
+            other.setValue(start if other is self._end_spin else end)
+            other.blockSignals(False)
+            start, end = self._start_spin.value(), self._end_spin.value()
+        self._set_take_range(start, end)
+
+    def _on_slider_bounds_changed(self, start: int, end: int) -> None:
+        for sb, value in ((self._start_spin, start), (self._end_spin, end)):
+            sb.blockSignals(True)
+            sb.setValue(value)
+            sb.blockSignals(False)
+        self._set_take_range(start, end)
+
+    def _set_take_range(self, start: int, end: int) -> None:
+        """Apply a new range to the slider's take and remember it in the config."""
+        take = self._take_by_name(self._slider_take())
+        if take is None:
+            return
+        take.start, take.end = start, end
+        self._slider.set_bounds(start, end)
+
+        # Update the in-memory config now (detection rebuilds takes from it);
+        # the file write is debounced with the other settings.
+        calibration = self._project.config.setdefault("calibration", {})
+        exp_ranges = calibration.setdefault("ranges", {}).setdefault(
+            self._project.active_experiment, {}
+        )
+        exp_ranges[take.name] = {"start": start, "end": end}
+        self._settings_timer.start()
+        self._range_timer.start()
+
+    def _on_range_settled(self) -> None:
+        if self._all_rows is None:
+            self._rescan_raw_media()
+            return
+        take = self._take_by_name(self._slider_take())
+        if take is not None:
+            self._log_msg(
+                f"Range of {take.name}: frames {take.start}-{take.end}. Detected "
+                "frames outside it are left out of calibration; to cover frames "
+                "that were not detected, run Detect Corners again."
+            )
 
     # ── Detection ─────────────────────────────────────────────────────────
 
@@ -749,10 +882,17 @@ class CalibrationView(QWidget):
         self._calibrate_btn.setEnabled(False)
         self._log_msg("=== Calibration started ===")
 
+        self._calib_rows = rows_in_range(self._all_rows, self._takes)
+        n_dropped = sum(len(r) for r in self._all_rows.values()) - sum(
+            len(r) for r in self._calib_rows.values()
+        )
+        if n_dropped:
+            self._log_msg(f"  Leaving out {n_dropped} detections outside the frame ranges")
+
         self._calibration_worker = MultiTakeCalibrationWorker(
             cam_names=self._project.cameras,
             cam_sizes=self._cam_sizes,
-            all_rows=self._all_rows,
+            all_rows=self._calib_rows,
             board_params=self._board_params(),
             take_names=[t.name for t in self._takes],
         )
@@ -773,6 +913,15 @@ class CalibrationView(QWidget):
         if not results:
             self._log_msg("=== Calibration produced no solutions ===")
             return
+
+        # Errors come keyed by position in each solution's own rows.
+        for result in results:
+            rows = self._calib_rows
+            if result.name != JOINT_TAKE:
+                rows = rows_for_take(rows, result.name)
+            result.frame_errors = rekey_frame_errors(
+                result.frame_errors, rows, self._project.cameras, self._merged_rows
+            )
 
         self._save_take_calibrations(results)
         self._populate_take_table(results)
@@ -870,15 +1019,8 @@ class CalibrationView(QWidget):
         if result is None:
             return
 
-        # A single take's errors are keyed by position within that take's own
-        # rows; overlays look them up by index into the full merged list.
-        if result.name == JOINT_TAKE:
-            self._frame_errors = result.frame_errors
-        else:
-            self._frame_errors = {
-                self._full_index(i): errs
-                for i, errs in result.frame_errors.items()
-            }
+        # _on_calibrate_finished re-keyed these to the full merged list.
+        self._frame_errors = result.frame_errors
         self._error_label.setText(f"Reprojection error: {result.error:.3f} px")
         self._apply_calibration(result.cgroup)
         self._show_frame(self._current_frame)
@@ -899,7 +1041,7 @@ class CalibrationView(QWidget):
 
         # corners.csv holds whatever produced the saved calibration.
         exp_dir = self._project.root / "experiments" / self._project.active_experiment
-        rows_by_cam = self._all_rows or {}
+        rows_by_cam = self._calib_rows
         if result.name != JOINT_TAKE:
             rows_by_cam = rows_for_take(rows_by_cam, result.name)
         for cam in self._project.cameras:
@@ -952,6 +1094,7 @@ class CalibrationView(QWidget):
 
         self._all_rows = None
         self._merged_rows = []
+        self._calib_rows = {}
         self._frame_errors = {}
         self._cgroup = None
         self._epipolar_cache = None
@@ -1103,7 +1246,9 @@ class CalibrationView(QWidget):
     def _update_slider(self) -> None:
         """Point the slider at the current frame's take, position, and detections."""
         take = self._slider_take()
-        self._slider.set_range(max(0, self._take_lengths.get(take, 0) - 1))
+        last = max(0, self._take_lengths.get(take, 0) - 1)
+        self._slider.set_range(last)
+        self._update_range_controls(self._take_by_name(take), last)
 
         rows = self._calib_provider.merged_rows
         key = row_key(rows[self._current_frame]) if self._current_frame < len(rows) else None
@@ -1119,6 +1264,25 @@ class CalibrationView(QWidget):
                 if cell.get("corners") is not None and cam in marks:
                     marks[cam][key[1]] = "user"
         self._slider.set_marks(marks)
+
+    def _update_range_controls(self, take: CalibrationTake | None, last: int) -> None:
+        """Show `take`'s range in the spin boxes and as slider brackets."""
+        enabled = take is not None and self._take_lengths.get(take.name, 0) > 0
+        self._range_take_label.setText(take.name if take is not None else "—")
+        self._start_spin.setEnabled(enabled)
+        self._end_spin.setEnabled(enabled)
+        if not enabled:
+            self._slider.clear_bounds()
+            return
+
+        start = min(take.start, last)
+        end = last if take.end is None else max(start, min(take.end, last))
+        for sb, value in ((self._start_spin, start), (self._end_spin, end)):
+            sb.blockSignals(True)
+            sb.setRange(0, last)
+            sb.setValue(value)
+            sb.blockSignals(False)
+        self._slider.set_bounds(start, end)
 
     def _on_slider_seek(self, frame: int) -> None:
         """Jump to the listed frame nearest the clicked synchronized frame."""

@@ -78,10 +78,19 @@ class TakeVideo:
 
 @dataclass
 class CalibrationTake:
-    """One synchronized calibration recording across cameras."""
+    """One synchronized calibration recording across cameras.
+
+    start/end bound the synchronized frames used for calibration (inclusive;
+    end None means through the end of the take).
+    """
 
     name: str
     videos: dict[str, TakeVideo] = field(default_factory=dict)  # camera -> video
+    start: int = 0
+    end: int | None = None
+
+    def contains(self, frame: int) -> bool:
+        return frame >= self.start and (self.end is None or frame <= self.end)
 
 
 class DetectionWorker(QThread):
@@ -166,7 +175,7 @@ class DetectionWorker(QThread):
                             cam_sizes[cam_name] = size
 
                     self.progress.emit(f"  {cam_name} [{take.name}]: detecting corners...")
-                    rows = self._detect_video(board, tv, take.name)
+                    rows = self._detect_video(board, tv, take)
                     all_rows[cam_name].extend(rows)
 
             for cam_name in self._cam_names:
@@ -179,20 +188,25 @@ class DetectionWorker(QThread):
         except Exception as exc:
             self.error_occurred.emit(str(exc))
 
-    def _detect_video(self, board, tv: TakeVideo, take_name: str) -> list:
+    def _detect_video(self, board, tv: TakeVideo, take: CalibrationTake) -> list:
         """Detect corners on every ``self._skip``-th frame of one take's video.
 
         Frame numbers in the returned rows are *synchronized* take frames (video
         frame minus the camera's start offset), so merge_rows pairs frames that
         were recorded at the same instant even when cameras' offsets differ.
+        Only the take's start/end range is scanned, striding from its start.
         """
+        take_name = take.name
         cap = cv2.VideoCapture(str(tv.path))
         if not cap.isOpened():
             raise FileNotFoundError(f'missing video file "{tv.path}"')
 
         n_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        start = max(0, tv.start)
+        offset = max(0, tv.start)
+        start = offset + take.start
         last = tv.end if tv.end is not None else (n_total - 1 if n_total > 0 else None)
+        if take.end is not None:
+            last = offset + take.end if last is None else min(last, offset + take.end)
         span = (last - start + 1) if last is not None and last >= start else 0
         update_every = max(1, span // 200) if span else 30
         label = f"Detecting corners: {take_name} / {tv.path.name}"
@@ -221,7 +235,7 @@ class DetectionWorker(QThread):
             if corners is not None and len(corners) > 0:
                 v_rows.append(
                     {
-                        "framenum": (take_name, framenum - start),
+                        "framenum": (take_name, framenum - offset),
                         "corners": corners,
                         "ids": ids,
                     }
@@ -283,6 +297,24 @@ def rows_for_take(rows_by_cam: dict[str, list], take: str) -> dict[str, list]:
         ]
         for cam, rows in rows_by_cam.items()
     }
+
+
+def rows_in_range(
+    rows_by_cam: dict[str, list], takes: list[CalibrationTake]
+) -> dict[str, list]:
+    """Drop detection rows outside their take's start/end range.
+
+    Rows from a take not in `takes` are kept — there is no range to apply.
+    """
+    by_name = {take.name: take for take in takes}
+
+    def keep(row: dict) -> bool:
+        framenum = row.get("framenum")
+        if not isinstance(framenum, tuple) or framenum[0] not in by_name:
+            return True
+        return by_name[framenum[0]].contains(framenum[1])
+
+    return {cam: [r for r in rows if keep(r)] for cam, rows in rows_by_cam.items()}
 
 
 class MultiTakeCalibrationWorker(QThread):

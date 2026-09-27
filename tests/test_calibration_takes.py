@@ -12,13 +12,18 @@ from label3d.calibration_io import corners_path, load_corners, save_corners
 from label3d.project import Project
 from label3d.widgets.calibration_view import (
     CalibFrameProvider,
+    _build_takes,
     _scan_take_media,
     nearest_row,
+    rekey_frame_errors,
+    take_range,
 )
+from label3d.widgets.frame_slider import FrameSlider
 from label3d.workers.calibration_worker import (
     CalibrationTake,
     DetectionWorker,
     TakeVideo,
+    rows_in_range,
 )
 
 CAMERAS = ["cam1", "cam2"]
@@ -351,7 +356,7 @@ class TestSynchronizedFrames:
         worker = DetectionWorker(["cam1", "cam2"], {}, [offset_take], skip=5)
         board = _AlwaysDetects()
         frames = {
-            cam: [r["framenum"] for r in worker._detect_video(board, tv, "PreCal")]
+            cam: [r["framenum"] for r in worker._detect_video(board, tv, offset_take)]
             for cam, tv in offset_take.videos.items()
         }
         assert frames["cam1"] == [("PreCal", s) for s in (0, 5, 10, 15)]
@@ -391,3 +396,89 @@ class TestNearestRow:
     def test_no_rows_in_take(self):
         assert nearest_row(self.ROWS, "C", 0) is None
         assert nearest_row([], "A", 0) is None
+
+
+class TestTakeRange:
+    def test_detection_scans_only_the_range(self, offset_take, qapp):
+        offset_take.start, offset_take.end = 4, 12
+        worker = DetectionWorker(["cam1", "cam2"], {}, [offset_take], skip=5)
+        board = _AlwaysDetects()
+        for tv in offset_take.videos.values():
+            frames = [r["framenum"][1] for r in worker._detect_video(board, tv, offset_take)]
+            # Strides from the range start, so both cameras sample the same instants
+            assert frames == [4, 9]
+
+    def test_browse_rows_follow_the_range(self, offset_take):
+        offset_take.start, offset_take.end = 4, 12
+        merged, _, lengths = _scan_take_media([offset_take], ["cam1", "cam2"], skip=5)
+        assert [row["cam1"]["framenum"][1] for row in merged] == [4, 9]
+        assert lengths == {"PreCal": 20}  # the slider still spans the whole take
+
+    def test_range_read_from_config(self):
+        config = {"calibration": {"ranges": {"exp1": {"PreCal": {"start": 30, "end": 900}}}}}
+        assert take_range(config, "exp1", "PreCal") == (30, 900)
+        assert take_range(config, "exp1", "PostCal") == (0, None)
+        assert take_range({}, "exp1", "PreCal") == (0, None)
+
+    def test_build_takes_applies_saved_range(self, tmp_path, qapp):
+        _write_project(tmp_path, {"PreCal": {"cam1": "p1.mp4", "cam2": "p2.mp4"}})
+        (tmp_path / "project.toml").write_text(
+            '[calibration.ranges.exp1.PreCal]\nstart = 10\nend = 50\n'
+        )
+        take = _build_takes(Project.load(tmp_path))[0]
+        assert (take.start, take.end) == (10, 50)
+
+    def test_rows_in_range(self):
+        take = CalibrationTake("A", start=10, end=30)
+        rows = {"cam1": [
+            {"framenum": ("A", 0)}, {"framenum": ("A", 10)},
+            {"framenum": ("A", 30)}, {"framenum": ("A", 31)},
+            {"framenum": ("B", 0)},   # no range known for B: kept
+        ]}
+        kept = rows_in_range(rows, [take])["cam1"]
+        assert [r["framenum"] for r in kept] == [("A", 10), ("A", 30), ("B", 0)]
+
+
+class TestRekeyFrameErrors:
+    def test_errors_follow_rows_after_filtering(self):
+        """Position 0 of the filtered rows is frame ("A", 20), index 1 in full."""
+        cams = ["cam1", "cam2"]
+        full = [_merged("A", 0), _merged("A", 20), _merged("A", 40)]
+        filtered = {c: [{"framenum": ("A", 20)}, {"framenum": ("A", 40)}] for c in cams}
+        rekeyed = rekey_frame_errors({0: "e20", 1: "e40"}, filtered, cams, full)
+        assert rekeyed == {1: "e20", 2: "e40"}
+
+
+class TestSliderBounds:
+    def test_bounds_clamp_to_range(self, qapp):
+        slider = FrameSlider()
+        slider.set_range(100)
+        slider.set_bounds(-5, 500)
+        assert slider.bounds() == (0, 100)
+        slider.set_bounds(60, 40)          # end before start collapses onto start
+        assert slider.bounds() == (60, 60)
+        slider.set_range(50)               # shrinking the range re-clamps
+        assert slider.bounds() == (50, 50)
+
+    def test_dragging_a_bound_emits_without_seeking(self, qapp):
+        slider = FrameSlider()
+        slider.resize(212, slider.height())   # 200 px of track: 2 px per frame
+        slider.set_range(100)
+        slider.set_bounds(20, 80)
+        seeks, bounds = [], []
+        slider.frame_changed.connect(seeks.append)
+        slider.bounds_changed.connect(lambda s, e: bounds.append((s, e)))
+
+        x_start = slider._frame_to_x(20)
+        assert slider._bound_at(x_start) == "start"
+        slider._dragging = "start"
+        slider._drag_bound_to(slider._frame_to_x(50))
+        slider._drag_bound_to(slider._frame_to_x(95))   # can't pass the end marker
+        assert bounds == [(50, 80), (80, 80)]
+        assert seeks == []
+
+    def test_no_bounds_means_no_grab(self, qapp):
+        slider = FrameSlider()
+        slider.resize(212, slider.height())
+        slider.set_range(100)
+        assert slider._bound_at(slider._frame_to_x(0)) is None
