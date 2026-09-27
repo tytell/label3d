@@ -13,6 +13,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -586,6 +587,8 @@ class CalibrationView(QWidget):
                 overlay = CharucoOverlay(panel.scene(), cam)
                 panel._charuco_overlay = overlay
                 self._charuco_overlays[cam] = overlay
+
+        self._setup_shortcuts()
 
         # Pre-populate frame provider so frames appear before corner detection
         self._load_take_media()
@@ -1164,6 +1167,37 @@ class CalibrationView(QWidget):
         self._update_frame_nav()
 
     # ── Frame navigation ──────────────────────────────────────────────────
+
+    def _setup_shortcuts(self) -> None:
+        """Arrow keys step through listed frames, mirroring the Label tab's keys.
+
+        Qt ignores shortcuts whose parent is hidden, so these only fire while
+        the Calibrate tab is shown, and the Label tab's only while it is.
+        """
+        shortcuts = [
+            (Qt.Key.Key_Right, lambda: self._step(1)),
+            (Qt.Key.Key_Left, lambda: self._step(-1)),
+            (QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Right), lambda: self._step(4)),
+            (QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Left), lambda: self._step(-4)),
+            (QKeySequence(Qt.Modifier.CTRL | Qt.Modifier.ALT | Qt.Key.Key_Right),
+             lambda: self._step(100)),
+            (QKeySequence(Qt.Modifier.CTRL | Qt.Modifier.ALT | Qt.Key.Key_Left),
+             lambda: self._step(-100)),
+            (Qt.Key.Key_Home, self._go_first),
+            (Qt.Key.Key_End, self._go_last),
+        ]
+        for key, callback in shortcuts:
+            shortcut = QShortcut(key, self)
+            shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+            shortcut.activated.connect(callback)
+
+    def _step(self, delta: int) -> None:
+        n = self._calib_provider.n_frames()
+        if n == 0:
+            return
+        target = max(0, min(n - 1, self._current_frame + delta))
+        if target != self._current_frame:
+            self._show_frame(target)
 
     def _go_first(self):
         self._show_frame(0)

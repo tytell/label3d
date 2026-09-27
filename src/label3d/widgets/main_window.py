@@ -157,6 +157,9 @@ class MainWindow(QMainWindow):
 
         # Connect tab switching
         self._tabs.currentChanged.connect(self._on_tab_changed)
+        # An experiment with no calibration.toml needs calibrating before labeling
+        if not project.has_calibration:
+            self._tabs.setCurrentIndex(0)
 
         # Status bar
         self._status_bar = QStatusBar()
@@ -417,6 +420,8 @@ class MainWindow(QMainWindow):
         self._connect_store(self._project.points)
         self._label_view.reload_for_experiment()
         self._calibration_view.reload_for_experiment()
+        if not self._project.has_calibration:
+            self._tabs.setCurrentIndex(0)
 
         # Repopulate trial combo without triggering _on_trial_changed
         self._trial_combo.blockSignals(True)
