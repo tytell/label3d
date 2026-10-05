@@ -170,6 +170,13 @@ class TestProjectMapping:
 MCAMS = ["cam1", "cam2"]
 
 
+def _cam_values(x, y, state, source=None, score=NAN, sync=NAN) -> list:
+    """One camera's CAM_COORDS values; source defaults to label3d for labeled states."""
+    if source is None:
+        source = "label3d" if state in ("set", "predicted", "not_visible") else ""
+    return [x, y, NAN, NAN, state, source, score, sync]
+
+
 def _df(cells: dict) -> pd.DataFrame:
     """Build a points DataFrame.
 
@@ -182,8 +189,8 @@ def _df(cells: dict) -> pd.DataFrame:
     for (frame, inst, bp), cams in cells.items():
         row = []
         for c in MCAMS:
-            x, y, s = cams.get(c, (NAN, NAN, "not_set"))
-            row += [x, y, NAN, NAN, s]
+            x, y, s, *extra = cams.get(c, (NAN, NAN, "not_set"))
+            row += _cam_values(x, y, s, *extra)
         row += [NAN, NAN, NAN]
         idx.append((EXP, "t1", frame, inst, bp))
         data.append(row)

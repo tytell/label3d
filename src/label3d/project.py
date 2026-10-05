@@ -20,6 +20,12 @@ from label3d.skeleton import Skeleton
 from label3d.slp_sync import MergeResult, SlpMapping, compute_merge
 
 
+SYNC_HISTORY_COLUMNS = [
+    "id", "timestamp", "kind", "experiment", "trial",
+    "n_new_user", "n_new_pred", "n_updated_pred", "n_conflicts",
+]
+
+
 @dataclass
 class CameraInfo:
     """Minimal camera info from calibration.toml (enough for display; full
@@ -72,6 +78,9 @@ class Project:
     config: dict = field(default_factory=dict)  # from project.toml
     experiments: dict[str, ExperimentInfo] = field(default_factory=dict)
     active_experiment: str = ""
+
+    def __post_init__(self) -> None:
+        self._attach_latest_sync()
 
     @classmethod
     def load(cls, path: Path) -> Project:
@@ -258,12 +267,18 @@ class Project:
             return PointsStore.read_csv_df(csv_path)
         return PointsStore.empty_df(self.cameras)
 
-    def read_slp_for_sync(self, mapping: SlpMapping | None = None) -> dict[str, MergeResult]:
+    def read_slp_for_sync(
+        self, mapping: SlpMapping | None = None, sync: bool = True
+    ) -> dict[str, MergeResult]:
         """Read SLP files and merge them with each experiment's points.
 
         Uses the mapping (default: project.toml's); with no mapping, reads all
         slp/*.slp files matched by video basename.  Does not modify anything.
         Safe to call from a background thread.
+
+        sync=True gives merged cells the next sync id, so they show as new once
+        apply_merge() records the sync.  sync=False (initial import at project
+        setup) records sources and scores but marks nothing new.
         """
         mapping = self.slp_mapping if mapping is None else mapping
         adapter = SleapAdapter()
@@ -273,23 +288,108 @@ class Project:
             )
         else:
             slp_df = adapter.load(sorted(self.slp_dir.glob("*.slp")), self.trials_df, self.cameras)
+        return self._merge_by_experiment(slp_df, self.next_sync_id() if sync else None)
 
+    def read_predictions_for_import(
+        self, paths: list[Path]
+    ) -> tuple[dict[str, MergeResult], list[str]]:
+        """Read .slp files from anywhere (e.g. sleap-nn track output) and merge them.
+
+        Videos are matched to (experiment, trial, camera) by basename, so a
+        file made on another machine still matches.  The files are only read.
+        Returns (results by experiment, basenames of videos that matched no
+        trial).  Safe to call from a background thread.
+        """
+        unmatched: list[str] = []
+        slp_df = SleapAdapter().load(
+            list(paths), self.trials_df, self.cameras, unmatched=unmatched
+        )
+        return self._merge_by_experiment(slp_df, self.next_sync_id()), unmatched
+
+    def _merge_by_experiment(
+        self, slp_df: pd.DataFrame, sync_id: int | None
+    ) -> dict[str, MergeResult]:
         results = {}
         for name in self.experiments:
             exp_slp = slp_df
             if not slp_df.empty:
                 exp_slp = slp_df[slp_df.index.get_level_values("experiment") == name]
-            results[name] = compute_merge(self.experiment_points_df(name), exp_slp)
+            results[name] = compute_merge(self.experiment_points_df(name), exp_slp, sync_id)
         return results
 
-    def apply_merge(self, results: dict[str, MergeResult], overwrite: bool) -> None:
+    # -- Sync history ----------------------------------------------------------
+
+    @property
+    def sync_history_path(self) -> Path:
+        return self.root / "sync_history.csv"
+
+    def sync_history(self) -> pd.DataFrame:
+        """All recorded syncs, one row per (sync, experiment, trial) that changed."""
+        path = self.sync_history_path
+        if not path.exists():
+            return pd.DataFrame(columns=SYNC_HISTORY_COLUMNS)
+        df = pd.read_csv(path, dtype={"experiment": str, "trial": str})
+        return df
+
+    def latest_sync_id(self) -> int | None:
+        history = self.sync_history()
+        if history.empty:
+            return None
+        return int(history["id"].max())
+
+    def next_sync_id(self) -> int:
+        latest = self.latest_sync_id()
+        return 1 if latest is None else latest + 1
+
+    def _record_sync(
+        self, results: dict[str, MergeResult], overwrite: bool, kind: str
+    ) -> None:
+        """Append one history row per (experiment, trial) with new points or conflicts taken."""
+        rows = []
+        timestamp = datetime.now().isoformat(timespec="seconds")
+        for name, result in results.items():
+            if result.sync_id is None:
+                continue
+            for (exp, trial), counts in sorted(result.trial_counts.items()):
+                n_conflicts = counts.get("conflicts", 0)
+                row = {
+                    "id": result.sync_id,
+                    "timestamp": timestamp,
+                    "kind": kind,
+                    "experiment": exp,
+                    "trial": trial,
+                    "n_new_user": counts.get("new_user", 0)
+                    + (n_conflicts if overwrite else 0),
+                    "n_new_pred": counts.get("new_pred", 0),
+                    "n_updated_pred": counts.get("updated_pred", 0),
+                    "n_conflicts": n_conflicts,
+                }
+                if row["n_new_user"] or row["n_new_pred"] or row["n_updated_pred"]:
+                    rows.append(row)
+        if not rows:
+            return
+        path = self.sync_history_path
+        pd.DataFrame(rows, columns=SYNC_HISTORY_COLUMNS).to_csv(
+            path, mode="a", header=not path.exists(), index=False
+        )
+
+    def _attach_latest_sync(self) -> None:
+        if self.points is not None:
+            self.points.latest_sync = self.latest_sync_id()
+
+    def apply_merge(
+        self, results: dict[str, MergeResult], overwrite: bool, kind: str = "sync"
+    ) -> None:
         """Store merge results: the active store in memory + points.csv, others to points.csv.
 
-        overwrite=True takes conflicting points from the SLP files.
+        overwrite=True takes conflicting points from the SLP files.  Merges that
+        brought in new points are recorded in sync_history.csv (kind: sync,
+        open, close or import), which makes them the latest sync.
         Must be called from the main thread (may create a PointsStore).
         """
+        self._record_sync(results, overwrite, kind)
         for name, result in results.items():
-            if not result.changed_frames and not (overwrite and result.conflicts):
+            if not result.has_changes and not (overwrite and result.conflicts):
                 continue
             df = result.df_overwrite if overwrite else result.df
             exp = self.experiments[name]
@@ -304,6 +404,7 @@ class Project:
             else:
                 exp.root.mkdir(parents=True, exist_ok=True)
                 df.to_csv(exp.root / "points.csv")
+        self._attach_latest_sync()
 
     def write_slp_files(self, mapping: SlpMapping | None = None) -> int:
         """Write all experiments' points to the mapped SLP files.  Returns files written.
@@ -365,6 +466,7 @@ class Project:
                 cameras=exp.cameras, bodyparts=[], experiment_name=name
             )
             self.points._save_path = points_path
+        self._attach_latest_sync()
 
     def reload_calibration(self, experiment: str | None = None) -> None:
         """Re-read an experiment's calibration.toml (default: the active one).

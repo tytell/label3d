@@ -2,7 +2,12 @@
 
 The DataFrame uses a 5-level row MultiIndex (experiment, trial, frame, instance, bodypart)
 and a 2-level column MultiIndex (view, coord).  Real cameras have coords
-{x, y, xr, yr, state}; the "3d" pseudo-camera has coords {x, y, z}.
+{x, y, xr, yr, state, source, score, sync}; the "3d" pseudo-camera has coords {x, y, z}.
+
+source is where a point's x/y came from (label3d, sleap_user, sleap_pred); score
+is SLEAP's per-point score for predictions; sync is the id of the sync read
+that last brought the point in from SLEAP, cleared when the user corrects or
+accepts it.  A point is *new* when its sync equals the project's latest sync id.
 """
 
 from __future__ import annotations
@@ -15,8 +20,15 @@ import pandas as pd
 from PySide6.QtCore import QObject, QTimer, Signal
 
 
-CAM_COORDS = ["x", "y", "xr", "yr", "state"]
+CAM_COORDS = ["x", "y", "xr", "yr", "state", "source", "score", "sync"]
 THREE_D_COORDS = ["x", "y", "z"]
+FLOAT_COORDS = ("x", "y", "xr", "yr", "score", "sync")
+TEXT_COORDS = ("state", "source")
+
+SOURCE_LABEL3D = "label3d"
+SOURCE_SLEAP_USER = "sleap_user"
+SOURCE_SLEAP_PRED = "sleap_pred"
+LABELED_STATES = ("set", "predicted", "not_visible")
 INDEX_NAMES = ["experiment", "trial", "frame", "instance", "bodypart"]
 
 
@@ -28,6 +40,9 @@ class PointData(NamedTuple):
     xr: float
     yr: float
     state: str
+    source: str = ""
+    score: float = np.nan
+    sync: float = np.nan  # sync id, NaN when not from a sync or already reviewed
 
 
 class PointsStore(QObject):
@@ -49,6 +64,9 @@ class PointsStore(QObject):
         self._changed = False
         self._save_path: Path | None = None
         self._experiment_name: str = ""
+        # Latest sync id in the project (set by Project); points with this
+        # sync id are "new".
+        self.latest_sync: int | None = None
 
         # Frame cache: {(instance, bodypart): {camera: PointData}}
         self._cache: dict[tuple[int, str], dict[str, PointData]] = {}
@@ -139,12 +157,7 @@ class PointsStore(QObject):
              df.index.levels[3].astype(int),  # instance
              df.index.levels[4].astype(str)],  # bodypart
         )
-        # Ensure numeric columns are float
-        for cam in df.columns.get_level_values(0).unique():
-            for coord in ["x", "y", "xr", "yr"]:
-                if (cam, coord) in df.columns:
-                    df[(cam, coord)] = pd.to_numeric(df[(cam, coord)], errors="coerce")
-        return df
+        return normalize_columns(df)
 
     @classmethod
     def load_all_experiments(cls, project) -> list[PointsStore]:
@@ -196,6 +209,9 @@ class PointsStore(QObject):
                     xr = row[(cam, "xr")]
                     yr = row[(cam, "yr")]
                     state = row[(cam, "state")]
+                    source = row[(cam, "source")]
+                    score = row[(cam, "score")]
+                    sync = row[(cam, "sync")]
                 except KeyError:
                     continue
                 cam_data[cam] = PointData(
@@ -204,6 +220,9 @@ class PointsStore(QObject):
                     xr=float(xr) if pd.notna(xr) else np.nan,
                     yr=float(yr) if pd.notna(yr) else np.nan,
                     state=str(state) if pd.notna(state) else "not_set",
+                    source=str(source) if pd.notna(source) else "",
+                    score=float(score) if pd.notna(score) else np.nan,
+                    sync=float(sync) if pd.notna(sync) else np.nan,
                 )
             self._cache[(int(instance), str(bodypart))] = cam_data
 
@@ -239,13 +258,18 @@ class PointsStore(QObject):
         y: float,
         state: str = "set",
     ) -> None:
-        """Place or move a point.  Creates the row if needed."""
+        """Place or move a point.  Creates the row if needed.
+
+        Every edit made in label3d records source=label3d and clears the
+        point's sync id, so a corrected point is no longer new.
+        """
         idx = (self._experiment_name, trial, frame, instance, bodypart)
         if idx not in self._df.index:
             self._ensure_row(idx)
         self._df.at[idx, (camera, "x")] = x
         self._df.at[idx, (camera, "y")] = y
         self._df.at[idx, (camera, "state")] = state
+        self._set_label3d(idx, camera)
         self._mark_changed()
         self._invalidate_cache(trial, frame)
 
@@ -257,6 +281,7 @@ class PointsStore(QObject):
         if idx not in self._df.index:
             self._ensure_row(idx)
         self._df.at[idx, (camera, "state")] = "not_visible"
+        self._set_label3d(idx, camera)
         self._mark_changed()
         self._invalidate_cache(trial, frame)
 
@@ -272,8 +297,41 @@ class PointsStore(QObject):
         self._df.at[idx, (camera, "xr")] = np.nan
         self._df.at[idx, (camera, "yr")] = np.nan
         self._df.at[idx, (camera, "state")] = "not_set"
+        self._df.at[idx, (camera, "source")] = ""
+        self._df.at[idx, (camera, "score")] = np.nan
+        self._df.at[idx, (camera, "sync")] = np.nan
         self._mark_changed()
         self._invalidate_cache(trial, frame)
+
+    def accept_points(
+        self,
+        trial: str,
+        frame: int,
+        instance: int | None = None,
+        bodypart: str | None = None,
+    ) -> int:
+        """Mark points as reviewed by clearing their sync id.  Returns points accepted.
+
+        With instance and bodypart: that bodypart in every camera.  Without:
+        every point in the frame.  x/y, state and source are left unchanged.
+        """
+        try:
+            frame_df = self._df.loc[(self._experiment_name, trial, frame)]
+        except KeyError:
+            return 0
+        n = 0
+        for inst, bp in frame_df.index:
+            if instance is not None and (int(inst) != instance or str(bp) != bodypart):
+                continue
+            idx = (self._experiment_name, trial, frame, inst, bp)
+            for cam in self.cameras:
+                if pd.notna(self._df.at[idx, (cam, "sync")]):
+                    self._df.at[idx, (cam, "sync")] = np.nan
+                    n += 1
+        if n:
+            self._mark_changed()
+            self._invalidate_cache(trial, frame)
+        return n
 
     # -- Frame-level API -------------------------------------------------------
 
@@ -352,6 +410,9 @@ class PointsStore(QObject):
             self._ensure_row(new_key)
             for col in self._df.columns:
                 self._df.at[new_key, col] = row[col]
+            for cam in self.cameras:
+                if self._df.at[new_key, (cam, "state")] in LABELED_STATES:
+                    self._set_label3d(new_key, cam)
         self._mark_changed()
         self._invalidate_cache(trial, dst_frame)
         return new_idx
@@ -422,6 +483,62 @@ class PointsStore(QObject):
 
         return result
 
+    def get_new_frames(self, trial: str) -> dict[int, str]:
+        """Frames of a trial with new points: frame → 'user' or 'predicted'.
+
+        'user' when any new point in the frame is a SLEAP user label,
+        'predicted' when all of them are predictions.
+        """
+        if self.latest_sync is None:
+            return {}
+        try:
+            trial_df = self._df.loc[(self._experiment_name, trial)]
+        except KeyError:
+            return {}
+        result: dict[int, str] = {}
+        frames = trial_df.index.get_level_values("frame")
+        for cam in self.cameras:
+            if (cam, "sync") not in trial_df.columns:
+                continue
+            is_new = (trial_df[(cam, "sync")] == self.latest_sync).to_numpy()
+            if not is_new.any():
+                continue
+            is_user = (trial_df[(cam, "source")] == SOURCE_SLEAP_USER).to_numpy()
+            for f, user in zip(frames[is_new], is_user[is_new]):
+                f = int(f)
+                if user:
+                    result[f] = "user"
+                else:
+                    result.setdefault(f, "predicted")
+        return result
+
+    def trials_with_new_points(self) -> list[str]:
+        """Trials (in index order) of the store's experiment that have new points."""
+        if self.latest_sync is None or self._df.empty:
+            return []
+        mask = np.zeros(len(self._df), dtype=bool)
+        for cam in self.cameras:
+            if (cam, "sync") in self._df.columns:
+                mask |= (self._df[(cam, "sync")] == self.latest_sync).to_numpy()
+        if not mask.any():
+            return []
+        trials = self._df.index.get_level_values("trial")[mask]
+        return list(dict.fromkeys(str(t) for t in trials))
+
+    def get_next_new_frame(self, trial: str, current_frame: int) -> int | None:
+        """Smallest frame > current_frame with new points, or None."""
+        for f in sorted(self.get_new_frames(trial)):
+            if f > current_frame:
+                return f
+        return None
+
+    def get_prev_new_frame(self, trial: str, current_frame: int) -> int | None:
+        """Largest frame < current_frame with new points, or None."""
+        for f in sorted(self.get_new_frames(trial), reverse=True):
+            if f < current_frame:
+                return f
+        return None
+
     def _all_labeled_frame_indices(self, trial: str) -> list[int]:
         by_cam = self.get_labeled_frames_by_camera(trial)
         frames: set[int] = set()
@@ -456,6 +573,9 @@ class PointsStore(QObject):
             row[(cam, "xr")] = np.nan
             row[(cam, "yr")] = np.nan
             row[(cam, "state")] = "not_set"
+            row[(cam, "source")] = ""
+            row[(cam, "score")] = np.nan
+            row[(cam, "sync")] = np.nan
         row[("3d", "x")] = np.nan
         row[("3d", "y")] = np.nan
         row[("3d", "z")] = np.nan
@@ -463,6 +583,12 @@ class PointsStore(QObject):
         new_idx = pd.MultiIndex.from_tuples([idx], names=INDEX_NAMES)
         new_row = pd.DataFrame([row], index=new_idx, columns=self._df.columns)
         self._df = pd.concat([self._df, new_row])
+
+    def _set_label3d(self, idx: tuple, camera: str) -> None:
+        """Record a label3d edit: source=label3d, no score, no sync id."""
+        self._df.at[idx, (camera, "source")] = SOURCE_LABEL3D
+        self._df.at[idx, (camera, "score")] = np.nan
+        self._df.at[idx, (camera, "sync")] = np.nan
 
     def _mark_changed(self) -> None:
         self._changed = True
@@ -492,3 +618,32 @@ class PointsStore(QObject):
         self._cache.clear()
         self._cache_key = None
         self._mark_changed()
+
+
+def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Give every camera the full CAM_COORDS set, in order, with consistent dtypes.
+
+    Files written before the source/score/sync columns existed get them filled
+    in: points with a labeled state get source=label3d, score and sync NaN.
+    """
+    cameras = [c for c in df.columns.get_level_values(0).unique() if c != "3d"]
+    for cam in cameras:
+        if (cam, "state") not in df.columns:
+            df[(cam, "state")] = "not_set"
+        if (cam, "source") not in df.columns:
+            labeled = df[(cam, "state")].isin(LABELED_STATES)
+            df[(cam, "source")] = np.where(labeled, SOURCE_LABEL3D, "")
+        for coord in FLOAT_COORDS:
+            if (cam, coord) not in df.columns:
+                df[(cam, coord)] = np.nan
+            else:
+                df[(cam, coord)] = pd.to_numeric(df[(cam, coord)], errors="coerce").astype(float)
+        df[(cam, "source")] = df[(cam, "source")].fillna("").astype(str)
+    columns = [(cam, coord) for cam in cameras for coord in CAM_COORDS]
+    columns += [("3d", coord) for coord in THREE_D_COORDS]
+    for col in columns:
+        if col not in df.columns:
+            df[col] = np.nan
+    return df.reindex(
+        columns=pd.MultiIndex.from_tuples(columns, names=["view", "coord"])
+    )

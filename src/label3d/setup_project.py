@@ -956,7 +956,7 @@ def import_labels(project_dir: Path) -> dict[str, int]:
     for exp_name in sorted(project.experiments):
         project.set_experiment(exp_name)
         try:
-            results = project.read_slp_for_sync()
+            results = project.read_slp_for_sync(sync=False)
         except Exception as e:
             logger.warning("Could not read SLP files for '%s': %s", exp_name, e)
             continue
