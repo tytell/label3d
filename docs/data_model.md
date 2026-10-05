@@ -38,6 +38,7 @@ Project
 ├── skeleton.json            # shared skeleton across all experiments
 ├── trials.csv               # global: all trials across all experiments (has experiment column)
 ├── slp/                     # optional: imported .slp files (global, not per-experiment)
+├── sync_history.csv         # one row per trial for each SLEAP read that brought in points
 └── experiments/
     ├── PS18/                # one subfolder per experiment
     │   ├── calibration/     # calibration media for this experiment
@@ -118,17 +119,28 @@ Corner rows are keyed `source_key = "{take}:{frame}"`, so cross-camera correspon
 
 ### Primary storage: `points.csv`
 
-One file per experiment, storing both 2D and 3D data. Rows indexed by `(experiment, trial, frame, instance, bodypart)`. Columns grouped by **view**: each real camera has `(x, y, xr, yr, state)` coords; `"3d"` pseudo-camera has `(x, y, z)`.
+One file per experiment, storing both 2D and 3D data. Rows indexed by `(experiment, trial, frame, instance, bodypart)`. Columns grouped by **view**: each real camera has `(x, y, xr, yr, state, source, score, sync)` coords; `"3d"` pseudo-camera has `(x, y, z)`.
 
 ```
                                           cam0                          cam1                3d
-experiment trial  frame  instance  bodypart   x     y    xr   yr   state    x     y   xr  yr  state   x    y    z
-PS18       trial1 0      0         head       92   202   91  203   set      88   199  87  200  set    1.2  0.4  3.1
+experiment trial  frame  instance  bodypart   x    y    xr   yr   state  source      score  sync   x   …   x    y    z
+PS18       trial1 0      0         head       92   202  91   203  set    label3d                     88  …   1.2  0.4  3.1
+PS18       trial1 7      0         head       95   205             predicted  sleap_pred  0.93   4     …
 ```
 
 Column structure is a 2-level `MultiIndex (view, coord)`:
-- Real cameras: `coord` ∈ `{x, y, xr, yr, state}` — clicked coords, reprojected coords, and point state
+- Real cameras: `coord` ∈ `{x, y, xr, yr, state, source, score, sync}` — clicked coords, reprojected coords, point state, and provenance
 - `3d` pseudo-camera: `coord` ∈ `{x, y, z}` — triangulated world coords
+
+**Provenance columns** (per camera):
+
+| Column | Values | Meaning |
+|---|---|---|
+| `source` | `label3d`, `sleap_user`, `sleap_pred`, empty | Where the x/y came from. Any edit in label3d sets `label3d`. A label3d reprojection guess is `state=predicted`, `source=label3d`. Empty for `not_set`. |
+| `score` | float or NaN | SLEAP per-point score, for `sleap_pred` |
+| `sync` | sync id or NaN | The sync read that last brought the point in from SLEAP. Cleared when the user corrects or accepts the point. |
+
+A point is **new** when its `sync` equals the latest id in `sync_history.csv`. Files without these columns get them filled in on read: labeled points get `source = label3d`.
 
 **Point state values:**
 
@@ -137,7 +149,7 @@ Column structure is a 2-level `MultiIndex (view, coord)`:
 | `set` | User has manually placed this point (ground truth) |
 | `predicted` | Point imported from external tracker; not yet reviewed |
 | `not_set` | Point not yet placed — x, y are NaN; instance is user-type |
-| `occluded` | User marked as not visible — x, y are NaN, excluded from triangulation |
+| `not_visible` | User marked as not visible — coordinates kept, excluded from triangulation |
 
 Written/read with:
 ```python
@@ -148,13 +160,31 @@ df.to_csv("points.csv")
 df = pd.read_csv("points.csv", header=[0, 1], index_col=[0, 1, 2, 3, 4])
 
 # Access one camera
-cam0 = df["cam0"]                                        # columns: x, y, xr, yr, state
+cam0 = df["cam0"]                          # columns: x, y, xr, yr, state, source, score, sync
 
 # Access 3D
 xyz = df["3d"][["x", "y", "z"]]                         # world coords, shape (n_rows, 3)
 ```
 
 Missing coordinates are `NaN`. Reprojected coords (`xr`, `yr`) are `NaN` until triangulation has been run.
+
+### Sync history: `sync_history.csv`
+
+At the project root. One row per (sync, experiment, trial) for every SLEAP read that brought in new points (startup read, Sync, Import predictions, Set up, sync on close). A read that changes nothing adds no row.
+
+| Column | Meaning |
+|---|---|
+| `id` | Sync id; the largest is the latest sync |
+| `timestamp` | ISO time of the read |
+| `kind` | `open`, `sync`, `close`, `import` or `setup` |
+| `experiment`, `trial` | Trial the counts are for |
+| `n_new_user` | SLEAP user labels taken (including conflicts resolved with Use SLEAP) |
+| `n_new_pred` | Predictions where label3d had none |
+| `n_updated_pred` | Predictions that moved more than 0.5 px from the stored prediction |
+| `n_conflicts` | Points that differed from label3d |
+| `n_frames` | Frames with new points |
+
+The initial label import at project setup records sources but no sync, so nothing starts out new.
 
 ### Import / Export — Plugin Architecture
 

@@ -33,7 +33,8 @@ project/
 - `experiments/{name}/calibration.toml` — aniposelib `CameraGroup.dump()` format; the solution in use. Per-take solutions go to `experiments/{name}/calibration_takes/{take}.toml`, per-take corners to `calibration/{cam}/corners_{take}.csv`
 - **Calibration is video-only** — image-based calibration is deprecated and raises
 - `experiments/{name}/videos/` — video files for that experiment's trials (no trials.csv here)
-- `experiments/{name}/points.csv` — pandas MultiIndex CSV; row index `(experiment, trial, frame, instance, bodypart)` (5-level); column MultiIndex `(view, coord)` where cameras have `{x, y, xr, yr, state}` and `"3d"` pseudo-camera has `{x, y, z}`; `state` ∈ `{set, predicted, not_set, not_visible}`
+- `experiments/{name}/points.csv` — pandas MultiIndex CSV; row index `(experiment, trial, frame, instance, bodypart)` (5-level); column MultiIndex `(view, coord)` where cameras have `{x, y, xr, yr, state, source, score, sync}` and `"3d"` pseudo-camera has `{x, y, z}`; `state` ∈ `{set, predicted, not_set, not_visible}`; `source` ∈ `{label3d, sleap_user, sleap_pred}`; `sync` is the id of the sync that brought a point in (a point is new when it equals the latest id)
+- `sync_history.csv` — at project root; one row per (sync, experiment, trial) for each SLEAP read that brought in points
 - `skeleton.json` — `{nodes, edges, symmetries, node_offsets_cm}` (shared at project root)
 - `slp/` — imported `.slp` files (global, at project root)
 

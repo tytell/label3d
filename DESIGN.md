@@ -13,6 +13,7 @@ A cross-platform desktop app for:
 
 | Document | Contents |
 |---|---|
+| [docs/user_workflow.md](docs/user_workflow.md) | **User guide**: the label → train → review loop, step by step (draft) |
 | [docs/data_model.md](docs/data_model.md) | Project layout, `points.csv` schema, `project.toml`, `trials.csv`, `calibration.toml`, adapter interface, project setup utility |
 | [docs/workflows.md](docs/workflows.md) | Calibration UI, axis alignment, labeling UI, export UI, keyboard shortcuts, key features |
 | [docs/architecture.md](docs/architecture.md) | Package layout, build order, technology stack, risks, design decisions |
@@ -21,7 +22,7 @@ A cross-platform desktop app for:
 | [docs/synthetic_data.md](docs/synthetic_data.md) | Synthetic data generator: module layout, output structure, charuco image generation |
 | [docs/phases/phase_8.md](docs/phases/phase_8.md) | Phase 8 — SLP write-back (completed) |
 | [docs/phases/phase_9.md](docs/phases/phase_9.md) | Phase 9 — Calibration Takes (completed) |
-| [docs/phases/phase_10.md](docs/phases/phase_10.md) | **Phase 10 — Point provenance and reviewing new points** (next) |
+| [docs/phases/phase_10.md](docs/phases/phase_10.md) | Phase 10 — Point provenance and reviewing new points (implemented; awaiting UI testing) |
 | [docs/phases/phase_11.md](docs/phases/phase_11.md) | Phase 11 — Calibration registry and switching calibrations |
 | [docs/phases/phase_12.md](docs/phases/phase_12.md) | Phase 12 — Refining the calibration with labelled points |
 | [docs/phases/phase_13.md](docs/phases/phase_13.md) | Phase 13 — Batch triangulation and export |
@@ -45,7 +46,7 @@ A cross-platform desktop app for:
 | 7 | SLP import + instance init strategies | ✓ Complete |
 | 8 | SLP write-back (File > Sync with Sleap) | ✓ Complete |
 | 9 | Calibration takes | ✓ Complete |
-| 10 | Point provenance and reviewing new points | Not started (next) |
+| 10 | Point provenance and reviewing new points | Implemented on branch `new_points`; awaiting UI testing |
 | 11 | Calibration registry and switching | Not started |
 | 12 | Calibration refinement with labelled points | Not started |
 | 13 | Batch triangulation and export | Not started |

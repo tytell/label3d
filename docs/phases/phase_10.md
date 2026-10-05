@@ -2,7 +2,7 @@
 
 **Goal**: After a sync with SLEAP, show the user which points are new and where every point came from. There are three sources: labelled by a user in label3d, labelled by a user in SLEAP, and predicted by SLEAP. Mark frames with new points on the frame slider, mark the points themselves in the camera views, and add ways to jump to new frames and accept them.
 
-**Status**: Not started.
+**Status**: Implemented on branch `new_points`; awaiting UI testing. See *As implemented* at the end.
 
 **Compatibility**: The `points.csv` schema changes with no fallback. When an old file is read, the missing columns are filled in. Existing points get `source = label3d`, and there's no attempt to work out where they came from.
 
@@ -171,3 +171,25 @@ Update the docs that describe current behaviour once the steps above are built:
 4. 10.7 store methods + 10.6 navigation
 5. 10.8 markers, 10.6 slider row, 10.5 summary dialog
 6. 10.11 reference docs, 10.9 guide draft
+
+## As implemented
+
+Differences from the plan above, and details it left open:
+
+- **Sync id handling.** `read_slp_for_sync()` and `read_predictions_for_import()` give merged cells the *next* id, but `apply_merge(results, overwrite, kind)` records it in `sync_history.csv`. A cancelled or empty read therefore leaves no trace and doesn't use up an id.
+  - `kind` is `open`, `sync`, `close`, `import` or `setup`.
+  - The history has two columns the plan didn't list: `kind` and `n_frames`.
+- **Project setup marks nothing new.** The initial label import (`setup_project.import_labels`) calls `read_slp_for_sync(sync=False)`. It records sources and scores, so a project built from existing SLEAP files doesn't start with every point new.
+- **`sync` values.** `sync` is stored as a float column, so ids appear as `3.0` in `points.csv`.
+- **Tooltip label.** The store's `latest_sync` and `latest_sync_label` (e.g. `import 4 (2026-10-05 14:22)`) are set by `Project` on load, on an experiment switch and after a merge.
+- **label3d guesses keep their source.** A label3d reprojection guess is written to SLEAP as a prediction and read back at the same place. Any stored prediction within `PREDICTION_MOVE_PX` keeps its x/y, source and sync. Only a `sleap_pred`'s score is updated (`MergeResult.n_score_updates`).
+- **`MergeResult` counts.** Counts are now per trial (`trial_counts`). `n_new`, `n_new_pred`, `n_updated_pred` and `n_predictions` are properties computed from them. `has_changes` covers updates that only change a score.
+- **Trial bounds.** `SleapAdapter.load()` drops frames after `{cam}_end`, for every read, not just imports. It collects unmatched video basenames through an `unmatched` list argument instead of reading each file twice.
+- **Navigation across trials.** Jumping past the end of a trial is handled in `MainWindow._jump_to_new()`, because only the main window can load another trial. `ProjectState.jump_to_next_new()` / `jump_to_prev_new()` handle the current trial and return False at its end.
+  - The shortcuts are registered as both `}` / `{` and `Shift+]` / `Shift+[`, so they work whichever way Qt reports the key.
+- **Accept.** Accept point and Accept frame are in the **Instances** menu only. The point right-click mentioned in 10.7 doesn't exist: right-click on a point toggles not visible.
+- **When the summary dialog appears.** It's shown after the read on open, Sync, Import and Set up Sleap files. It isn't shown after the sync on close.
+  - **Go to first new frame** is disabled when all the new points are in other experiments.
+  - After an import that brought nothing in but had unmatched videos, a message box lists them instead.
+- **Tests.** `tests/test_provenance.py` covers the adapter, merge, history, import and store parts (21 tests). The UI was smoke-tested offscreen; it has no automated tests.
+
