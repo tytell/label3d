@@ -34,9 +34,9 @@ label3d/
 │   ├── view_3d.py               # ✓ pyqtgraph GLViewWidget: 3D points, edges, frustums
 │   ├── bodypart_list.py         # ✓ Sidebar: bodypart names, click to select
 │   ├── calibration_view.py      # ✓ Calibration mode: settings panel + camera grid
-│   ├── axis_alignment_widget.py # Phase 10: Axis alignment panel (not yet created)
+│   ├── axis_alignment_widget.py # Phase 14: Axis alignment panel (not yet created)
 │   ├── label_view.py            # ✓ Labeling mode: grid + controls + sidebar
-│   └── export_view.py           # Phase 11: Export mode: form + summary
+│   └── export_view.py           # Phase 15: Export mode: form + summary
 ├── adapters/
 │   ├── __init__.py              # ✓ Registry: discover PoseAdapter subclasses
 │   ├── base.py                  # ✓ PoseAdapter ABC

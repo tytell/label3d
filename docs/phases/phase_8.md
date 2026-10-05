@@ -14,7 +14,7 @@ Stateless method: given `files: list[Path]`, `trials_df`, and `cameras`, reads e
 
 `SleapAdapter.save()` also updated:
 - `file_map: dict[tuple, Path] | None = None` parameter added
-- `output_dir` made optional (kept for Phase 10 Export)
+- `output_dir` made optional (kept for the Phase 15 export view)
 - Returns `int` (count of files written) instead of `None`
 - Instance state logic corrected: all-`not_set` instances omitted; `not_visible` treated as user ground-truth (replaces incorrect `occluded` check)
 

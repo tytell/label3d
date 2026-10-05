@@ -1,45 +1,125 @@
-# Phase 10 — Axis Alignment
+# Phase 10 — Point Provenance and Reviewing New Points
 
-**Goal**: Let the user re-orient the world coordinate system to a physical reference by clicking points in trial video frames.
+**Goal**: After a sync with SLEAP, show the user which points are new and where every point came from. There are three sources: labelled by a user in label3d, labelled by a user in SLEAP, and predicted by SLEAP. Mark frames with new points on the frame slider, mark the points themselves in the camera views, and add ways to jump to new frames and accept them.
 
-**Status**: Partially implemented — geometry helpers and CameraPanel pick mode done; UI widget not yet created.
+**Status**: Not started.
 
-## Current state
+**Compatibility**: The `points.csv` schema changes with no fallback. When an old file is read, the missing columns are filled in. Existing points get `source = label3d`, and there's no attempt to work out where they came from.
 
-- `geometry.py`: `triangulate_point()`, `compute_axis_alignment()`, `apply_alignment_to_cameras()`, `save_aligned_calibration()` — implemented; not yet connected to UI
-- `widgets/camera_panel.py`: `raw_clicked = Signal(str, float, float)` signal and `set_pick_mode(bool)` method — implemented
-- `widgets/axis_alignment_widget.py` — **not yet created**
-- `widgets/calibration_view.py` — not yet modified to add alignment tab
+**Background**: Phase 8 deliberately kept no sync history: a sync is a plain comparison of SLP contents against `points.csv`. A point labelled in SLEAP comes in as `set`, which is the same as a point labelled in label3d. SLEAP point scores are dropped on load, and every prediction is written back with `score=1.0`. State alone can't separate the sources either, because label3d makes `predicted` points of its own (the reprojection guesses in `instance_init.py`).
 
-## 10.1 `load_cameras()` fix (`geometry.py`)
+---
 
-- [ ] Check whether `load_cameras()` already skips `"alignment"` sections — the skip list may only include `"metadata"`; add `"alignment"` to the skip list if not already present
-- [ ] Add `load_alignment(path) -> tuple[np.ndarray, np.ndarray] | None` — reads `R_align` and `origin` from `[alignment]` section; returns `None` if absent
+## 10.1 Data model (`points.py`)
 
-## 10.2 Axis alignment widget (`widgets/axis_alignment_widget.py`)
+Each camera's coords go from `{x, y, xr, yr, state}` to `{x, y, xr, yr, state, source, score, sync}`.
 
-- [ ] `AxisAlignmentWidget(QWidget)`:
-  - Trial selector `QComboBox` + frame navigation (prev/next buttons + frame spinbox)
-  - Reuses the existing `CameraGrid` + `FrameProvider` to display trial video frames
-  - Right-side panel: 7 `QPushButton` pick targets (Origin, X near, X far, Y near, Y far, Z near, Z far), a `QTableWidget` showing pick status (✓ / –) per target, and three "Flip" `QCheckBox`es for x/y/z
-  - "Compute" button — runs `compute_axis_alignment()`; shows preview (axis vectors + R_align) in a text area
-  - "Apply & Save" button — calls `save_aligned_calibration()`, writes `[alignment]` section to `calibration.toml`
-  - Pick workflow:
-    1. User clicks a pick-target button → button stays pressed (checked), all `CameraPanel`s enter pick mode (`set_pick_mode(True)`)
-    2. User clicks in any camera panel → `raw_clicked(cam, x, y)` received; stored in a `dict[target, dict[cam, (x, y)]]`
-    3. Each target accumulates clicks across cameras (≥2 cameras needed for triangulation); table cell updated
-    4. Clicking the same button again or pressing Escape cancels pick mode
-  - Frame navigation updates `FrameProvider` and `CameraGrid` directly (no `ProjectState` shared state)
-  - On "Compute":
-    1. For each pick target with ≥2 camera picks: call `triangulate_point(cameras, picks)`
-    2. Pass triangulated points to `compute_axis_alignment(..., flip_x, flip_y, flip_z)`
-    3. Show resulting `R_align` and `origin` in a read-only text area
-  - On "Apply & Save":
-    1. Write `[alignment]` section to `calibration.toml` (`save_aligned_calibration()`)
-    2. Emit `alignment_saved` signal so `CalibrationView` / `LabelView` can reload calibration
+| Column | Values | Meaning |
+|---|---|---|
+| `source` | `label3d`, `sleap_user`, `sleap_pred` | Where the current x/y came from. Empty for `not_set`. |
+| `score` | float or NaN | SLEAP per-point score for `sleap_pred`; NaN otherwise |
+| `sync` | int or empty | Id of the sync read (10.3) that last brought this cell in from SLEAP. Cleared when the user corrects or accepts the point. |
 
-## 10.3 Integrate into calibration view (`widgets/calibration_view.py`)
+- `source` doesn't depend on `state`. A label3d reprojection guess is `state=predicted`, `source=label3d`.
+- Every label3d edit (place, drag, mark not visible, reset) sets `source = label3d` and clears `sync`. That includes `set_point`, `set_state`, the `instance_init` strategies and deletes.
+- `CAM_COORDS`, `empty_df()`, `read_csv_df()` and `PointData` gain the new fields. `read_csv_df()` fills in missing columns as described under Compatibility.
+- **New-point test:** a point is *new* when its `sync` equals the latest sync id in `sync_history.csv` (10.3).
 
-- [ ] Add "Axis Alignment" as a second tab in `CalibrationView` (alongside the existing board detection / calibration tab)
-- [ ] Instantiate `AxisAlignmentWidget` in the new tab
-- [ ] Connect `AxisAlignmentWidget.alignment_saved` → reload cameras in `LabelView` (via `ProjectState` or a direct callback)
+## 10.2 SLEAP adapter (`adapters/sleap_adapter.py`)
+
+- **`load()`:** emit `source` (`sleap_user` for `sio.Instance`, `sleap_pred` for `sio.PredictedInstance`). Also emit `score`, taken from `inst.numpy(scores=True)` for predictions.
+- **`save()`:** write the stored per-point scores into `PredictedInstance.from_numpy(..., point_scores=...)`. The instance score is the mean of the point scores, rather than a fixed 1.0.
+- **Round trip:** a label3d `set` point is written as a user `Instance` and reads back as `sleap_user` at the same x/y. The merge treats that as "no change" (8.8) and keeps the stored `source = label3d`, so a round trip doesn't change any source.
+
+## 10.3 Merge and sync history (`slp_sync.py`, `project.py`)
+
+**`compute_merge()`**
+- Every cell taken from SLP gets its `source` and `score` copied from the SLP data, and its `sync` set to the current sync id.
+- A `predicted` → `predicted` replacement counts as updated only if the point moved by more than `PREDICTION_MOVE_PX` (default 0.5 px). Otherwise the stored x/y, `source` and `sync` stay as they are, so re-running inference doesn't mark every prediction as new. The score is still updated.
+- Conflicts resolved with **Use SLEAP** count as new `sleap_user` points.
+- `MergeResult` gains counts split by source: `n_new_user`, `n_new_pred`, `n_updated_pred`. It also gains `new_frames: dict[(experiment, trial), set[int]]`.
+
+**Sync id and history**
+- Every read that merges at least one cell (the startup read in 8.11, or Sync in 8.10) gets a new sync id and appends a row to `project/sync_history.csv`.
+- Columns: `id, timestamp, experiment, trial, n_new_user, n_new_pred, n_updated_pred, n_conflicts`, with one row per (experiment, trial) that changed.
+- A read that changes nothing adds no row, so the previous sync's new points stay new.
+- **New method:** `Project.latest_sync_id() -> int | None`.
+- `apply_merge()` is unchanged. The ids are already in the merged `df` for the active experiment and in the `points.csv` written for the others.
+
+## 10.4 Sync summary dialog (`widgets/sync_summary_dialog.py`)
+
+Shown after any read that merged something. It replaces the status-bar-only report.
+
+- **Table:** experiment × trial, with columns for new SLEAP user labels, new predictions, updated predictions, conflicts and frames with new points. Rows are sorted with the active experiment first.
+- **Buttons:** **Go to first new frame** (switches trial if needed) and **Close**.
+- **Menu:** the latest summary can be reopened from **File > Last sync summary...** (rebuilt from `sync_history.csv`).
+
+## 10.5 Frame slider and navigation (`widgets/frame_slider.py`, `state.py`, `main_window.py`)
+
+**Slider**
+- Add a "new" row above the per-camera rows. It shows a tick for every frame of the current trial that has a new point in any camera. The tick is orange if any new point is a SLEAP user label, and blue (the SLEAP prediction colour) if all of them are predictions.
+- The row is hidden when the trial has no new points, so the slider looks the same as now outside review.
+- **API:** `set_new_marks(dict[int, str])`, with values `"user"` or `"predicted"`.
+
+**Navigation**
+- **Go > Next new frame** (`Shift+]`) and **Go > Previous new frame** (`Shift+[`), next to the existing `[` / `]` labelled-frame jumps.
+- These live in `AppState` as `jump_to_next_new()` and `jump_to_prev_new()`, backed by `PointsStore.get_next_new_frame()` and `get_prev_new_frame()`.
+- At the end of a trial they go on to the next trial that has new points.
+
+## 10.6 Accepting points (`label_view.py`, `main_window.py`, `points.py`)
+
+Accepting clears `sync` without changing x/y, `state` or `source`. It's how the user signals they've reviewed a point and it's fine as it is. Correcting a point (10.1) clears `sync` too.
+
+| Action | Shortcut | Effect |
+|---|---|---|
+| Accept point | `A` | Clear `sync` on the selected bodypart in every camera |
+| Accept frame | `Shift+A` | Clear `sync` on every point in the current frame |
+
+- Both actions are in the **Instances** menu and the point right-click menu.
+- **Store methods:** `PointsStore.accept_points(trial, frame, instance=None, bodypart=None)`.
+- Accepting a prediction does **not** turn it into `set`. Turning a prediction into ground truth stays a separate decision, made by editing the point.
+
+## 10.7 Marker styles (`widgets/point_item.py`, `skeleton_overlay.py`, `main_window.py`)
+
+- **View > Color points by** is a pair of radio actions: **Reprojection error** (the default, as now) or **Source**. The choice is saved in the session settings.
+- **Shape** still means state: a filled circle is `set`, a ring is `predicted`, grey is `not_visible`, and a small dot is `not_set`.
+- **Colour in source mode:** label3d user, SLEAP user and SLEAP prediction each get one colour. The colours must stay distinguishable against video and from the error colours (green, yellow, red).
+- **New points:** a square outline around the marker, in both colour modes.
+- **Tooltip:** add `Source`, `Score` (predictions) and `New since sync <timestamp>`.
+- `PointItem.configure()` gains `source`, `score` and `is_new`. `ColorMode` is passed down from `LabelView`.
+
+## 10.8 Workflow guide, first draft (`docs/user_workflow.md`)
+
+A first draft of the user-facing guide, written once 10.4–10.7 exist so it names real menus. It's finished in Phase 13.6.
+
+1. **Set up a project:** from SLEAP files ([quick_setup_from_slp.md](../quick_setup_from_slp.md)) or from videos.
+2. **Calibrate:** charuco takes, checking for drift between takes.
+3. **Label in label3d,** then **File > Sync with Sleap**.
+4. **Train and infer in SLEAP:** GUI or `sleap-train` / `sleap-track`. Write predictions into the files mapped in `slp/` so the next read finds them.
+5. **Review:** reopen label3d, read the sync summary, step through new frames with `Shift+]`, then correct or accept. Add more labels on frames the model gets wrong, sync, and train again.
+6. **Final pass:** once the model is good enough, run inference on all frames, refine the calibration (Phase 12), and batch-export (Phase 13).
+
+Link it from the README and the DESIGN.md index.
+
+## 10.9 Tests
+
+- **Adapter:** `load()` gives `sleap_user`, `sleap_pred` and per-point scores, and `save()` → `load()` keeps the scores.
+- **Merge:**
+  - Source and sync on new cells.
+  - A prediction moved less than the tolerance is not new.
+  - **Use SLEAP** on a conflict gives a new `sleap_user` point.
+  - A label3d point round trip keeps `source = label3d`.
+- **History:** a read with changes adds rows and a new id. A read with no changes adds nothing, and `latest_sync_id()` doesn't change.
+- **Store:**
+  - An edit sets `source = label3d` and clears `sync`.
+  - `accept_points()` for one point and for a whole frame.
+  - The next/previous new frame lookups.
+  - Old CSVs get the missing columns filled in.
+
+## Implementation order
+
+1. 10.1 + 10.2 + tests (data in and out)
+2. 10.3 + tests (merge and history)
+3. 10.6 store methods + 10.5 navigation
+4. 10.7 markers, 10.5 slider row, 10.4 summary dialog
+5. 10.8 guide draft

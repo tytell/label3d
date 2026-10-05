@@ -1,124 +1,77 @@
-# Phase 13 — Multi-Instance Support and Cross-Camera Matching
+# Phase 13 — Batch Triangulation and Export
 
-**Goal**: Allow multiple animal instances per frame, with explicit cross-camera and cross-frame identity tracking.
+**Goal**: The final step of the workflow. Once the SLEAP model is trained and has run on every frame of every camera, triangulate everything with each experiment's active calibration. Then write one long-format CSV with the 2D and 3D coordinates of all points from all experiments.
 
-**Status**: Not started. Phases 1–12 assume at most one instance per frame per camera (instance index always 0). This phase lifts that restriction.
-
----
-
-## Background
-
-The data model already supports multiple instances: the 5-level row index `(experiment, trial, frame, instance, bodypart)` uses an integer instance index, and rows for different cameras sit at the same `(frame, instance)` level — so instance 0 is implicitly "the same animal across all cameras." The bug is entirely in the UI: right-clicking in camera A and adding creates instance 0 (filled only in A), then doing the same in camera B creates instance 1 (filled only in B). Triangulation never fires because no bodypart has ≥2 cameras under the same instance index.
+**Status**: Not started. This covers what the old export view (now Phase 15.1) planned for the final output. Phase 15.1 stays as written for exporting to other pose formats.
 
 ---
 
-## 13.1 Data model additions (`points.py`)
+## 13.1 Fast batch triangulation (`geometry.py`, `workers/triangulation_worker.py`)
 
-### `merge_instances(trial, frame, keep, discard) -> None`
+- **The problem:** with predictions on every frame, triangulating frame by frame is too slow.
+- **The fix:** add `triangulate_trial(df_trial, cgroup) -> (p3d, xr, yr, err)`. For each instance, it builds one `C × N × 2` array of raw pixels across all frames and bodyparts, calls `cgroup.triangulate()` once, and reprojects in one batch. Fewer than 2 cameras means NaN.
+- **Which points:** the same rules as now (`set` / `predicted`; `not_visible` excluded), with an optional prediction score threshold.
+- **Callers:** `TriangulationWorker` and `AllExperimentsTriangulationWorker` use it. After a full run, each experiment's `triangulated_with` is updated (Phase 11.5).
+- **Test:** the output must match the current per-frame result to within 1e-6 on the synthetic project.
 
-For each camera: if `keep` has state `not_set` and `discard` has real data (`set` / `predicted` / `not_visible`), copy the data from `discard` into `keep`. Then call `delete_instance(trial, frame, discard)`. Use this when two cameras accidentally got different instance indices for the same animal.
+## 13.2 Export format
 
-```python
-def merge_instances(
-    self, trial: str, frame: int, keep: int, discard: int
-) -> None: ...
-```
+One CSV in **long** format, with one row per (experiment, trial, frame, instance, bodypart, view) and a single header row.
 
-### `split_instance_camera(trial, frame, instance, camera) -> int`
-
-Copy that camera's data for `instance` into a newly-minted instance index, then reset the original camera's entries back to `not_set`. Returns the new instance index. Use this when two different animals ended up under the same instance index.
-
-```python
-def split_instance_camera(
-    self, trial: str, frame: int, instance: int, camera: str
-) -> int: ...
-```
-
----
-
-## 13.2 Right-click context menu restructuring (`label_view.py`)
-
-Replace the current "Add instance" submenu with two top-level items:
-
-| Menu item | Behaviour |
+| Column | Notes |
 |---|---|
-| **Add new instance** | Mints a new instance index. Fills *only this camera* using random / average / reprojected (current single-camera logic). |
-| **Add matching instance** | Enters **pick mode** (§13.3). After the user clicks an existing instance in any camera panel, initialises that instance's data in this camera using reprojected (if ≥2 other cameras have data) or random/average fallback. |
+| `experiment, trial, frame, instance, bodypart` | as in `points.csv` |
+| `view` | camera name, or `3d` |
+| `x, y` | pixels for cameras; cm for `3d` |
+| `z` | `3d` rows only; empty for cameras |
+| `state` | `set`, `predicted` or `not_visible` (cameras); empty for `3d` |
+| `source` | `label3d`, `sleap_user` or `sleap_pred` (cameras) |
+| `score` | SLEAP score (predictions) |
+| `xr, yr, error` | reprojection and its error in px (cameras) |
+| `n_cameras` | `3d` rows: cameras used |
+| `mean_error` | `3d` rows: mean reprojection error across those cameras |
+| `calibration` | `3d` rows: registry id of the calibration used |
 
-"Reprojected" moves out of the "Add" submenu: it becomes a fill action on an existing instance (Instances menu → Fill → Reprojected).
+- `not_set` cells are left out.
+- A `3d` row is written only where triangulation succeeded.
+- The column order is fixed so scripts can rely on it.
 
----
+## 13.3 Export dialog (`widgets/export_dialog.py`) and CLI
 
-## 13.3 Pick mode (`state.py`, `camera_panel.py`, `label_view.py`)
+**File > Export points...** opens a dialog:
+- **Experiments:** a checklist, all checked by default.
+- **Include predictions:** on by default, with a score threshold.
+- **Re-triangulate first:** on by default. It runs 13.1 for every experiment whose `triangulated_with` is not its active calibration.
+- **Only points with 3D:** off by default.
+- **Output path:** default `project/exports/points_{YYYYmmdd-HHMMSS}.csv`.
+- Shows progress, then a summary: rows written, and per-experiment counts by state and source.
 
-Pick mode is a transient interaction state where clicking in any camera panel captures an instance index rather than placing a point.
+**CLI:** `uv run label3d-export <project> [-o out.csv] [--experiments a,b] [--no-predictions] [--score-min 0.5] [--no-retriangulate] [--only-3d]`
 
-### `AppState` additions
+This uses the same non-Qt function, `export.export_points(project, options) -> Path`, so step 5 of the workflow can run after a large inference job without opening the GUI.
 
-```python
-# In state.py
-def enter_pick_mode(self, callback: Callable[[int], None]) -> None:
-    """Enter pick mode; callback receives the chosen instance index."""
+## 13.4 Scaling risk: size of `points.csv`
 
-def cancel_pick_mode(self) -> None:
-    """Exit pick mode without invoking the callback."""
+- **The problem:** with predictions on every frame, `points.csv` (a MultiIndex CSV, read and written in full by every sync and every auto-save) gets large.
+- **Measure first:** before 13.1, time read, write and sync on a real project at full-trial inference.
+- **If it's too slow:** move the per-experiment store to parquet. Keep CSV for export only.
 
-@property
-def in_pick_mode(self) -> bool: ...
-```
+## 13.5 Tests
 
-### `CameraPanel` behaviour in pick mode
+- `triangulate_trial` matches the per-frame triangulation, as described in 13.1.
+- `export_points` writes the documented columns in order. Its rows round-trip to the store values. Filters (experiments, predictions, score, `only_3d`) work.
+- The CLI runs on the synthetic project and exits with code 0.
 
-- Cursor changes to crosshair.
-- Existing instance dots are drawn with a larger highlight ring.
-- Hovering over a dot shows its instance index.
-- Clicking a dot fires `instance_picked = Signal(str, int)` (camera, instance) instead of the normal `point_clicked`.
-- Clicking empty space is a no-op (does not place a point).
-- `Escape` cancels pick mode.
+## 13.6 Workflow guide, final version (`docs/user_workflow.md`)
 
-### `LabelView` orchestration
-
-- "Add matching instance" sets a callback: `lambda inst: self._fill_instance_in_camera(camera_name, inst)` then calls `state.enter_pick_mode(cb)`.
-- `_fill_instance_in_camera(camera, instance)`: runs reprojected init if possible, otherwise random/average; writes points; emits `points_changed`.
-- All panels are notified of pick mode via `state.in_pick_mode`; they poll it on `selection_changed` or via a dedicated `pick_mode_changed` signal.
-
----
-
-## 13.4 Instances menu additions (`main_window.py`, `label_view.py`)
-
-| Item | Behaviour |
-|---|---|
-| **Merge into selected** | Enters pick mode. User clicks any instance in any camera. Calls `merge_instances(keep=selected, discard=clicked)`. |
-| **Split from this camera** | Calls `split_instance_camera(trial, frame, selected, active_camera)`. Selects the new instance. |
-
-Enable/disable rules:
-- **Merge**: available when ≥2 distinct instance indices exist in this frame.
-- **Split**: available when the selected instance has data in ≥2 cameras (otherwise splitting is pointless).
-
----
-
-## 13.5 Cross-frame instance tracking (future)
-
-Each frame currently maintains instance indices independently. For sequences with many frames it would be useful to propagate identity forward (instance 0 stays the same animal across frames). Two approaches:
-
-**Explicit assignment**: after labeling a frame, user maps instances by clicking "Match to previous frame" → pick mode shows previous frame's instance positions as ghost overlays; clicking one links current instance to it.
-
-**Automatic tracking**: run a nearest-neighbour or Hungarian-algorithm match between consecutive frames based on 3D position; surface conflicts for manual resolution. Requires at least sparse 3D data from triangulation.
-
-This sub-phase is deferred until the per-frame multi-instance UI (§13.2–13.4) is stable.
-
----
-
-## 13.6 Migration from single-instance data
-
-Existing `points.csv` files produced during Phase 1–11 always have instance index 0. No migration is needed — they load and display correctly under the new system.
-
----
+Finish the Phase 10.8 draft:
+- Add calibration switching (Phase 11) and refinement (Phase 12).
+- Add the export step, with the column reference from 13.2 and the CLI.
 
 ## Implementation order
 
-1. §13.1 — `PointsStore.merge_instances` + `split_instance_camera` + unit tests
-2. §13.3 — Pick mode in `AppState` and `CameraPanel`
-3. §13.2 — Right-click menu restructure
-4. §13.4 — Instances menu additions
-5. §13.5 — Cross-frame tracking (separate sub-phase)
+1. 13.4 measurement
+2. 13.1 vectorised triangulation + test
+3. 13.2 `export_points` + 13.5 tests
+4. 13.3 dialog and CLI entry point (`pyproject.toml` `[project.scripts]`)
+5. 13.6 guide

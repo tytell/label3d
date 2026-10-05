@@ -1,12 +1,12 @@
-# Phases 11–12
+# Phases 15–16
 
 ---
 
-## Phase 11 — Export
+## Phase 15 — Export
 
 **Goal**: Export labeled data back to external formats.
 
-### 11.1 Export view (`widgets/export_view.py`)
+### 15.1 Export view (`widgets/export_view.py`)
 - [ ] Format dropdown (populated from adapter registry)
 - [ ] Trial selector (all / specific)
 - [ ] Instance type checkboxes (user / predicted)
@@ -19,7 +19,7 @@
 
 ---
 
-## Phase 12 — Polish and Robustness
+## Phase 16 — Polish and Robustness
 
 - [ ] **Undo/redo**: Command pattern — each point edit creates `UndoCommand(trial, frame, instance, bodypart, camera, old_value, new_value)` on `QUndoStack`; `Ctrl+Z`/`Ctrl+Shift+Z`
 - [ ] **Auto-save**: `PointsStore` writes `points.csv` every 30s if dirty + on app close; backup to `.points.csv.bak` before overwriting
