@@ -22,7 +22,7 @@ from label3d.slp_sync import MergeResult, SlpMapping, compute_merge
 
 SYNC_HISTORY_COLUMNS = [
     "id", "timestamp", "kind", "experiment", "trial",
-    "n_new_user", "n_new_pred", "n_updated_pred", "n_conflicts",
+    "n_new_user", "n_new_pred", "n_updated_pred", "n_conflicts", "n_frames",
 ]
 
 
@@ -350,6 +350,9 @@ class Project:
         for name, result in results.items():
             if result.sync_id is None:
                 continue
+            new_frames = set(result.new_frames)
+            if overwrite:
+                new_frames |= result.conflict_frames
             for (exp, trial), counts in sorted(result.trial_counts.items()):
                 n_conflicts = counts.get("conflicts", 0)
                 row = {
@@ -363,6 +366,7 @@ class Project:
                     "n_new_pred": counts.get("new_pred", 0),
                     "n_updated_pred": counts.get("updated_pred", 0),
                     "n_conflicts": n_conflicts,
+                    "n_frames": sum(1 for f in new_frames if f[:2] == (exp, trial)),
                 }
                 if row["n_new_user"] or row["n_new_pred"] or row["n_updated_pred"]:
                     rows.append(row)
@@ -374,8 +378,17 @@ class Project:
         )
 
     def _attach_latest_sync(self) -> None:
-        if self.points is not None:
-            self.points.latest_sync = self.latest_sync_id()
+        if self.points is None:
+            return
+        history = self.sync_history()
+        if history.empty:
+            self.points.latest_sync = None
+            self.points.latest_sync_label = ""
+            return
+        latest = history[history["id"] == history["id"].max()].iloc[0]
+        self.points.latest_sync = int(latest["id"])
+        when = str(latest["timestamp"]).replace("T", " ")[:16]
+        self.points.latest_sync_label = f"{latest['kind']} {int(latest['id'])} ({when})"
 
     def apply_merge(
         self, results: dict[str, MergeResult], overwrite: bool, kind: str = "sync"

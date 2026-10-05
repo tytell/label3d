@@ -7,6 +7,7 @@ results to the PointsStore happens on the main thread.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
@@ -32,6 +33,26 @@ class SlpReadWorker(QThread):
             self.done.emit(self._project.read_slp_for_sync(self._mapping))
         except Exception as exc:
             logger.exception("SLP read failed")
+            self.error.emit(str(exc))
+
+
+class PredictionImportWorker(QThread):
+    """Read .slp prediction files from anywhere and compute merges (File > Import predictions)."""
+
+    done = Signal(object, object)  # dict[str, MergeResult], list[str] unmatched videos
+    error = Signal(str)
+
+    def __init__(self, project: Project, paths: list[Path], parent=None):
+        super().__init__(parent)
+        self._project = project
+        self._paths = paths
+
+    def run(self):
+        try:
+            results, unmatched = self._project.read_predictions_for_import(self._paths)
+            self.done.emit(results, unmatched)
+        except Exception as exc:
+            logger.exception("Prediction import failed")
             self.error.emit(str(exc))
 
 

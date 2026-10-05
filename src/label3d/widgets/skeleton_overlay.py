@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from label3d.points import PointData, PointsStore
 from label3d.skeleton import Skeleton
-from label3d.widgets.point_item import PointItem
+from label3d.widgets.point_item import ColorMode, PointItem
 
 # Edge line style
 EDGE_PEN = QPen(QColor(200, 200, 200, 160), 1.5)
@@ -44,6 +44,7 @@ class SkeletonOverlay:
         # Track which items are active this frame
         self._active_points: set[tuple[int, str]] = set()
         self._show_non_selected: bool = True
+        self.color_mode: ColorMode = ColorMode.ERROR
 
     @property
     def show_non_selected(self) -> bool:
@@ -75,6 +76,8 @@ class SkeletonOverlay:
 
         instances = points_store.get_instances(trial, frame)
         cam = self._camera_name
+        latest_sync = points_store.latest_sync
+        new_label = points_store.latest_sync_label
 
         # Update point items for each instance and bodypart
         for inst in instances:
@@ -117,6 +120,11 @@ class SkeletonOverlay:
                     yr=pt.yr if not math.isnan(pt.yr) else None,
                     error=error,
                     selected=is_selected,
+                    source=pt.source,
+                    score=pt.score,
+                    is_new=latest_sync is not None and pt.sync == latest_sync,
+                    new_label=new_label,
+                    color_mode=self.color_mode,
                 )
 
                 # Node name label

@@ -33,6 +33,7 @@ from label3d.project import Project
 from label3d.state import ProjectState
 from label3d.widgets.bodypart_list import BodypartList
 from label3d.widgets.camera_grid import CameraGrid
+from label3d.widgets.point_item import ColorMode
 from label3d.widgets.view_3d import View3D
 
 
@@ -374,6 +375,35 @@ class LabelView(QWidget):
         store.delete_instance(trial, frame, inst)
         self._state.deselect()
         self._state.points_changed.emit(trial, frame, inst, "")
+
+    def accept_selected_point(self) -> None:
+        """Mark the selected bodypart as reviewed in every camera (clears its new mark)."""
+        store = self._state.points_store
+        inst = self._state.selected_instance
+        bp = self._state.selected_bodypart
+        if store is None or inst < 0 or not bp:
+            self._show_status("Select a point to accept")
+            return
+        n = store.accept_points(self._state.current_trial, self._state.current_frame, inst, bp)
+        self._show_status(f"Accepted {bp}" if n else f"{bp} has no new points")
+        self._update_all_overlays()
+
+    def accept_frame(self) -> None:
+        """Mark every point in the current frame as reviewed."""
+        store = self._state.points_store
+        if store is None:
+            return
+        n = store.accept_points(self._state.current_trial, self._state.current_frame)
+        self._show_status(f"Accepted {n} point(s)" if n else "No new points in this frame")
+        self._update_all_overlays()
+
+    def set_color_mode(self, mode: ColorMode) -> None:
+        """Color points by reprojection error or by source."""
+        for cam_name in self._camera_grid.camera_names:
+            panel = self._camera_grid.get_panel(cam_name)
+            if panel is not None:
+                panel.skeleton_overlay.color_mode = mode
+        self._update_all_overlays()
 
     def _toggle_instance_visibility(self):
         """Toggle visibility of non-selected instances."""

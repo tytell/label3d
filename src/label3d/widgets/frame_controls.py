@@ -73,6 +73,10 @@ class FrameControls(QWidget):
         """Update labeled-frame tick marks on the slider."""
         self._slider.set_marks(marks)
 
+    def update_new_marks(self, marks: dict[int, str]) -> None:
+        """Update the slider's row of frames with new points."""
+        self._slider.set_new_marks(marks)
+
     def _on_frame_changed(self, frame: int):
         self._slider.set_value(frame)
         self._update_label()

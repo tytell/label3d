@@ -67,6 +67,7 @@ class PointsStore(QObject):
         # Latest sync id in the project (set by Project); points with this
         # sync id are "new".
         self.latest_sync: int | None = None
+        self.latest_sync_label: str = ""  # e.g. "sync 3 (2026-10-05 14:22)", for tooltips
 
         # Frame cache: {(instance, bodypart): {camera: PointData}}
         self._cache: dict[tuple[int, str], dict[str, PointData]] = {}
