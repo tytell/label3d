@@ -53,8 +53,12 @@ This uses the same non-Qt function, `export.export_points(project, options) -> P
 ## 13.4 Scaling risk: size of `points.csv`
 
 - **The problem:** with predictions on every frame, `points.csv` (a MultiIndex CSV, read and written in full by every sync and every auto-save) gets large.
-- **Measure first:** before 13.1, time read, write and sync on a real project at full-trial inference.
-- **If it's too slow:** move the per-experiment store to parquet. Keep CSV for export only.
+- **Measure first:** before 13.1, on a real project with predictions on every frame, time these steps separately:
+  - reading and writing `points.csv`
+  - the in-memory merge (`compute_merge`) and the frame cache
+  - writing the mapped SLP files (`write_slp_files`), which every Sync rewrites in full and which now hold every prediction
+  - Import predictions (10.4) on full-length predictions files
+- **If it's too slow:** CSV stays for now. The options to weigh then are a binary store such as parquet, which was estimated at about one session of work, splitting the store per trial, and making Sync write only the SLP files whose cells changed.
 
 ## 13.5 Tests
 
@@ -64,9 +68,14 @@ This uses the same non-Qt function, `export.export_points(project, options) -> P
 
 ## 13.6 Workflow guide, final version (`docs/user_workflow.md`)
 
-Finish the Phase 10.8 draft:
+Finish the Phase 10.9 draft:
 - Add calibration switching (Phase 11) and refinement (Phase 12).
 - Add the export step, with the column reference from 13.2 and the CLI.
+
+## 13.7 Reference docs
+
+- **`docs/workflows.md`:** **File > Export points...**, the CLI, and the export column reference.
+- **README:** the `label3d-export` entry point.
 
 ## Implementation order
 
@@ -74,4 +83,4 @@ Finish the Phase 10.8 draft:
 2. 13.1 vectorised triangulation + test
 3. 13.2 `export_points` + 13.5 tests
 4. 13.3 dialog and CLI entry point (`pyproject.toml` `[project.scripts]`)
-5. 13.6 guide
+5. 13.6 guide, 13.7 reference docs

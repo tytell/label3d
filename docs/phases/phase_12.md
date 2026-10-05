@@ -4,6 +4,8 @@
 
 **Status**: Not started. Depends on Phase 10 (scores, sources) and Phase 11 (registry).
 
+**Scope**: one experiment at a time. Calibrations are per experiment, so a refinement uses only that experiment's charuco takes and that experiment's points. The dialog works on the active experiment.
+
 ---
 
 ## 12.1 Two stages
@@ -99,8 +101,13 @@ Uses the synthetic generator: a known rig, charuco takes and a moving animal.
 - **Hold-out:** the split is by frame and is reproducible from its seed.
 - **Metadata:** a saved `refine` entry has its `parent`, sources, score threshold and frame list.
 
+## 12.6 Reference docs
+
+- **`docs/workflows.md`:** the Refine dialog, its options, and how to read the before and after errors.
+
 ## Implementation order
 
 1. 12.2 `gather_points` / `count_points` + tests
 2. 12.1 + 12.3 `refine()` pipeline (no Qt) + recovery test
 3. 12.4 worker and dialog
+4. 12.6 reference docs

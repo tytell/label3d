@@ -52,16 +52,23 @@ holdout = 2.6
 
 ## 11.2 Active pointer (`project.toml`, `project.py`)
 
+`project.toml` has no per-experiment tables. `[project]`, `[charuco]`, `[calibration]` and `[slp]` are all project-wide. The pointers therefore go in a sub-table of the existing `[calibration]` section, keyed by experiment:
+
 ```toml
-[experiments.exp1]
-active_calibration = "charuco-all_20260901-101500"
+[calibration.active]
+exp1 = "charuco-all_20260901-101500"
+"20260619" = "refine_20261005-142210"    # all-digit names quoted
+
+[calibration.triangulated_with]          # 11.5
+exp1 = "charuco-all_20260901-101500"
 ```
 
 - `Project.calibration_path(experiment=None)` resolves through the pointer and returns `None` when the pointer is unset or the file is missing.
 - `has_calibration` comes from the pointer.
 - `_read_camera_info()` reads the active file.
 - Callers that assume a path exists need to handle `None`: `label_view.py`, `main_window.py` (Triangulate all experiments) and the calibration view's reload.
-- **New method:** `Project.set_active_calibration(experiment, id)`. It writes the pointer through `save_config_sections()` and calls `reload_calibration()`.
+- **New method:** `Project.set_active_calibration(experiment, id)`. It writes the pointer and calls `reload_calibration()`.
+- `save_config_sections()` replaces whole sections, so it must merge the `active` / `triangulated_with` sub-tables into `[calibration]` without dropping `frame_skip` and the drift thresholds.
 
 ## 11.3 Registry module (`calibration_registry.py`, no Qt)
 
@@ -91,6 +98,11 @@ def import_legacy(exp_dir) -> list[CalibrationEntry]
   - `corners.csv` stays as is: corners are inputs, not solutions.
   - Per-take corners (`corners_{take}.csv`) are what Phase 12 reuses.
 - **Repeat runs:** the best of the repeated runs is the one saved, and `metadata.errors` records its error and the run-to-run spread.
+- **Project setup** ([setup_project.py:878](../../src/label3d/setup_project.py#L878)): when setup from SLP files finds an existing aniposelib calibration (`assignment.calibration_toml`), it currently copies it to `experiments/{exp}/calibration.toml`. Instead it saves an `imported` entry with `metadata.source_path` set to the original path, and sets the pointer. `setup_project_cli.py`'s help text and the summary lines in `setup_project.py` are updated to match.
+- **Synthetic data:**
+  - `src/synthetic/writers.py` (`write_calibration_toml`) and `generate_synthetic.py` write the ground-truth calibration as a registry entry (`method = "imported"`, label `ground-truth`) and set the pointer.
+  - `src/synthetic/checks.py` loads it through the pointer.
+- **Test fixtures:** regenerate the committed synthetic test project. Update the tests that build or read `calibration.toml` directly: `test_project_loading`, `test_project_sync`, `test_setup_from_slp` and `test_calibration_takes`.
 - **Later writers:** axis alignment (Phase 14) saves an `align` entry whose parent is the aligned calibration. Refinement (Phase 12) saves `refine` entries.
 
 ## 11.5 Switching in the Label tab (`label_view.py`, `main_window.py`)
@@ -104,7 +116,7 @@ def import_legacy(exp_dir) -> list[CalibrationEntry]
 4. Re-triangulate the experiment's other trials in the background, one worker at a time, as `_run_next_triangulation` does now. The status bar shows progress.
 
 **Recording which calibration was used:**
-- `project.toml` stores `triangulated_with = "<id>"` per experiment once a full re-triangulation finishes.
+- `[calibration.triangulated_with]` (11.2) stores the id per experiment once a full re-triangulation finishes.
 - If it differs from `active_calibration` (an interrupted run, or a switch made in the Calibration tab), the Label tab shows "3D points are from <label>; re-triangulate" in the status bar and offers **Instances > Triangulate all experiments**.
 
 **The Calibration tab:** add a read-only registry list (label, date, method, error) with **Make active**, **Rename** and **Delete** (with a confirmation). The active entry can't be deleted.
@@ -120,9 +132,17 @@ def import_legacy(exp_dir) -> list[CalibrationEntry]
   - `calibration_path()` returns `None` with no pointer.
 - **Switching:** gives different `xr/yr` for a perturbed calibration. This reuses the two-camera project in `test_project_sync.py`.
 
+## 11.7 Reference docs
+
+- **`docs/data_model.md`:** the registry layout, the `[metadata]` fields and `[calibration.active]`. Remove `calibration.toml` and `calibration_takes/`.
+- **`docs/workflows.md`:** the Label tab calibration combo and the Calibration tab registry list.
+- **CLAUDE.md:** the `calibration.toml` line under "Data files".
+- **`docs/project_setup_from_sleap.md`:** calibration discovery now creates an `imported` registry entry.
+
 ## Implementation order
 
 1. 11.3 registry module + 11.6 tests
 2. 11.2 pointer + caller fixes for `None`
-3. 11.4 writers in the Calibration tab
+3. 11.4 writers: Calibration tab, project setup, synthetic generator, fixtures and tests
 4. 11.5 Label tab combo box, re-triangulation and stale-3D warning
+5. 11.7 reference docs

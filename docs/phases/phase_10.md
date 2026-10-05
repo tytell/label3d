@@ -46,15 +46,42 @@ Each camera's coords go from `{x, y, xr, yr, state}` to `{x, y, xr, yr, state, s
 - **New method:** `Project.latest_sync_id() -> int | None`.
 - `apply_merge()` is unchanged. The ids are already in the merged `df` for the active experiment and in the `points.csv` written for the others.
 
-## 10.4 Sync summary dialog (`widgets/sync_summary_dialog.py`)
+## 10.4 Import predictions (`main_window.py`, `project.py`, `adapters/sleap_adapter.py`)
 
-Shown after any read that merged something. It replaces the status-bar-only report.
+**Why:** inference in the SLEAP GUI merges predictions into the open labels file, so they reach label3d through the mapped files and the normal sync. Command-line inference doesn't. `sleap-nn track -i labels.slp -m models/ -o out.slp` writes a **separate** predictions file, and running on raw videos (`-i video.mp4`) gives one file per video. label3d currently never reads these files, so step 4 of the workflow by command line and step 5 (inference on all frames) both need this step.
+
+**Menu:** **File > Import predictions...** opens a file dialog for one or more `.slp` files, anywhere on disk. It's enabled whenever a project is open; it doesn't need a complete SLP mapping.
+
+**Matching**
+- Each file's videos are matched to (experiment, trial, camera) cells by basename with `_build_basename_lookup()`, the same way as `build_file_map()`. A video path stored on another machine, such as a cluster, still matches.
+- Frames are converted with the trial's `cam_start`, as in `load()`. Frames before `cam_start` or after `cam_end` are dropped.
+- Videos that match no cell are listed in the summary and skipped.
+
+**Merge**
+- The imported data goes through `compute_merge()` with a new sync id, exactly like a sync read.
+  - Predictions come in as `sleap_pred` with their scores.
+  - Any user instances in the file come in as `sleap_user`. A predictions file made from a labels file may contain them, and the normal merge rules decide what happens to them.
+  - The frame rule from 8.8 still applies: predictions are ignored on frames where the store has a user instance.
+- The conflict warning (8.10) and the summary dialog (10.5) are the same as for a sync.
+- **New method:** `Project.read_predictions_for_import(paths) -> dict[str, MergeResult]`. It reuses `SleapAdapter.load(files=paths, ...)` with no mapping, then `compute_merge()` per experiment.
+- It runs in `SlpReadWorker` (a `files=` argument is added), then `apply_merge()`, then re-triangulates the changed frames of the active experiment.
+
+**What is written**
+- The imported files are only read: they aren't added to the mapping and they aren't modified.
+- The imported points are written into the mapped SLP files at the next **Sync with Sleap**, so SLEAP sees them for the next round of training or proofreading.
+- The status bar notes this after an import: "Imported N predictions; Sync to write them to the SLP files".
+
+## 10.5 Sync summary dialog (`widgets/sync_summary_dialog.py`)
+
+Shown after any read that merged something, and after an import (10.4). It replaces the status-bar-only report.
+
+**Sync on close.** The sync that runs when the app closes (8.12) still gets a sync id and a history row, but shows no dialog. Its summary is available on the next launch through **File > Last sync summary...**.
 
 - **Table:** experiment × trial, with columns for new SLEAP user labels, new predictions, updated predictions, conflicts and frames with new points. Rows are sorted with the active experiment first.
 - **Buttons:** **Go to first new frame** (switches trial if needed) and **Close**.
 - **Menu:** the latest summary can be reopened from **File > Last sync summary...** (rebuilt from `sync_history.csv`).
 
-## 10.5 Frame slider and navigation (`widgets/frame_slider.py`, `state.py`, `main_window.py`)
+## 10.6 Frame slider and navigation (`widgets/frame_slider.py`, `state.py`, `main_window.py`)
 
 **Slider**
 - Add a "new" row above the per-camera rows. It shows a tick for every frame of the current trial that has a new point in any camera. The tick is orange if any new point is a SLEAP user label, and blue (the SLEAP prediction colour) if all of them are predictions.
@@ -66,7 +93,7 @@ Shown after any read that merged something. It replaces the status-bar-only repo
 - These live in `AppState` as `jump_to_next_new()` and `jump_to_prev_new()`, backed by `PointsStore.get_next_new_frame()` and `get_prev_new_frame()`.
 - At the end of a trial they go on to the next trial that has new points.
 
-## 10.6 Accepting points (`label_view.py`, `main_window.py`, `points.py`)
+## 10.7 Accepting points (`label_view.py`, `main_window.py`, `points.py`)
 
 Accepting clears `sync` without changing x/y, `state` or `source`. It's how the user signals they've reviewed a point and it's fine as it is. Correcting a point (10.1) clears `sync` too.
 
@@ -79,7 +106,7 @@ Accepting clears `sync` without changing x/y, `state` or `source`. It's how the 
 - **Store methods:** `PointsStore.accept_points(trial, frame, instance=None, bodypart=None)`.
 - Accepting a prediction does **not** turn it into `set`. Turning a prediction into ground truth stays a separate decision, made by editing the point.
 
-## 10.7 Marker styles (`widgets/point_item.py`, `skeleton_overlay.py`, `main_window.py`)
+## 10.8 Marker styles (`widgets/point_item.py`, `skeleton_overlay.py`, `main_window.py`)
 
 - **View > Color points by** is a pair of radio actions: **Reprojection error** (the default, as now) or **Source**. The choice is saved in the session settings.
 - **Shape** still means state: a filled circle is `set`, a ring is `predicted`, grey is `not_visible`, and a small dot is `not_set`.
@@ -88,20 +115,22 @@ Accepting clears `sync` without changing x/y, `state` or `source`. It's how the 
 - **Tooltip:** add `Source`, `Score` (predictions) and `New since sync <timestamp>`.
 - `PointItem.configure()` gains `source`, `score` and `is_new`. `ColorMode` is passed down from `LabelView`.
 
-## 10.8 Workflow guide, first draft (`docs/user_workflow.md`)
+## 10.9 Workflow guide, first draft (`docs/user_workflow.md`)
 
-A first draft of the user-facing guide, written once 10.4–10.7 exist so it names real menus. It's finished in Phase 13.6.
+A first draft of the user-facing guide, written once 10.4–10.8 exist so it names real menus. It's finished in Phase 13.6.
 
 1. **Set up a project:** from SLEAP files ([quick_setup_from_slp.md](../quick_setup_from_slp.md)) or from videos.
 2. **Calibrate:** charuco takes, checking for drift between takes.
 3. **Label in label3d,** then **File > Sync with Sleap**.
-4. **Train and infer in SLEAP:** GUI or `sleap-train` / `sleap-track`. Write predictions into the files mapped in `slp/` so the next read finds them.
+4. **Train and infer in SLEAP.** There are two routes:
+   - **GUI:** open a mapped file in `slp/`, train, run inference and save. The predictions are in the mapped file, so label3d reads them on the next open or Sync.
+   - **Command line:** `sleap-nn train` and `sleap-nn track`. The predictions are written to separate files, which label3d reads with **File > Import predictions...** (10.4).
 5. **Review:** reopen label3d, read the sync summary, step through new frames with `Shift+]`, then correct or accept. Add more labels on frames the model gets wrong, sync, and train again.
-6. **Final pass:** once the model is good enough, run inference on all frames, refine the calibration (Phase 12), and batch-export (Phase 13).
+6. **Final pass:** once the model is good enough, run inference on all frames of every video (command line, then Import predictions). Then refine the calibration (Phase 12) and batch-export (Phase 13).
 
 Link it from the README and the DESIGN.md index.
 
-## 10.9 Tests
+## 10.10 Tests
 
 - **Adapter:** `load()` gives `sleap_user`, `sleap_pred` and per-point scores, and `save()` → `load()` keeps the scores.
 - **Merge:**
@@ -110,16 +139,35 @@ Link it from the README and the DESIGN.md index.
   - **Use SLEAP** on a conflict gives a new `sleap_user` point.
   - A label3d point round trip keeps `source = label3d`.
 - **History:** a read with changes adds rows and a new id. A read with no changes adds nothing, and `latest_sync_id()` doesn't change.
+- **Import:**
+  - A predictions file whose videos are referenced by a full path from another machine matches by basename.
+  - Frames outside a trial's `cam_start` / `cam_end` are dropped.
+  - Unmatched videos are reported.
+  - Imported predictions get `sleap_pred`, scores and a new sync id.
+  - The imported file is unchanged and is not added to the mapping.
+  - After the next Sync the predictions are in the mapped file.
 - **Store:**
   - An edit sets `source = label3d` and clears `sync`.
   - `accept_points()` for one point and for a whole frame.
   - The next/previous new frame lookups.
   - Old CSVs get the missing columns filled in.
 
+## 10.11 Reference docs
+
+Update the docs that describe current behaviour once the steps above are built:
+- **`docs/data_model.md`:** the `points.csv` camera columns (`source`, `score`, `sync`) and `sync_history.csv`.
+- **`docs/workflows.md`:**
+  - The keyboard shortcut tables: `Shift+[` / `Shift+]`, `A` / `Shift+A`.
+  - **File > Import predictions...** and **File > Last sync summary...**.
+  - **View > Color points by**.
+  - The review workflow.
+- **CLAUDE.md:** the `points.csv` line under "Data files".
+
 ## Implementation order
 
 1. 10.1 + 10.2 + tests (data in and out)
 2. 10.3 + tests (merge and history)
-3. 10.6 store methods + 10.5 navigation
-4. 10.7 markers, 10.5 slider row, 10.4 summary dialog
-5. 10.8 guide draft
+3. 10.4 import predictions + tests
+4. 10.7 store methods + 10.6 navigation
+5. 10.8 markers, 10.6 slider row, 10.5 summary dialog
+6. 10.11 reference docs, 10.9 guide draft
