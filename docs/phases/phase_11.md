@@ -117,7 +117,7 @@ def import_legacy(exp_dir) -> list[CalibrationEntry]
 
 **Recording which calibration was used:**
 - `[calibration.triangulated_with]` (11.2) stores the id per experiment once a full re-triangulation finishes.
-- If it differs from `active_calibration` (an interrupted run, or a switch made in the Calibration tab), the Label tab shows "3D points are from <label>; re-triangulate" in the status bar and offers **Instances > Triangulate all experiments**.
+- If it differs from the experiment's entry in `[calibration.active]` (an interrupted run, or a switch made in the Calibration tab), the Label tab shows "3D points are from <label>; re-triangulate" in the status bar and offers **Instances > Triangulate all experiments**.
 
 **The Calibration tab:** add a read-only registry list (label, date, method, error) with **Make active**, **Rename** and **Delete** (with a confirmation). The active entry can't be deleted.
 
