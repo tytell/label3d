@@ -192,7 +192,11 @@ class MainWindow(QMainWindow):
         self._restore_and_apply_session()
 
         self._update_sync_action()
-        self._read_slp_on_open()
+        # The startup SLP read runs once the window is on screen (showEvent):
+        # its dialogs (conflict warning, sync summary) are application-modal,
+        # and one opened before the window appears ends up hidden behind it,
+        # blocking every click and key press.
+        self._startup_read_pending = True
 
     # -- Menus ---------------------------------------------------------------
 
@@ -1284,6 +1288,9 @@ class MainWindow(QMainWindow):
             self._restore_app_settings()
             if self._pending_session is not None:
                 QTimer.singleShot(0, self._apply_deferred_session)
+            if self._startup_read_pending:
+                self._startup_read_pending = False
+                QTimer.singleShot(0, self._read_slp_on_open)
 
     def _sync_on_close(self) -> bool:
         """Read, merge and write the SLP files on the main thread.  False = cancelled."""

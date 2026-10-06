@@ -12,7 +12,15 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCursor, QKeySequence, QShortcut
-from PySide6.QtWidgets import QHBoxLayout, QMenu, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QMenu,
+    QScrollArea,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -36,6 +44,9 @@ from label3d.widgets.camera_grid import CameraGrid
 from label3d.widgets.point_item import ColorMode
 from label3d.widgets.point_legend import PointLegend
 from label3d.widgets.view_3d import View3D
+
+# Below this the Points list stops shrinking and the sidebar scrolls instead
+SIDEBAR_LIST_MIN_HEIGHT = 160
 
 
 class LabelView(QWidget):
@@ -76,18 +87,27 @@ class LabelView(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Sidebar: bodypart list above the point legend
+        # Sidebar: bodypart list above the point legend, in a scroll area so
+        # a short window scrolls instead of squeezing the list
         sidebar = QWidget()
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
         self._bodypart_list = BodypartList(state)
         self._bodypart_list.set_skeleton(state.skeleton)
+        self._bodypart_list.setMinimumHeight(SIDEBAR_LIST_MIN_HEIGHT)
         sidebar_layout.addWidget(self._bodypart_list, stretch=1)
         self._legend = PointLegend()
-        self._legend.setMaximumWidth(220)
         sidebar_layout.addWidget(self._legend, stretch=0)
-        splitter.addWidget(sidebar)
+
+        self._sidebar_scroll = QScrollArea()
+        self._sidebar_scroll.setWidget(sidebar)
+        self._sidebar_scroll.setWidgetResizable(True)
+        self._sidebar_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._sidebar_scroll.setMinimumWidth(sidebar.minimumSizeHint().width() + 16)
+        self._sidebar_scroll.setMaximumWidth(240)
+        splitter.addWidget(self._sidebar_scroll)
 
         # Camera grid (reparented into this splitter)
         splitter.addWidget(camera_grid)
