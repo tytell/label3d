@@ -81,6 +81,7 @@ If a label you made in label3d was also changed in SLEAP, label3d asks which ver
   - light blue: predicted by SLEAP
 
   Hover over a point to see its source, score and which sync brought it in.
+- **Legend:** the panel below the Points list explains every shape and colour, and switches along with **Color points by**. Hide it with **View > Show legend**.
 
 ### Correcting and accepting
 

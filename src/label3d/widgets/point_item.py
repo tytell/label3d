@@ -14,10 +14,14 @@ from label3d.points import SOURCE_LABEL3D, SOURCE_SLEAP_PRED, SOURCE_SLEAP_USER
 # Point radius in pixels (screen-space, ignores view transform)
 POINT_RADIUS = 8
 
+# Reprojection error thresholds (px) for the error colors
+ERROR_OK_PX = 5
+ERROR_BAD_PX = 15
+
 # Colors for reprojection error ranges
-COLOR_GOOD = QColor(0, 200, 0)        # green: error < 5px
-COLOR_OK = QColor(255, 200, 0)        # yellow: 5-15px
-COLOR_BAD = QColor(255, 50, 50)       # red: error > 15px
+COLOR_GOOD = QColor(0, 200, 0)        # green: error < ERROR_OK_PX
+COLOR_OK = QColor(255, 200, 0)        # yellow: ERROR_OK_PX to ERROR_BAD_PX
+COLOR_BAD = QColor(255, 50, 50)       # red: error > ERROR_BAD_PX
 COLOR_NONE = QColor(160, 160, 160)    # grey: no error info
 COLOR_NOT_SET = QColor(100, 100, 100) # dim grey for points not yet positioned
 COLOR_NOT_VISIBLE = QColor(80, 80, 80, 120)  # grayed out for not-visible points
@@ -55,11 +59,32 @@ def _error_color(error: float | None) -> QColor:
     """Map reprojection error to a color."""
     if error is None:
         return COLOR_NONE
-    if error < 5:
+    if error < ERROR_OK_PX:
         return COLOR_GOOD
-    if error < 15:
+    if error < ERROR_BAD_PX:
         return COLOR_OK
     return COLOR_BAD
+
+
+def point_style(state: str, color: QColor, selected: bool = False) -> tuple[QBrush, QPen, float]:
+    """(brush, pen, radius) for a point marker.  Shared by PointItem and the legend.
+
+    Shape encodes state: set is a filled circle, predicted a ring, not_visible a
+    grey circle, not_set a small dim dot.  color applies to set and predicted.
+    """
+    r = POINT_RADIUS
+    if state == "set":
+        return QBrush(color), SELECT_PEN if selected else QPen(color.darker(150), 1), r
+    if state == "predicted":
+        pen_color = QColor(Qt.GlobalColor.white) if selected else color
+        return QBrush(Qt.GlobalColor.transparent), QPen(pen_color, 2), r
+    if state == "not_visible":
+        # Grayed out — excluded from epipolar and triangulation
+        pen = SELECT_PEN if selected else QPen(COLOR_NOT_VISIBLE.darker(120), 1)
+        return QBrush(COLOR_NOT_VISIBLE), pen, r
+    # not_set — small dim dot at default position
+    pen = SELECT_PEN if selected else QPen(COLOR_NOT_SET.darker(130), 1)
+    return QBrush(COLOR_NOT_SET), pen, r * 0.5
 
 
 class PointItem(QGraphicsEllipseItem):
@@ -166,7 +191,6 @@ class PointItem(QGraphicsEllipseItem):
 
     def _apply_style(self):
         """Update visual appearance based on state and selection."""
-        r = POINT_RADIUS
         if self._color_mode is ColorMode.SOURCE:
             color = COLOR_SOURCE.get(self._source, COLOR_NONE)
         else:
@@ -175,33 +199,11 @@ class PointItem(QGraphicsEllipseItem):
             self._is_new and self._state in ("set", "predicted", "not_visible")
         )
 
-        if self._state == "set":
-            self.setBrush(QBrush(color))
-            self.setPen(SELECT_PEN if self._selected else QPen(color.darker(150), 1))
-            self.setRect(-r, -r, 2 * r, 2 * r)
-            self.setVisible(True)
-
-        elif self._state == "predicted":
-            self.setBrush(QBrush(Qt.GlobalColor.transparent))
-            pen_color = Qt.GlobalColor.white if self._selected else color
-            self.setPen(QPen(pen_color, 2))
-            self.setRect(-r, -r, 2 * r, 2 * r)
-            self.setVisible(True)
-
-        elif self._state == "not_visible":
-            # Grayed out — excluded from epipolar and triangulation
-            self.setBrush(QBrush(COLOR_NOT_VISIBLE))
-            self.setPen(SELECT_PEN if self._selected else QPen(COLOR_NOT_VISIBLE.darker(120), 1))
-            self.setRect(-r, -r, 2 * r, 2 * r)
-            self.setVisible(True)
-
-        else:
-            # not_set — small dim dot at default position
-            hr = r * 0.5
-            self.setBrush(QBrush(COLOR_NOT_SET))
-            self.setPen(SELECT_PEN if self._selected else QPen(COLOR_NOT_SET.darker(130), 1))
-            self.setRect(-hr, -hr, 2 * hr, 2 * hr)
-            self.setVisible(True)
+        brush, pen, radius = point_style(self._state, color, self._selected)
+        self.setBrush(brush)
+        self.setPen(pen)
+        self.setRect(-radius, -radius, 2 * radius, 2 * radius)
+        self.setVisible(True)
 
     def hoverEnterEvent(self, event):
         """Show tooltip with point info."""

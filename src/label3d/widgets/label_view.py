@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCursor, QKeySequence, QShortcut
-from PySide6.QtWidgets import QHBoxLayout, QMenu, QSplitter, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QMenu, QSplitter, QVBoxLayout, QWidget
 
 import logging
 logger = logging.getLogger(__name__)
@@ -34,6 +34,7 @@ from label3d.state import ProjectState
 from label3d.widgets.bodypart_list import BodypartList
 from label3d.widgets.camera_grid import CameraGrid
 from label3d.widgets.point_item import ColorMode
+from label3d.widgets.point_legend import PointLegend
 from label3d.widgets.view_3d import View3D
 
 
@@ -75,10 +76,18 @@ class LabelView(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Bodypart sidebar
+        # Sidebar: bodypart list above the point legend
+        sidebar = QWidget()
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
         self._bodypart_list = BodypartList(state)
         self._bodypart_list.set_skeleton(state.skeleton)
-        splitter.addWidget(self._bodypart_list)
+        sidebar_layout.addWidget(self._bodypart_list, stretch=1)
+        self._legend = PointLegend()
+        self._legend.setMaximumWidth(220)
+        sidebar_layout.addWidget(self._legend, stretch=0)
+        splitter.addWidget(sidebar)
 
         # Camera grid (reparented into this splitter)
         splitter.addWidget(camera_grid)
@@ -403,7 +412,14 @@ class LabelView(QWidget):
             panel = self._camera_grid.get_panel(cam_name)
             if panel is not None:
                 panel.skeleton_overlay.color_mode = mode
+        self._legend.set_color_mode(mode)
         self._update_all_overlays()
+
+    def set_legend_visible(self, visible: bool) -> None:
+        self._legend.setVisible(visible)
+
+    def legend_visible(self) -> bool:
+        return not self._legend.isHidden()
 
     def _toggle_instance_visibility(self):
         """Toggle visibility of non-selected instances."""

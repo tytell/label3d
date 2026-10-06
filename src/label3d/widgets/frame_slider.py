@@ -5,9 +5,9 @@ from PySide6.QtGui import QBrush, QColor, QPainter, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 
-_COLOR_USER = QColor(0, 0, 0)          # black — user-placed points
-_COLOR_PREDICTED = QColor(1, 170, 247) # light blue — SLEAP predictions
-_COLOR_NEW_USER = QColor(255, 140, 0)  # orange — new SLEAP user labels
+SLIDER_COLOR_USER = QColor(0, 0, 0)          # black — user-placed points
+SLIDER_COLOR_PREDICTED = QColor(1, 170, 247) # light blue — SLEAP predictions
+SLIDER_COLOR_NEW_USER = QColor(255, 140, 0)  # orange — new SLEAP user labels
 _COLOR_ROW_BG = QColor(220, 220, 220)  # row background
 _COLOR_GROOVE = QColor(160, 160, 160)  # groove line
 _COLOR_HANDLE = QColor(80, 80, 80)     # handle triangle
@@ -175,7 +175,7 @@ class FrameSlider(QWidget):
             painter.fillRect(_H_MARGIN, _V_PAD, content_w, _ROW_H, _COLOR_ROW_BG)
             if self._max_frame > 0:
                 for frame, kind in self._new_marks.items():
-                    color = _COLOR_NEW_USER if kind == "user" else _COLOR_PREDICTED
+                    color = SLIDER_COLOR_NEW_USER if kind == "user" else SLIDER_COLOR_PREDICTED
                     x = int(self._frame_to_x(frame))
                     painter.fillRect(x, _V_PAD, 2, _ROW_H, color)
 
@@ -185,7 +185,7 @@ class FrameSlider(QWidget):
             painter.fillRect(_H_MARGIN, row_y, content_w, _ROW_H, _COLOR_ROW_BG)
             if self._max_frame > 0:
                 for frame, mark_type in self._marks.get(cam, {}).items():
-                    color = _COLOR_USER if mark_type == "user" else _COLOR_PREDICTED
+                    color = SLIDER_COLOR_USER if mark_type == "user" else SLIDER_COLOR_PREDICTED
                     x = int(self._frame_to_x(frame))
                     painter.fillRect(x, row_y, 2, _ROW_H, color)
 

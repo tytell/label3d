@@ -175,6 +175,7 @@ Before labeling, user must either:
 
 > View
   - Color points by > Reprojection error / Source
+  - Show legend
   - Cameras / Layout (Grid / Horizontal / Vertical) / Zoom
 
 > Instances
@@ -203,9 +204,9 @@ By **reprojection error**:
 
 | Color | Meaning |
 |---|---|
-| Green | Low error (< 1 px) |
-| Yellow | Medium error (1–3 px) |
-| Red | High error (> 3 px) |
+| Green | Low error (< 5 px) |
+| Yellow | Medium error (5–15 px) |
+| Red | High error (> 15 px) |
 | Grey | No reprojection error available |
 | White outline | Currently selected point |
 
@@ -218,6 +219,10 @@ By **source**:
 | Light blue | Predicted by SLEAP |
 
 In both modes, a **white square** around a point marks it as new since the latest sync. Correcting the point, or accepting it (`A`, `Shift+A`), removes the square.
+
+### Legend
+
+A legend at the bottom of the Label tab's left sidebar explains the markers. It covers shapes (point state), the colours for the current **Color points by** mode, the new and selected marks, and the frame-slider ticks. Turn it off with **View > Show legend**; the setting is saved with the session. The legend icons are drawn with the same code as the markers (`point_item.point_style`), so they always match.
 
 ### Point hover tooltip
 

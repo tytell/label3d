@@ -271,6 +271,11 @@ class MainWindow(QMainWindow):
         self._color_actions[ColorMode.ERROR].setChecked(True)
         self._color_mode = ColorMode.ERROR
 
+        self._legend_action = view_menu.addAction("Show legend")
+        self._legend_action.setCheckable(True)
+        self._legend_action.setChecked(True)
+        self._legend_action.toggled.connect(self._label_view.set_legend_visible)
+
         # View > Cameras
         cameras_menu = view_menu.addMenu("Cameras")
         cam_group = QActionGroup(self)
@@ -779,6 +784,7 @@ class MainWindow(QMainWindow):
         s.setValue("layout_mode", self._camera_grid.layout_mode.value)
         s.setValue("view_index", self._view_combo.currentIndex())
         s.setValue("color_mode", self._color_mode.value)
+        s.setValue("show_legend", self._legend_action.isChecked())
         s.endGroup()
 
         splitter_sizes = self._camera_grid.get_grid_splitter_sizes()
@@ -823,7 +829,10 @@ class MainWindow(QMainWindow):
         layout_val = s.value("layout_mode", "grid")
         view_index = int(s.value("view_index", 0) or 0)
         color_val = s.value("color_mode", ColorMode.ERROR.value)
+        show_legend = str(s.value("show_legend", "true")).lower() != "false"
         s.endGroup()
+
+        self._legend_action.setChecked(show_legend)
 
         try:
             self._set_color_mode(ColorMode(color_val))
