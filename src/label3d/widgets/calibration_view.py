@@ -19,12 +19,15 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -74,6 +77,9 @@ _CHARUCO_DEFAULTS = {
     "marker_bits": 4,
     "dict_size": 50,
 }
+
+# The log shrinks to this before the settings panel starts to scroll
+LOG_MIN_HEIGHT = 100
 
 # Detect Charuco corners on every Nth video frame (ignored for image folders).
 _FRAME_SKIP_DEFAULT = 20
@@ -356,7 +362,7 @@ class CalibrationView(QWidget):
 
         # Board params group
         board_group = QGroupBox("Charuco Board Parameters")
-        form = QFormLayout(board_group)
+        board_grid = QGridLayout(board_group)
 
         charuco_cfg = project.config.get("charuco", {})
 
@@ -381,12 +387,17 @@ class CalibrationView(QWidget):
         self._mk_bits = _int_spin("marker_bits", 4, 7)
         self._dict_size = _int_spin("dict_size", 10, 1000)
 
-        form.addRow("Squares X:", self._sq_x)
-        form.addRow("Squares Y:", self._sq_y)
-        form.addRow("Square length (mm):", self._sq_len)
-        form.addRow("Marker length (mm):", self._mk_len)
-        form.addRow("Marker bits:", self._mk_bits)
-        form.addRow("Dict size:", self._dict_size)
+        # Pairs side by side: label, spin, label, spin
+        for row, pair in enumerate((
+            (("Squares X:", self._sq_x), ("Squares Y:", self._sq_y)),
+            (("Square length (mm):", self._sq_len), ("Marker length (mm):", self._mk_len)),
+            (("Marker bits:", self._mk_bits), ("Dict size:", self._dict_size)),
+        )):
+            for half, (text, spin) in enumerate(pair):
+                board_grid.addWidget(QLabel(text), row, 2 * half)
+                board_grid.addWidget(spin, row, 2 * half + 1)
+        board_grid.setColumnStretch(1, 1)
+        board_grid.setColumnStretch(3, 1)
 
         left_layout.addWidget(board_group)
 
@@ -533,9 +544,20 @@ class CalibrationView(QWidget):
         self._log.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
+        self._log.setMinimumHeight(LOG_MIN_HEIGHT)
         left_layout.addWidget(self._log, stretch=1)
 
-        splitter.addWidget(left)
+        # Settings scroll when the window is short, so they don't set the
+        # whole window's minimum height
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(
+            left.minimumSizeHint().width() + left_scroll.verticalScrollBar().sizeHint().width()
+        )
+        splitter.addWidget(left_scroll)
 
         # ── Right panel — camera grid + frame nav ────────────────────────
         right = QWidget()
