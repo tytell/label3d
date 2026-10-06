@@ -377,6 +377,9 @@ The full user-facing guide is [user_workflow.md](user_workflow.md).
 - `Ctrl+Shift+T` triangulates all frames in background thread
 
 ### 3D view
+
+**Hidden.** The panel is not shown in the Label tab. The code is kept in `widgets/view_3d.py`; set `SHOW_3D_VIEW = True` in `widgets/label_view.py` to bring it back.
+
 - `pyqtgraph.opengl.GLViewWidget` panel in resizable splitter column
 - Points colored by reprojection error; skeleton edges; camera frustums (toggled independently)
 - Falls back gracefully if OpenGL unavailable

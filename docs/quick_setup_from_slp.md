@@ -174,7 +174,7 @@ Label. To calibrate a take from scratch:
 ### Labeling
 
 Each camera's video appears in its own panel, with the full skeleton drawn on
-top and a 3D reconstruction panel alongside.
+top.
 
 **Adding an instance** (one animal/object to label in the current frame):
 

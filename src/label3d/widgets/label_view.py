@@ -45,6 +45,10 @@ from label3d.widgets.point_item import ColorMode
 from label3d.widgets.point_legend import PointLegend
 from label3d.widgets.view_3d import View3D
 
+# The 3D view (widgets/view_3d.py) is kept but not shown; set True to add it
+# back to the right of the camera grid.
+SHOW_3D_VIEW = False
+
 # Below this the Points list stops shrinking and the sidebar scrolls instead
 SIDEBAR_LIST_MIN_HEIGHT = 160
 
@@ -112,15 +116,18 @@ class LabelView(QWidget):
         # Camera grid (reparented into this splitter)
         splitter.addWidget(camera_grid)
 
-        # 3D view
-        self._view_3d = View3D(self._cameras if self._cameras else None)
-        splitter.addWidget(self._view_3d)
+        # 3D view (hidden: not built unless SHOW_3D_VIEW)
+        self._view_3d: View3D | None = None
+        if SHOW_3D_VIEW:
+            self._view_3d = View3D(self._cameras if self._cameras else None)
+            splitter.addWidget(self._view_3d)
 
         # Set initial sizes: sidebar ~150px, grid gets the rest, 3D ~300px
-        splitter.setSizes([150, 800, 300])
+        splitter.setSizes([150, 800, 300] if SHOW_3D_VIEW else [150, 1100])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 0)
+        if SHOW_3D_VIEW:
+            splitter.setStretchFactor(2, 0)
 
         layout.addWidget(splitter)
 
@@ -161,7 +168,8 @@ class LabelView(QWidget):
         else:
             self._cameras = {}
             self._epipolar_cache = None
-        self._view_3d.set_cameras(self._cameras)
+        if self._view_3d is not None:
+            self._view_3d.set_cameras(self._cameras)
 
     def reload_calibration(self) -> None:
         """Pick up a calibration.toml written during this session and redraw."""
@@ -276,6 +284,8 @@ class LabelView(QWidget):
 
     def _update_3d_view(self):
         """Refresh the 3D view for the current frame."""
+        if self._view_3d is None:
+            return
         self._view_3d.update_frame(
             self._state.points_store,
             self._state.skeleton,

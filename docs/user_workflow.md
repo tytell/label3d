@@ -96,7 +96,7 @@ When you're done, **Sync with Sleap** again and go back to step 4.
 Once the model is good enough:
 
 1. Run `sleap-nn track` on every video and bring the results in with **File > Import predictions...**.
-2. Review the 3D reconstruction in the Label tab. Points with large reprojection errors (red when colouring by error) point to tracking or calibration problems.
+2. Check the reprojection errors in the Label tab. Points with large errors (red when colouring by error) point to tracking or calibration problems.
 3. Batch-triangulate and export: *coming in a later version*, together with calibration refinement and switching between calibrations.
 
 ## Keyboard reference for review

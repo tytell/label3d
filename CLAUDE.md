@@ -7,7 +7,7 @@ A PySide6 desktop app for 3D point labeling across multiple synchronized calibra
 ## Iterative Workflow
 
 1. **Calibrate** — detect Charuco board corners across cameras, run bundle adjustment via aniposelib
-2. **Label** — display synchronized video frames, click to place skeleton keypoints, view epipolar lines and 3D reconstruction in real time
+2. **Label** — display synchronized video frames, click to place skeleton keypoints, view epipolar lines and reprojection errors in real time (the 3D view panel is hidden; `SHOW_3D_VIEW` in `label_view.py`)
 3. **Export** — write per-camera `.slp` files for SLEAP training/inference
 4. **Re-import** — train a SLEAP model on the exported `.slp` files, run inference, drop the resulting `.slp` predictions back into `project/slp/`, then import again. Repeat from step 2 to review, correct, and add more ground-truth labels
 
