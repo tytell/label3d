@@ -80,7 +80,7 @@ class LabelView(QWidget):
 
         # Load calibration for epipolar geometry and triangulation
         calib_path = project.calibration_path()
-        if calib_path.exists():
+        if calib_path is not None:
             self._cameras = load_cameras(calib_path)
             self._epipolar_cache = EpipolarCache(self._cameras)
 
@@ -162,7 +162,7 @@ class LabelView(QWidget):
     def reload_for_experiment(self) -> None:
         """Reload calibration data for the new active experiment."""
         calib_path = self._project.calibration_path()
-        if calib_path.exists():
+        if calib_path is not None:
             self._cameras = load_cameras(calib_path)
             self._epipolar_cache = EpipolarCache(self._cameras)
         else:
@@ -172,7 +172,7 @@ class LabelView(QWidget):
             self._view_3d.set_cameras(self._cameras)
 
     def reload_calibration(self) -> None:
-        """Pick up a calibration.toml written during this session and redraw."""
+        """Pick up a change of active calibration and redraw."""
         self.reload_for_experiment()
         self._update_all_overlays()
         self._update_3d_view()

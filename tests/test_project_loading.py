@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+import toml
 
 from label3d.project import Project
 from tests.conftest import TEST_PROJECT, requires_test_project
@@ -80,12 +81,26 @@ class TestMissingOptionalFiles:
         views = set(proj.points.df.columns.get_level_values("view"))
         assert views == set(proj.cameras) | {"3d"}
 
-    def test_missing_calibration_toml_flagged(self, tmp_path):
-        """No calibration.toml → has_calibration=False, no error."""
+    def test_no_active_calibration_flagged(self, tmp_path):
+        """No calibration pointer → has_calibration=False, no error."""
         _copy_project_without(TEST_PROJECT, tmp_path,
                                exclude={"experiments/exp1/calibration.toml"})
+        shutil.rmtree(tmp_path / "experiments/exp1/calibrations", ignore_errors=True)
+        config = toml.load(tmp_path / "project.toml")
+        config.get("calibration", {}).pop("active", None)
+        (tmp_path / "project.toml").write_text(toml.dumps(config))
         proj = Project.load(tmp_path)
         assert proj.has_calibration is False
+        assert proj.calibration_path() is None
+
+    def test_pointer_to_missing_file_flagged(self, tmp_path):
+        """A pointer whose registry file is gone counts as no calibration."""
+        _copy_project_without(TEST_PROJECT, tmp_path, exclude=set())
+        proj = Project.load(tmp_path)
+        proj.calibration_path().unlink()
+        proj = Project.load(tmp_path)
+        assert proj.has_calibration is False
+        assert proj.calibration_path() is None
 
 
 # ---------------------------------------------------------------------------

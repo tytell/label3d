@@ -167,7 +167,7 @@ class MainWindow(QMainWindow):
 
         # Connect tab switching
         self._tabs.currentChanged.connect(self._on_tab_changed)
-        # An experiment with no calibration.toml needs calibrating before labeling
+        # An experiment with no active calibration needs calibrating before labeling
         if not project.has_calibration:
             self._tabs.setCurrentIndex(0)
 
@@ -930,7 +930,7 @@ class MainWindow(QMainWindow):
             "Triangulate all experiments?",
             "Re-triangulate every labeled frame in every experiment and write the "
             "results to each experiment's points.csv?\n\n"
-            "Experiments without a calibration.toml are skipped.",
+            "Experiments without an active calibration are skipped.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -951,7 +951,7 @@ class MainWindow(QMainWindow):
                 store = PointsStore.from_csv(csv_path)
             else:
                 continue
-            if not calib_path.exists():
+            if calib_path is None:
                 skipped.append(name)
                 continue
             try:
@@ -965,7 +965,7 @@ class MainWindow(QMainWindow):
         if not jobs:
             QMessageBox.information(
                 self, "Nothing to triangulate",
-                "No experiment has both a calibration.toml and labeled points.",
+                "No experiment has both an active calibration and labeled points.",
             )
             return
 

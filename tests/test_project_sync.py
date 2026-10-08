@@ -10,6 +10,9 @@ import pandas as pd
 import pytest
 import toml
 
+from aniposelib.cameras import CameraGroup
+
+from label3d.calibration_registry import save_calibration
 from label3d.points import CAM_COORDS, INDEX_NAMES, THREE_D_COORDS, PointsStore
 from label3d.project import Project
 
@@ -149,8 +152,9 @@ class TestSyncRoundTrip:
 # Triangulate all experiments (Phase 8.10)
 # ---------------------------------------------------------------------------
 
-def _calibration(path: Path) -> None:
-    """Two cameras 20 cm apart looking down +z."""
+def _activate_calibration(project: Project, shift: float = 0.0) -> Path:
+    """Two cameras 20 cm apart looking down +z, saved to the registry and made
+    active. shift moves the second camera along x (a perturbed calibration)."""
     cal = {}
     for i, cam in enumerate(CAMERAS):
         cal[f"cam_{i}"] = {
@@ -159,9 +163,17 @@ def _calibration(path: Path) -> None:
             "matrix": [[800.0, 0.0, 320.0], [0.0, 800.0, 240.0], [0.0, 0.0, 1.0]],
             "distortions": [0.0, 0.0, 0.0, 0.0, 0.0],
             "rotation": [0.0, 0.0, 0.0],
-            "translation": [-20.0 * i, 0.0, 100.0],
+            "translation": [(-20.0 - shift) * i, 0.0, 100.0],
         }
-    path.write_text(toml.dumps(cal))
+    tmp = project.root / "cal.tmp.toml"
+    tmp.write_text(toml.dumps(cal))
+    cgroup = CameraGroup.load(str(tmp))
+    tmp.unlink()
+    entry = save_calibration(
+        project.experiments[EXP].root, cgroup, f"test-{shift:g}", "charuco"
+    )
+    project.set_active_calibration(EXP, entry.id)
+    return entry.path
 
 
 class TestTriangulateAllExperiments:
@@ -172,9 +184,8 @@ class TestTriangulateAllExperiments:
             _labeled_frames,
         )
 
-        calib_path = project.calibration_path(EXP)
-        _calibration(calib_path)
-        assert calib_path == project.root / "experiments" / EXP / "calibration.toml"
+        calib_path = _activate_calibration(project)
+        assert project.calibration_path(EXP) == calib_path
 
         store = project.points
         assert _labeled_frames(store) == [(t, 0) for t in TRIALS]

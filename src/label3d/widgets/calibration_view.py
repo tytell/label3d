@@ -1220,7 +1220,7 @@ class CalibrationView(QWidget):
 
         # Load existing calibration to show reprojection errors
         calib_path = self._project.calibration_path()
-        if calib_path.exists() and has_corners:
+        if calib_path is not None and has_corners:
             try:
                 cgroup = CameraGroup.load(str(calib_path))  # type: ignore[arg-type]
                 self._apply_calibration(cgroup)

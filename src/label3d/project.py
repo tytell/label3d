@@ -15,10 +15,21 @@ import logging
 logger = logging.getLogger(__name__)
 
 from label3d.adapters.sleap_adapter import SleapAdapter
+from label3d.calibration_registry import (
+    LEGACY_CALIBRATION,
+    CalibrationEntry,
+    find_calibration,
+    import_legacy,
+    list_calibrations,
+)
 from label3d.points import PointsStore
 from label3d.skeleton import Skeleton
 from label3d.slp_sync import MergeResult, SlpMapping, compute_merge
 
+
+# triangulated_with value for experiments whose 3D points predate the
+# registry: never equal to a real id, so the re-triangulate warning shows.
+LEGACY_TRIANGULATION = "legacy"
 
 SYNC_HISTORY_COLUMNS = [
     "id", "timestamp", "kind", "experiment", "trial",
@@ -28,7 +39,7 @@ SYNC_HISTORY_COLUMNS = [
 
 @dataclass
 class CameraInfo:
-    """Minimal camera info from calibration.toml (enough for display; full
+    """Minimal camera info from the active calibration (enough for display; full
     calibration data loaded later when geometry is needed)."""
 
     name: str
@@ -120,8 +131,10 @@ class Project:
 
         experiments: dict[str, ExperimentInfo] = {}
         missing: list[str] = []
+        config_changed = False
         for exp_name in experiment_names:
             exp_dir = root / "experiments" / exp_name
+            config_changed |= _import_legacy_calibrations(config, exp_name, exp_dir)
 
             if "experiment" in trials_df.columns:
                 exp_rows = trials_df[trials_df["experiment"] == exp_name]
@@ -141,7 +154,9 @@ class Project:
             # videos/, so their lengths are resolved on demand instead.
             exp_takes = _parse_calibration_takes(exp_rows, cameras)
 
-            has_calibration, camera_info = _read_camera_info(exp_dir / "calibration.toml")
+            has_calibration, camera_info = _read_camera_info(
+                _active_calibration_path(config, exp_name, exp_dir)
+            )
 
             experiments[exp_name] = ExperimentInfo(
                 name=exp_name,
@@ -163,6 +178,9 @@ class Project:
                 + "\n  ".join(missing)
                 + "\nCheck the [video_roots] section of project.toml."
             )
+
+        if config_changed:
+            _write_config(root, config)
 
         active_experiment = experiment_names[0]
         active = experiments[active_experiment]
@@ -227,10 +245,60 @@ class Project:
             default_dir = exp_dir / "videos"
         return _resolve_video(filename, video_root, default_dir, self.root)
 
-    def calibration_path(self, experiment: str | None = None) -> Path:
-        """Path to an experiment's calibration.toml (default: the active one)."""
+    def calibration_path(self, experiment: str | None = None) -> Path | None:
+        """File of an experiment's active calibration (default experiment: the
+        active one). None when no calibration is active or its file is gone."""
         name = experiment or self.active_experiment
-        return self.root / "experiments" / name / "calibration.toml"
+        return _active_calibration_path(self.config, name, self.root / "experiments" / name)
+
+    def calibrations(self, experiment: str | None = None) -> list[CalibrationEntry]:
+        """An experiment's registry entries, newest first."""
+        name = experiment or self.active_experiment
+        return list_calibrations(self.root / "experiments" / name)
+
+    def active_calibration_id(self, experiment: str | None = None) -> str | None:
+        name = experiment or self.active_experiment
+        return _pointer(self.config, "active", name)
+
+    def active_calibration(self, experiment: str | None = None) -> CalibrationEntry | None:
+        name = experiment or self.active_experiment
+        entry_id = self.active_calibration_id(name)
+        if entry_id is None:
+            return None
+        return find_calibration(self.root / "experiments" / name, entry_id)
+
+    def triangulated_with(self, experiment: str | None = None) -> str | None:
+        """Id of the calibration the experiment's 3D points were last computed with."""
+        name = experiment or self.active_experiment
+        return _pointer(self.config, "triangulated_with", name)
+
+    def set_active_calibration(self, experiment: str | None, entry_id: str | None) -> None:
+        """Point an experiment at a registry entry (None clears it) and reload."""
+        name = experiment or self.active_experiment
+        self._set_pointer("active", name, entry_id)
+        self.reload_calibration(name)
+
+    def set_triangulated_with(self, experiment: str | None, entry_id: str | None) -> None:
+        name = experiment or self.active_experiment
+        self._set_pointer("triangulated_with", name, entry_id)
+
+    def triangulation_is_stale(self, experiment: str | None = None) -> bool:
+        """True when 3D points may come from a calibration other than the active one."""
+        name = experiment or self.active_experiment
+        active = self.active_calibration_id(name)
+        return active is not None and self.triangulated_with(name) != active
+
+    def _set_pointer(self, table: str, experiment: str, entry_id: str | None) -> None:
+        # save_config_sections replaces whole sections, so copy [calibration]
+        # to keep frame_skip, repeats and the drift thresholds.
+        calibration = dict(self.config.get("calibration", {}))
+        pointers = dict(calibration.get(table, {}))
+        if entry_id is None:
+            pointers.pop(experiment, None)
+        else:
+            pointers[experiment] = entry_id
+        calibration[table] = pointers
+        self.save_config_sections({"calibration": calibration})
 
     @property
     def slp_dir(self) -> Path:
@@ -250,8 +318,7 @@ class Project:
         config_path = self.root / "project.toml"
         config = toml.load(config_path) if config_path.exists() else {}
         config.update(sections)
-        with open(config_path, "w") as f:
-            toml.dump(config, f)
+        _write_config(self.root, config)
         self.config = config
 
     def save_slp_mapping(self, mapping: SlpMapping) -> None:
@@ -482,10 +549,8 @@ class Project:
         self._attach_latest_sync()
 
     def reload_calibration(self, experiment: str | None = None) -> None:
-        """Re-read an experiment's calibration.toml (default: the active one).
-
-        For a calibration written after the project was loaded.
-        """
+        """Re-read an experiment's active calibration (default: the active
+        experiment), after the pointer moved or a calibration was written."""
         name = experiment or self.active_experiment
         exp = self.experiments[name]
         exp.has_calibration, exp.camera_info = _read_camera_info(
@@ -527,9 +592,48 @@ class Project:
         return start
 
 
-def _read_camera_info(calib_path: Path) -> tuple[bool, dict[str, CameraInfo]]:
-    """(has_calibration, camera name -> CameraInfo) from a calibration.toml."""
-    if not calib_path.exists():
+def _write_config(root: Path, config: dict) -> None:
+    with open(root / "project.toml", "w") as f:
+        toml.dump(config, f)
+
+
+def _pointer(config: dict, table: str, experiment: str) -> str | None:
+    """An experiment's id in [calibration.{table}] of project.toml, or None."""
+    value = config.get("calibration", {}).get(table, {}).get(experiment)
+    return str(value) if value else None
+
+
+def _active_calibration_path(config: dict, experiment: str, exp_dir: Path) -> Path | None:
+    entry_id = _pointer(config, "active", experiment)
+    if entry_id is None:
+        return None
+    entry = find_calibration(exp_dir, entry_id)
+    return entry.path if entry else None
+
+
+def _import_legacy_calibrations(config: dict, experiment: str, exp_dir: Path) -> bool:
+    """Move an experiment's pre-registry calibration files into the registry.
+
+    The entry from calibration.toml becomes active. triangulated_with is set to
+    a placeholder, so the Label tab asks for one re-triangulation. Returns True
+    when config was changed (the caller writes it).
+    """
+    entries = import_legacy(exp_dir)
+    active = next(
+        (e for e in entries if e.metadata.get("source_path") == LEGACY_CALIBRATION), None
+    )
+    if active is None:
+        return False
+    calibration = config.setdefault("calibration", {})
+    calibration.setdefault("active", {})[experiment] = active.id
+    calibration.setdefault("triangulated_with", {})[experiment] = LEGACY_TRIANGULATION
+    logger.info("Imported %d legacy calibration(s) for %s", len(entries), experiment)
+    return True
+
+
+def _read_camera_info(calib_path: Path | None) -> tuple[bool, dict[str, CameraInfo]]:
+    """(has_calibration, camera name -> CameraInfo) from a calibration file."""
+    if calib_path is None or not calib_path.exists():
         return False, {}
     camera_info: dict[str, CameraInfo] = {}
     cal = toml.load(calib_path)

@@ -7,9 +7,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+from aniposelib.cameras import Camera, CameraGroup
 
 from label3d.calibration_compare import noise_adjusted_thresholds, run_spread
 from label3d.calibration_io import corners_path, load_corners, save_corners
+from label3d.calibration_registry import save_calibration
 from label3d.project import Project
 from label3d.widgets.calibration_view import (
     CalibFrameProvider,
@@ -558,16 +560,22 @@ class TestRepeatedCalibration:
 
 
 class TestReloadCalibration:
-    def test_calibration_written_after_load_is_picked_up(self, tmp_path, qapp):
+    def test_activated_calibration_is_picked_up(self, tmp_path, qapp):
         _write_project(tmp_path, {"PreCal": {"cam1": "p1.mp4", "cam2": "p2.mp4"}})
         project = Project.load(tmp_path)
         assert not project.has_calibration
 
-        project.calibration_path().write_text(
-            '[cam_0]\nname = "cam1"\nsize = [640, 480]\n'
-            '[cam_1]\nname = "cam2"\nsize = [800, 600]\n'
+        assert project.calibration_path() is None
+
+        cams = [
+            Camera(name="cam1", size=(640, 480)),
+            Camera(name="cam2", size=(800, 600)),
+        ]
+        entry = save_calibration(
+            project.experiments["exp1"].root, CameraGroup(cams), "charuco-all", "charuco"
         )
-        project.reload_calibration()
+        project.set_active_calibration("exp1", entry.id)
+        assert project.calibration_path() == entry.path
         assert project.has_calibration
         assert project.experiments["exp1"].has_calibration
         assert project.camera_info["cam2"].size == (800, 600)
