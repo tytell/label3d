@@ -75,10 +75,12 @@ class AllExperimentsTriangulationWorker(QThread):
 
     Each job is (experiment_name, cameras, points_store).  Stores are created in
     the main thread and only written to here; saving happens in the main thread.
+    Frames of first_trial (if given) go first. requestInterruption() stops the
+    run after the current frame; `completed` is then False.
 
     Emits:
         progress(int, int)   — (frames_done, total_frames)
-        finished(int)        — total frames triangulated
+        finished(int)        — frames triangulated
         error_occurred(str)  — on fatal error
     """
 
@@ -89,10 +91,13 @@ class AllExperimentsTriangulationWorker(QThread):
     def __init__(
         self,
         jobs: list[tuple[str, dict[str, CameraParams], PointsStore]],
+        first_trial: str | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self._jobs = jobs
+        self._first_trial = first_trial
+        self.completed = False
 
     def run(self):
         try:
@@ -101,12 +106,19 @@ class AllExperimentsTriangulationWorker(QThread):
                 for _name, cameras, store in self._jobs
                 for trial, frame in _labeled_frames(store)
             ]
+            if self._first_trial is not None:
+                frames.sort(key=lambda job: job[2] != self._first_trial)
             total = len(frames)
-            for done, (store, cameras, trial, frame) in enumerate(frames):
+            done = 0
+            for store, cameras, trial, frame in frames:
+                if self.isInterruptionRequested():
+                    break
                 for inst in store.get_instances(trial, frame):
                     triangulate_frame(cameras, store, trial, frame, inst)
-                self.progress.emit(done + 1, total)
-            self.finished.emit(total)
+                done += 1
+                self.progress.emit(done, total)
+            self.completed = done == total
+            self.finished.emit(done)
         except Exception as exc:
             logger.exception("Triangulating all experiments failed")
             self.error_occurred.emit(str(exc))

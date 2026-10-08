@@ -35,9 +35,10 @@ from label3d.workers.triangulation_worker import (
     TriangulationWorker,
 )
 
+from label3d.calibration_registry import entry_summary, entry_tree, find_calibration
 from label3d.geometry import load_cameras
 from label3d.points import PointsStore
-from label3d.project import Project
+from label3d.project import LEGACY_TRIANGULATION, Project
 from label3d.state import ProjectState
 from label3d.video import FrameProvider
 from label3d.widgets.calibration_view import CalibrationView
@@ -64,6 +65,7 @@ class MainWindow(QMainWindow):
         self._tri_queue: list[tuple[str, list[int]]] = []
         self._merge_tri_worker = None
         self._all_tri_worker = None
+        self._switch_tri_worker = None
         self._offered_slp_setup = False
 
         self.setWindowTitle(f"label3d — {project.root.name}")
@@ -109,6 +111,15 @@ class MainWindow(QMainWindow):
 
         top_layout.addSpacing(12)
 
+        # Calibration selector: the experiment's registry, active one selected
+        top_layout.addWidget(QLabel("Calibration:"))
+        self._calib_combo = QComboBox()
+        self._calib_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._calib_combo.activated.connect(self._on_calibration_combo_activated)
+        top_layout.addWidget(self._calib_combo)
+
+        top_layout.addSpacing(12)
+
         # Camera view selector
         top_layout.addWidget(QLabel("View:"))
         self._view_combo = QComboBox()
@@ -144,8 +155,8 @@ class MainWindow(QMainWindow):
 
         # Calibration view
         self._calibration_view = CalibrationView(project)
-        self._calibration_view.calibration_saved.connect(
-            self._label_view.reload_calibration
+        self._calibration_view.calibrations_changed.connect(
+            self._on_active_calibration_changed
         )
 
         # Export stub
@@ -175,9 +186,17 @@ class MainWindow(QMainWindow):
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("Ready")
+        # Shown while the 3D points come from another calibration than the active one
+        self._calib_status = QLabel()
+        self._calib_status.setStyleSheet("color: #b45309;")
+        self._calib_status.linkActivated.connect(lambda _link: self._retriangulate_experiment())
+        self._calib_status.setVisible(False)
+        self._status_bar.addPermanentWidget(self._calib_status)
 
         # Menus
         self._setup_menus()
+        self._refresh_calibration_combo()
+        self._update_calibration_status()
 
         # Track the currently-connected PointsStore for marks updates
         self._connected_store = None
@@ -635,8 +654,145 @@ class MainWindow(QMainWindow):
                 self._load_trial(trial_names[0])
                 self._trial_combo.setCurrentIndex(0)
 
+        self._refresh_calibration_combo()
+        self._update_calibration_status()
         self._update_sync_action()
         self._read_slp_on_open()
+
+    # -- Calibration switching -------------------------------------------------
+
+    def _refresh_calibration_combo(self) -> None:
+        """Refill the calibration combo from the active experiment's registry."""
+        combo = self._calib_combo
+        active = self._project.active_calibration_id()
+        combo.blockSignals(True)
+        combo.clear()
+        for entry, depth in entry_tree(self._project.calibrations()):
+            indent = "    " * depth + ("↳ " if depth else "")
+            combo.addItem(f"{indent}{entry.label} · {entry.created:%Y-%m-%d %H:%M}", entry.id)
+            combo.setItemData(combo.count() - 1, entry_summary(entry), Qt.ItemDataRole.ToolTipRole)
+        index = combo.findData(active) if active else -1
+        if index < 0 and combo.count():
+            combo.insertItem(0, "(none active)", None)
+            index = 0
+        combo.setCurrentIndex(index)
+        combo.setEnabled(combo.count() > 0)
+        combo.setToolTip(combo.itemData(index, Qt.ItemDataRole.ToolTipRole) or "")
+        combo.blockSignals(False)
+
+    def _on_calibration_combo_activated(self, index: int) -> None:
+        entry_id = self._calib_combo.itemData(index)
+        if not entry_id or entry_id == self._project.active_calibration_id():
+            return
+        if self._switch_tri_worker is not None or self._all_tri_worker is not None:
+            self._status_bar.showMessage("Wait for the current triangulation to finish", 3000)
+            self._refresh_calibration_combo()
+            return
+        self._project.set_active_calibration(None, entry_id)
+        self._on_active_calibration_changed()
+        self._calibration_view.reload_active_calibration()
+        self._retriangulate_experiment()
+
+    def _on_active_calibration_changed(self) -> None:
+        """The active calibration or the registry changed: reload and redraw."""
+        self._label_view.reload_calibration()
+        self._refresh_calibration_combo()
+        self._update_calibration_status()
+
+    def _update_calibration_status(self) -> None:
+        """Warn when the 3D points were computed with another calibration."""
+        project = self._project
+        store = project.points
+        if project.triangulation_is_stale() and (store is None or store.df.empty):
+            # Nothing to re-triangulate yet: new points use the active one.
+            project.set_triangulated_with(None, project.active_calibration_id())
+        if not project.triangulation_is_stale():
+            self._calib_status.setVisible(False)
+            return
+        used = project.triangulated_with()
+        if used is None or used == LEGACY_TRIANGULATION:
+            source = "an earlier calibration"
+        else:
+            entry = find_calibration(project.experiments[project.active_experiment].root, used)
+            source = f"'{entry.label}'" if entry else "a deleted calibration"
+        self._calib_status.setText(
+            f"3D points are from {source}; <a href='retriangulate'>re-triangulate</a>"
+        )
+        self._calib_status.setToolTip(
+            "Re-triangulate this experiment with the active calibration. "
+            "Instances > Triangulate all experiments does every experiment."
+        )
+        self._calib_status.setVisible(True)
+
+    def _retriangulate_experiment(self) -> None:
+        """Re-triangulate the active experiment with the active calibration.
+
+        The current frame is done at once, then every labeled frame, current
+        trial first, behind a window-modal progress dialog: the worker writes
+        into the live store, so edits wait until it finishes. Cancelling
+        leaves the stale-3D warning up.
+        """
+        store = self._project.points
+        cameras = self._label_view._cameras
+        entry_id = self._project.active_calibration_id()
+        if store is None or not cameras or entry_id is None:
+            return
+        if self._switch_tri_worker is not None or self._all_tri_worker is not None:
+            return
+        if self._state.current_trial:
+            self._label_view._triangulate_current_frame()
+
+        progress = QProgressDialog("Re-triangulating…", "Cancel", 0, 0, self)
+        progress.setWindowTitle("Switching calibration")
+        progress.setMinimumDuration(0)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+
+        worker = AllExperimentsTriangulationWorker(
+            [(self._project.active_experiment, cameras, store)],
+            first_trial=self._state.current_trial or None,
+            parent=self,
+        )
+        progress.canceled.connect(worker.requestInterruption)
+
+        def on_progress(done: int, total: int) -> None:
+            progress.setMaximum(total)
+            progress.setValue(done)
+            progress.setLabelText(f"Re-triangulating frame {done} of {total}…")
+
+        worker.progress.connect(on_progress)
+        worker.finished.connect(
+            lambda n: self._on_retriangulate_done(worker, n, entry_id, progress)
+        )
+        worker.error_occurred.connect(
+            lambda msg: self._on_retriangulate_error(msg, progress)
+        )
+        self._switch_tri_worker = worker
+        worker.start()
+
+    def _on_retriangulate_done(self, worker, n_frames: int, entry_id: str, progress) -> None:
+        progress.close()
+        self._switch_tri_worker = None
+        store = self._project.points
+        if store is not None:
+            store.save_if_changed()
+            store._invalidate_cache(self._state.current_trial, self._state.current_frame)
+        if worker.completed and self._project.active_calibration_id() == entry_id:
+            self._project.set_triangulated_with(None, entry_id)
+            self._status_bar.showMessage(f"Re-triangulated {n_frames} frame(s)", 5000)
+        else:
+            self._status_bar.showMessage(
+                f"Re-triangulation stopped after {n_frames} frame(s)", 5000
+            )
+        self._update_calibration_status()
+        self._state.frame_changed.emit(self._state.current_frame)
+
+    def _on_retriangulate_error(self, msg: str, progress) -> None:
+        self._switch_tri_worker = None
+        self._on_slp_error("Triangulation failed", msg, progress)
+        self._update_calibration_status()
 
     # -- Tab switching -------------------------------------------------------
 
@@ -942,6 +1098,7 @@ class MainWindow(QMainWindow):
         # Stores and calibrations are built here, in the main thread.
         jobs = []
         skipped = []
+        used: dict[str, str | None] = {}
         for name, exp in self._project.experiments.items():
             calib_path = self._project.calibration_path(name)
             csv_path = exp.root / "points.csv"
@@ -961,6 +1118,7 @@ class MainWindow(QMainWindow):
                 skipped.append(name)
                 continue
             jobs.append((name, cameras, store))
+            used[name] = self._project.active_calibration_id(name)
 
         if not jobs:
             QMessageBox.information(
@@ -975,17 +1133,22 @@ class MainWindow(QMainWindow):
             lambda done, total: progress.setLabelText(f"Triangulating frame {done} of {total}…")
         )
         self._all_tri_worker.finished.connect(
-            lambda n: self._on_triangulate_all_done(n, jobs, skipped, progress)
+            lambda n: self._on_triangulate_all_done(n, jobs, skipped, used, progress)
         )
         self._all_tri_worker.error_occurred.connect(
             lambda msg: self._on_slp_error("Triangulation failed", msg, progress)
         )
         self._all_tri_worker.start()
 
-    def _on_triangulate_all_done(self, n_frames: int, jobs, skipped, progress) -> None:
+    def _on_triangulate_all_done(self, n_frames: int, jobs, skipped, used, progress) -> None:
         progress.close()
         for _name, _cameras, store in jobs:
             store.save_if_changed()
+        if self._all_tri_worker is not None and self._all_tri_worker.completed:
+            for name, entry_id in used.items():
+                if entry_id is not None:
+                    self._project.set_triangulated_with(name, entry_id)
+        self._update_calibration_status()
         self._all_tri_worker = None
         self._offered_slp_setup = False
         message = f"Triangulated {n_frames} frame(s) in {len(jobs)} experiment(s)"

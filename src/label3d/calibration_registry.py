@@ -216,3 +216,65 @@ def import_legacy(exp_dir: Path) -> list[CalibrationEntry]:
             source_path=path.relative_to(exp_dir).as_posix(),
         ))
     return entries
+
+
+def entry_tree(entries: list[CalibrationEntry]) -> list[tuple[CalibrationEntry, int]]:
+    """Entries in display order with their depth: each one under its parent.
+
+    Roots (and entries whose parent is gone) come newest first, and so do the
+    children of each entry.
+    """
+    ids = {e.id for e in entries}
+    children: dict[str, list[CalibrationEntry]] = {}
+    roots: list[CalibrationEntry] = []
+    for e in entries:   # already newest first
+        if e.parent and e.parent in ids:
+            children.setdefault(e.parent, []).append(e)
+        else:
+            roots.append(e)
+
+    ordered: list[tuple[CalibrationEntry, int]] = []
+
+    def walk(entry: CalibrationEntry, depth: int) -> None:
+        ordered.append((entry, depth))
+        for child in children.get(entry.id, []):
+            walk(child, depth + 1)
+
+    for root in roots:
+        walk(root, 0)
+    return ordered
+
+
+def entry_error(entry: CalibrationEntry) -> float | None:
+    """The headline error in px: held-out points for a refinement, else charuco."""
+    errors = entry.metadata.get("errors", {})
+    for key in ("holdout", "charuco", "points"):
+        if key in errors:
+            return float(errors[key])
+    return None
+
+
+def entry_summary(entry: CalibrationEntry) -> str:
+    """Multi-line description for tooltips: method, parent, takes, points, errors."""
+    lines = [
+        f"{entry.label}  ({entry.id})",
+        f"Method: {entry.method}",
+        f"Created: {entry.created:%Y-%m-%d %H:%M:%S}",
+    ]
+    if entry.parent:
+        lines.append(f"Parent: {entry.parent}")
+    if entry.charuco_takes:
+        lines.append(f"Charuco takes: {', '.join(entry.charuco_takes)}")
+    points = entry.metadata.get("points", {})
+    if points:
+        lines.append(
+            f"Points: {points.get('n_points', '?')} from {', '.join(points.get('sources', []))}"
+        )
+    for key, value in entry.metadata.get("errors", {}).items():
+        if isinstance(value, (int, float)):
+            lines.append(f"Error ({key}): {value:.3f}")
+    if "source_path" in entry.metadata:
+        lines.append(f"Imported from: {entry.metadata['source_path']}")
+    if entry.metadata.get("notes"):
+        lines.append(f"Notes: {entry.metadata['notes']}")
+    return "\n".join(lines)

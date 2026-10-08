@@ -12,6 +12,9 @@ from label3d.calibration_registry import (
     REFINED_DIR,
     clean_label,
     delete_calibration,
+    entry_error,
+    entry_summary,
+    entry_tree,
     find_calibration,
     import_legacy,
     list_calibrations,
@@ -176,3 +179,29 @@ class TestAlignment:
         assert entry.parent == parent.id
         np.testing.assert_allclose(entry.metadata["alignment"]["R_align"], np.eye(3))
         assert load_calibration(entry).get_names() == CAMERAS
+
+
+class TestDisplay:
+    def test_tree_puts_children_under_parent(self, tmp_path):
+        a = save_calibration(tmp_path, make_cgroup(), "a", "charuco",
+                             created=datetime(2026, 1, 1))
+        b = save_calibration(tmp_path, make_cgroup(), "b", "charuco",
+                             created=datetime(2026, 3, 1))
+        a1 = save_calibration(tmp_path, make_cgroup(), "a1", "refine", parent=a.id,
+                              created=datetime(2026, 4, 1))
+        a2 = save_calibration(tmp_path, make_cgroup(), "a2", "refine", parent=a.id,
+                              created=datetime(2026, 5, 1))
+        tree = entry_tree(list_calibrations(tmp_path))
+        assert [(e.id, d) for e, d in tree] == [
+            (b.id, 0), (a.id, 0), (a2.id, 1), (a1.id, 1),
+        ]
+
+    def test_error_and_summary(self, tmp_path):
+        entry = save_calibration(
+            tmp_path, make_cgroup(), "r", "refine", parent="p",
+            errors={"charuco": 0.4, "holdout": 2.6},
+            points={"n_points": 10, "sources": ["label3d"]},
+        )
+        assert entry_error(entry) == pytest.approx(2.6)
+        text = entry_summary(entry)
+        assert "Parent: p" in text and "Points: 10 from label3d" in text

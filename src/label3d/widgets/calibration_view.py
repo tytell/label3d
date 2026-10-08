@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
@@ -35,6 +36,8 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -53,7 +56,13 @@ from label3d.calibration_io import (
 from label3d.calibration_registry import (
     CalibrationEntry,
     clean_label,
+    delete_calibration,
+    descendants,
+    entry_error,
+    entry_summary,
+    entry_tree,
     find_calibration,
+    rename_calibration,
     save_calibration,
 )
 from label3d.geometry import EpipolarCache, cameras_from_cgroup
@@ -339,11 +348,11 @@ class CalibrationView(QWidget):
     """Full calibration panel: board settings, detect, inspect, calibrate, save.
 
     Each calibration run saves one registry entry per solution (Phase 11).
-    Emits calibration_saved when the active calibration changes, so views that
-    loaded the old one can reload it.
+    Emits calibrations_changed when the registry or the active calibration
+    changes, so views that loaded the old one can reload it.
     """
 
-    calibration_saved = Signal()
+    calibrations_changed = Signal()
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
@@ -504,6 +513,26 @@ class CalibrationView(QWidget):
 
         left_layout.addWidget(takes_group)
 
+        # Registry: every saved solution, refinements under their parent
+        registry_group = QGroupBox("Saved calibrations")
+        registry_layout = QVBoxLayout(registry_group)
+        self._registry_tree = QTreeWidget()
+        self._registry_tree.setHeaderLabels(["Label", "Date", "Method", "Error px"])
+        self._registry_tree.setMaximumHeight(180)
+        self._registry_tree.itemSelectionChanged.connect(self._update_registry_buttons)
+        registry_layout.addWidget(self._registry_tree)
+        registry_buttons = QHBoxLayout()
+        self._make_active_btn = QPushButton("Make active")
+        self._rename_btn = QPushButton("Rename…")
+        self._delete_btn = QPushButton("Delete…")
+        self._make_active_btn.clicked.connect(self._on_make_active)
+        self._rename_btn.clicked.connect(self._on_rename_entry)
+        self._delete_btn.clicked.connect(self._on_delete_entry)
+        for btn in (self._make_active_btn, self._rename_btn, self._delete_btn):
+            registry_buttons.addWidget(btn)
+        registry_layout.addLayout(registry_buttons)
+        left_layout.addWidget(registry_group)
+
         # Persist board + detection settings a moment after the last edit.
         self._settings_timer = QTimer(self)
         self._settings_timer.setSingleShot(True)
@@ -657,6 +686,7 @@ class CalibrationView(QWidget):
 
         # Pre-populate frame provider so frames appear before corner detection
         self._load_take_media()
+        self.refresh_registry()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1029,6 +1059,7 @@ class CalibrationView(QWidget):
                 continue
             self._result_entries[result.name] = entry.id
             self._log_msg(f"Saved [{result.name}] as {entry.id}")
+        self.refresh_registry()
 
     def _charuco_metadata(self, result) -> dict:
         """[metadata] for a charuco entry: enough to redo the solve."""
@@ -1163,7 +1194,8 @@ class CalibrationView(QWidget):
             return
         self._project.set_active_calibration(None, entry_id)
         self._log_msg(f"Active calibration: {entry_id}")
-        self.calibration_saved.emit()
+        self.refresh_registry()
+        self.calibrations_changed.emit()
 
     # ── Calibration helpers ───────────────────────────────────────────────
 
@@ -1206,6 +1238,127 @@ class CalibrationView(QWidget):
             frame_errors, rows_by_cam, cams, self._merged_rows
         )
         self._error_label.setText(f"Reprojection error: {mean_error:.3f} px")
+
+    def _show_active_calibration(self) -> None:
+        """Load the active calibration and show its reprojection errors on the
+        corners it was solved from."""
+        calib_path = self._project.calibration_path()
+        if calib_path is None or not self._all_rows:
+            return
+        try:
+            cgroup = CameraGroup.load(str(calib_path))  # type: ignore[arg-type]
+            self._apply_calibration(cgroup)
+            self._apply_frame_errors(cgroup, self._solved_takes())
+        except Exception as exc:
+            self._log_msg(f"  Warning: could not load calibration: {exc}")
+
+    def reload_active_calibration(self) -> None:
+        """The active calibration was switched elsewhere (the Label tab)."""
+        self._show_active_calibration()
+        self.refresh_registry()
+
+    # ── Registry list ─────────────────────────────────────────────────────
+
+    def refresh_registry(self) -> None:
+        """Refill the saved-calibrations list; the active entry is bold."""
+        active = self._project.active_calibration_id()
+        self._registry_tree.clear()
+        items: dict[str, QTreeWidgetItem] = {}
+        for entry, depth in entry_tree(self._project.calibrations()):
+            error = entry_error(entry)
+            item = QTreeWidgetItem([
+                entry.label,
+                f"{entry.created:%Y-%m-%d %H:%M}",
+                entry.method,
+                f"{error:.3f}" if error is not None else "—",
+            ])
+            item.setData(0, Qt.ItemDataRole.UserRole, entry.id)
+            for col in range(4):
+                item.setToolTip(col, entry_summary(entry))
+            if entry.id == active:
+                font = item.font(0)
+                font.setBold(True)
+                for col in range(4):
+                    item.setFont(col, font)
+            if depth and entry.parent in items:
+                items[entry.parent].addChild(item)
+            else:
+                self._registry_tree.addTopLevelItem(item)
+            items[entry.id] = item
+        self._registry_tree.expandAll()
+        for col in range(4):
+            self._registry_tree.resizeColumnToContents(col)
+        self._update_registry_buttons()
+
+    def _selected_entry(self) -> CalibrationEntry | None:
+        items = self._registry_tree.selectedItems()
+        if not items:
+            return None
+        exp_dir = self._project.root / "experiments" / self._project.active_experiment
+        return find_calibration(exp_dir, items[0].data(0, Qt.ItemDataRole.UserRole))
+
+    def _update_registry_buttons(self) -> None:
+        has_selection = bool(self._registry_tree.selectedItems())
+        for btn in (self._make_active_btn, self._rename_btn, self._delete_btn):
+            btn.setEnabled(has_selection)
+
+    def _on_make_active(self) -> None:
+        entry = self._selected_entry()
+        if entry is None or entry.id == self._project.active_calibration_id():
+            return
+        self._project.set_active_calibration(None, entry.id)
+        self._log_msg(f"Active calibration: {entry.id}")
+        self._show_active_calibration()
+        self.refresh_registry()
+        self.calibrations_changed.emit()
+
+    def _on_rename_entry(self) -> None:
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        label, ok = QInputDialog.getText(
+            self, "Rename calibration",
+            "Label (letters, digits, - and _):", text=entry.label,
+        )
+        if not ok or not label.strip() or clean_label(label) == entry.label:
+            return
+        rename_calibration(entry, label)
+        self.refresh_registry()
+        self.calibrations_changed.emit()
+
+    def _on_delete_entry(self) -> None:
+        entry = self._selected_entry()
+        if entry is None:
+            return
+        exp_dir = self._project.root / "experiments" / self._project.active_experiment
+        doomed = [entry] + descendants(self._project.calibrations(), entry.id)
+        active = self._project.active_calibration_id()
+        if any(e.id == active for e in doomed):
+            QMessageBox.information(
+                self, "Can't delete the active calibration",
+                "This calibration, or one derived from it, is active. Make "
+                "another calibration active first.",
+            )
+            return
+        text = f"Delete the calibration '{entry.label}'?"
+        if len(doomed) > 1:
+            text += "\n\nThese calibrations derived from it are deleted too:\n" + "\n".join(
+                f"  {e.label} ({e.created:%Y-%m-%d %H:%M})" for e in doomed[1:]
+            )
+        reply = QMessageBox.question(
+            self, "Delete calibration?", text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        removed = delete_calibration(exp_dir, entry)
+        self._log_msg(f"Deleted {', '.join(e.id for e in removed)}")
+        self._result_entries = {
+            name: eid for name, eid in self._result_entries.items()
+            if eid not in {e.id for e in removed}
+        }
+        self.refresh_registry()
+        self.calibrations_changed.emit()
 
     def _solved_takes(self) -> list[str] | None:
         """Charuco takes behind the active calibration (None: unknown, use all).
@@ -1287,16 +1440,8 @@ class CalibrationView(QWidget):
         # Without saved corners the provider already holds the raw take frames
         # that _load_take_media() set up.
 
-        # Load the active calibration to show reprojection errors on the
-        # corners it was solved from
-        calib_path = self._project.calibration_path()
-        if calib_path is not None and has_corners:
-            try:
-                cgroup = CameraGroup.load(str(calib_path))  # type: ignore[arg-type]
-                self._apply_calibration(cgroup)
-                self._apply_frame_errors(cgroup, self._solved_takes())
-            except Exception as exc:
-                self._log_msg(f"  Warning: could not load calibration: {exc}")
+        self._show_active_calibration()
+        self.refresh_registry()
 
         if self._calib_provider.n_frames() > 0:
             self._show_frame(0)
