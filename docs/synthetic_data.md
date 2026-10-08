@@ -1,6 +1,6 @@
 # label3d — Synthetic Data Generator
 
-`generate_synthetic.py` creates a complete test project with known-correct ground truth: cameras, videos with rendered skeleton keypoints, `calibration.toml`, `points.csv`, `skeleton.json`, and `.slp` files.
+`generate_synthetic.py` creates a complete test project with known-correct ground truth: cameras, videos with rendered skeleton keypoints, a ground-truth calibration registry entry, `points.csv`, `skeleton.json`, and `.slp` files.
 
 ```bash
 uv run python generate_synthetic.py synthetic_config.toml
@@ -35,7 +35,7 @@ test_project/
 └── experiments/
     └── default/
         ├── calibration/{cam}/*.png
-        ├── calibration.toml      # ground-truth camera params
+        ├── calibrations/ground-truth_{timestamp}.toml   # ground-truth camera params; active
         ├── points.csv            # ground-truth points (5-level row index)
         └── videos/               # rendered trial videos
 ```

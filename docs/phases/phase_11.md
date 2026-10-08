@@ -2,7 +2,7 @@
 
 **Goal**: Keep every calibration solution an experiment has produced, together with how it was made. Point to the one in use, and switch between them in the Label tab, with epipolar lines and triangulated points updating.
 
-**Status**: Not started.
+**Status**: Implemented on branch `refine_calib`; awaiting UI testing. See *As implemented* at the end.
 
 **Compatibility**: Pointer only. After this phase nothing reads or writes `experiments/{name}/calibration.toml` or `calibration_takes/*.toml`. A one-time import (11.3) copies the existing files into the registry so existing calibrations aren't lost. There are few legacy projects, so the import is kept simple.
 
@@ -202,3 +202,26 @@ def import_legacy(exp_dir) -> list[CalibrationEntry]
 4. 11.4 writers: Calibration tab, project setup, synthetic generator, alignment, tests
 5. 11.5 Label tab combo box, re-triangulation and stale-3D warning; Calibration tab registry list
 6. 11.7 reference docs
+
+## As implemented
+
+Differences from the plan above, and details it left open:
+
+- **Re-triangulation after a switch is modal.** The plan re-triangulated the other trials in the background. But `TriangulationWorker` writes into the live store, and a label edit that adds a row replaces the whole DataFrame (`PointsStore._ensure_row`), so a background write could be lost.
+  - Switching therefore re-triangulates the current frame at once. It then does every labeled frame of the experiment, current trial first, behind a window-modal progress dialog with **Cancel**.
+  - Cancelling leaves `triangulated_with` unchanged, so the stale-3D warning stays.
+  - This uses `AllExperimentsTriangulationWorker`, which gained `first_trial` and interruption (`completed` is False after a cancel).
+- **Stale-3D warning.** The warning is a permanent status-bar label. Its **re-triangulate** link re-triangulates the active experiment; the tooltip points to **Instances > Triangulate all experiments** for every experiment.
+  - An experiment with no points is never stale. Its `triangulated_with` is set to the active id when the warning is checked.
+- **Where the combo lives.** The **Calibration** combo is in the top bar, next to Experiment, so it shows in every tab. Choosing an entry there re-triangulates. Make active / Use take in the Calibration tab don't, and show the warning instead.
+- **`metadata.charuco.detected`** is a table, take → timestamp, because takes can be detected at different times. `[metadata.charuco]` also records `n_rows`.
+- **Errors.** `metadata.errors` holds `charuco`, `spread_rotation_deg` and `spread_baseline_pct`. The run-to-run spread is a rotation and baseline spread, not a pixel error.
+- **`source_path`** is relative to the experiment folder for legacy imports, and the original absolute path for setup imports.
+- **Legacy corners.** The old per-take files are left in place after conversion. Image-based rows (no take) are dropped, since image calibration is deprecated.
+- **Calibration tab signal.** `calibration_saved` is renamed `calibrations_changed`. It's emitted on any registry or pointer change.
+- **Display helpers.** `entry_tree`, `entry_error` and `entry_summary` in `calibration_registry.py` give the display order, headline error and tooltip text for the combo and the list.
+- **Tests.**
+  - `tests/test_calibration_registry.py` covers the registry, legacy import, alignment entries and display helpers (16 tests).
+  - `test_project_sync.py::TestSwitchCalibration` covers switching, interrupted runs and keeping `[calibration]` settings. `test_project_loading` covers pointers.
+  - `test_calibration_takes.py` covers the corners file and the Calibration tab's registry writes.
+  - The UI was smoke-tested offscreen: switching in the combo, the warning after a Calibration-tab switch, and the re-triangulate link.

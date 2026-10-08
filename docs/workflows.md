@@ -37,7 +37,7 @@ experiments/{name}/
 │   ├── cam0/        # images or a video for cam0
 │   ├── cam1/
 │   └── …
-├── calibration.toml # written here after calibration
+├── calibrations/    # registry: every solution saved here (see below)
 ```
 
 For video input, `DetectionWorker` walks the video itself and runs `CharucoBoard.detect_image()` on exactly every Nth frame — the stride comes from the "Video frame step" spinbox in the calibration panel and persists as `frame_skip` in the `[calibration]` section of `project.toml` (default 20). Skipped frames are demuxed but never decoded. Image-based calibration is **deprecated** as of Phase 9: `CharucoBoard.detect_images(images)` is still present but guarded by an error, and a calibration folder holding images is rejected at setup and at detection. Calibration comes from videos matched into takes.
@@ -60,6 +60,24 @@ For video input, `DetectionWorker` walks the video itself and runs `CharucoBoard
 
 **Overlays:** Green dots = detected corners, Red crosses = reprojected corners after calibration.
 
+### Saved calibrations (registry)
+
+Every solution is kept in the experiment's calibration registry (`experiments/{exp}/calibrations/`; format in [data_model.md](data_model.md#calibration-outputs)).
+
+- **Run Calibration** saves one `charuco` entry per take (`charuco-{take}`) and one for the joint solution (`charuco-all`), and makes the joint one active. If the active calibration is a refined one, it asks first. The refined entry is kept, so you can switch back to it.
+- **Use selected take** makes that take's entry active. It doesn't write a file.
+- **Detect Corners** writes each camera's `corners.csv`, replacing the rows of the takes it detected.
+
+The **Saved calibrations** list shows every entry (label, date, method, error), with refinements under the calibration they came from. The active entry is bold, and the tooltip shows its provenance.
+
+| Button | Effect |
+|---|---|
+| **Make active** | points the experiment at this entry |
+| **Rename…** | changes the label; the id and file name stay the same |
+| **Delete…** | deletes the entry and every entry derived from it, after a confirmation that lists them. The active entry, and anything the active entry derives from, can't be deleted |
+
+Making a calibration active here doesn't re-triangulate. The Label tab then shows the stale-3D warning (see *Switching calibrations*).
+
 ### Calibration pipeline
 
 ```python
@@ -71,7 +89,7 @@ for cam_name in cam_names:
 cameras = [Camera(name=n) for n in cam_names]
 camera_group = CameraGroup(cameras)
 camera_group.calibrate_rows(all_rows, board, init_intrinsics=True, init_extrinsics=True)
-camera_group.dump("calibration.toml")
+save_calibration(exp_dir, camera_group, "charuco-all", "charuco", charuco_takes=[...])
 ```
 
 ### Axis Alignment (Optional)
@@ -80,7 +98,7 @@ After calibration, the world coordinate origin and axes are defined arbitrarily 
 
 #### When it applies
 
-Separate optional step that runs **after** calibration. Result stored in `calibration.toml` as `[alignment]` section. Camera extrinsics are **not modified**.
+Separate optional step that runs **after** calibration. The result is saved as an `align` registry entry whose parent is the aligned calibration, with the rotation and origin under `[metadata.alignment]` (`geometry.save_aligned_calibration()`).
 
 #### Reference video source
 
@@ -144,7 +162,7 @@ Before labeling, user must either:
 
 ```
 +------------------------------------------------------------------+
-| [ Calibrate ] [> Label ] [ Export ]   Trial: [trial1 v]          |
+| [ Calibrate ] [> Label ] [ Export ]  Calibration: [charuco-all v]  Trial: [trial1 v] |
 | Instance: [* User  o Predicted]   Bodypart: head (3 of 13)        |
 | Reprojection error: 1.3 px mean            [H] Hide  [3D] Toggle |
 +--------------+--------------+--------------+--------------+------+
@@ -188,6 +206,17 @@ Before labeling, user must either:
   - Triangulate all experiments...
   - Delete instance     Ctrl+Backspace
 ```
+
+### Switching calibrations
+
+The **Calibration** combo in the top bar lists the experiment's registry as `label · YYYY-MM-DD HH:MM`, newest first, with refinements indented under their parent. The selected item is the active calibration; the tooltip shows method, parent, takes, point counts and errors.
+
+Choosing another entry:
+1. makes it active and redraws the epipolar lines;
+2. re-triangulates the current frame at once;
+3. re-triangulates every labeled frame of the experiment, current trial first, behind a progress dialog. Editing waits until this finishes, because the triangulation writes into the same point store. **Cancel** stops it.
+
+When it finishes, `[calibration.triangulated_with]` records the calibration used. If the 3D points come from another calibration than the active one (a cancelled run, a switch made in the Calibration tab, or a project from before the registry), the status bar shows **3D points are from <label>; re-triangulate**. The link re-triangulates the experiment. **Instances > Triangulate all experiments** does every experiment and also clears the warning.
 
 ### Skeleton overlay
 

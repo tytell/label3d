@@ -25,12 +25,13 @@ project/
 ├── project.toml, skeleton.json, trials.csv, slp/
 └── experiments/{name}/
     ├── calibration/{camera}/, videos/
-    ├── calibration.toml
+    ├── calibrations/          # registry; refined/ for refinements
     └── points.csv
 ```
 
 - `trials.csv` — **global**, at project root; columns `experiment, trial, is_calibration, cam0, cam0_start, cam0_end, cam1, …`; trial names are local to each experiment (disambiguated by the `experiment` column). `is_calibration = True` rows are **calibration takes** (one synchronized calibration recording, e.g. `PreCal` / `PostCal`); their videos live in `calibration/{cam}/`, not `videos/`. Any column that is not `experiment`, `trial`, `is_calibration` or a `*_start`/`*_end` suffix is read as a camera name
-- `experiments/{name}/calibration.toml` — aniposelib `CameraGroup.dump()` format; the solution in use. Per-take solutions go to `experiments/{name}/calibration_takes/{take}.toml`, per-take corners to `calibration/{cam}/corners_{take}.csv`
+- `experiments/{name}/calibrations/` — the calibration registry (`calibration_registry.py`): every solution as an aniposelib `CameraGroup.dump()` file with provenance in `[metadata]`; refinements in `refined/`. The one in use is `[calibration.active]` in `project.toml`, and the one the 3D points came from is `[calibration.triangulated_with]`. Never read or write `calibration.toml` / `calibration_takes/` (legacy, imported once on load)
+- `calibration/{cam}/corners.csv` — every take's detected corners for one camera; columns `take, frame, corner_id, x, y, detected`
 - **Calibration is video-only** — image-based calibration is deprecated and raises
 - `experiments/{name}/videos/` — video files for that experiment's trials (no trials.csv here)
 - `experiments/{name}/points.csv` — pandas MultiIndex CSV; row index `(experiment, trial, frame, instance, bodypart)` (5-level); column MultiIndex `(view, coord)` where cameras have `{x, y, xr, yr, state, source, score, sync}` and `"3d"` pseudo-camera has `{x, y, z}`; `state` ∈ `{set, predicted, not_set, not_visible}`; `source` ∈ `{label3d, sleap_user, sleap_pred}`; `sync` is the id of the sync that brought a point in (a point is new when it equals the latest id)

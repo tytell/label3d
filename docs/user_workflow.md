@@ -30,6 +30,10 @@ The first time you open it, assign videos to SLEAP files with **File > Set up Sl
 
 In the **Calibrate** tab, detect the charuco board in each calibration take and run the calibration. If an experiment has a take before and after the trials, label3d compares them and warns you if a camera seems to have moved in between.
 
+Every calibration you run is kept. Each run saves one solution per take and one for all takes together, and the joint one becomes active. To use a single take instead, pick it and click **Use selected take**. The **Saved calibrations** list shows them all; you can rename or delete them there.
+
+To try a different calibration while labelling, choose it from the **Calibration** box at the top of the window. label3d re-triangulates the experiment's points with it, so you can compare reprojection errors.
+
 ## 3. Label
 
 In the **Label** tab:
@@ -97,7 +101,7 @@ Once the model is good enough:
 
 1. Run `sleap-nn track` on every video and bring the results in with **File > Import predictions...**.
 2. Check the reprojection errors in the Label tab. Points with large errors (red when colouring by error) point to tracking or calibration problems.
-3. Batch-triangulate and export: *coming in a later version*, together with calibration refinement and switching between calibrations.
+3. Batch-triangulate and export: *coming in a later version*, together with calibration refinement.
 
 ## Keyboard reference for review
 

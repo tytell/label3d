@@ -115,7 +115,8 @@ Field by field:
   search directory.
 - **`calibration_dir`** — where to look for calibration videos (here, the same
   flat folder). Could instead be `calibration_toml` pointing straight at an
-  existing aniposelib `calibration.toml`, if you already have one.
+  existing aniposelib `calibration.toml`, if you already have one. It's imported
+  into the project's calibration registry and made active.
 - **`allow_missing_videos = true`** — proceed even if some trial videos can't be
   located; the affected camera is left blank in `trials.csv` rather than
   aborting setup.
@@ -151,8 +152,8 @@ The app has three tabs, used in order: **Calibrate → Label → Export**.
 ### Calibrating
 
 If the setup TOML already found a `calibration.toml` (as in `OMR`, via
-`calibration_dir`), a take's calibration is done and you can skip straight to
-Label. To calibrate a take from scratch:
+`calibration_dir`), it was imported as the active calibration and you can skip
+straight to Label. To calibrate a take from scratch:
 
 1. Open the Calibrate tab; pick the experiment/take to calibrate.
 2. The app steps through the calibration video for each camera, detecting
@@ -163,9 +164,12 @@ Label. To calibrate a take from scratch:
    (`aniposelib`). The panel reports per-camera and overall reprojection error;
    red crosses are the reprojected corners overlaid on the detections — tight
    overlap means a good calibration.
-4. **Save** writes `calibration.toml` into the experiment folder. Repeating
-   calibration a few times and keeping the best run is worthwhile if error is
-   high.
+4. Every run is saved to the experiment's calibration registry
+   (`experiments/{exp}/calibrations/`), one solution per take plus the joint
+   one, and the joint solution becomes active. **Use selected take** switches to
+   a single take's solution; the **Saved calibrations** list holds them all.
+   Set **Repeat calibration** above 1 to keep the best of several runs if the
+   error is high.
 5. (Optional) **Axis alignment** — a separate step, run after calibration, to
    re-orient the arbitrary board-defined axes to something physically
    meaningful (e.g. tank walls). Pick an origin plus two axis points in the

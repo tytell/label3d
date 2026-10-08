@@ -19,6 +19,7 @@ label3d/
 ├── points.py                    # ✓ PointsStore: DataFrame wrapper, CRUD, save/load
 ├── skeleton.py                  # ✓ Skeleton: nodes, edges, symmetry pairs
 ├── geometry.py                  # ✓ CameraParams, fundamental matrix, epipolar lines, triangulation
+├── calibration_registry.py      # ✓ Calibration registry: save/list/load/rename/delete solutions (Phase 11)
 ├── video.py                     # ✓ VideoReader: cv2.VideoCapture wrapper, frame cache
 ├── instance_init.py             # ✓ random / average / reprojected instance init strategies
 ├── widgets/
@@ -143,7 +144,7 @@ label3d/
 
 5. **Point storage**: Raw pixel coordinates stored in `points.csv`. Undistortion applied on the fly for geometry — never stored. Preserves fidelity and allows recalculation if calibration is updated.
 
-6. **Always hierarchical layout**: All projects use `experiments/{name}/` subfolders. A single-experiment project has exactly one subfolder (`experiments/default/`). Each experiment has exactly one `calibration.toml`. `.slp` files are global at project root. `points.csv` is per-experiment with 5-level row index.
+6. **Always hierarchical layout**: All projects use `experiments/{name}/` subfolders. A single-experiment project has exactly one subfolder (`experiments/default/`). Each experiment has a calibration registry (`calibrations/`) with exactly one active entry. `.slp` files are global at project root. `points.csv` is per-experiment with 5-level row index.
 
 7. **Trial names are local to each experiment**: The global `trials.csv` `experiment` column disambiguates — `Trial1` in `PS18` is distinct from `Trial1` in `PS19`.
 

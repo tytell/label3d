@@ -13,7 +13,7 @@ Each `Camera` stores:
 - `size`: `(width, height)` in pixels
 - `name`: camera identifier string
 
-A `CameraGroup` holds a list of `Camera` objects and is saved/loaded as `calibration.toml` (aniposelib format — see Calibration file schema below).
+A `CameraGroup` holds a list of `Camera` objects and is saved and loaded with `CameraGroup.dump()` / `CameraGroup.load()` (aniposelib format — see Calibration file schema below). Every solution an experiment produces is kept in its calibration registry (see Calibration outputs).
 
 ### Epipolar Geometry
 - Clicking a point in camera A defines a **ray** in 3D space → projects to an **epipolar line** in camera B
@@ -45,7 +45,8 @@ Project
     │   │   ├── cam0/
     │   │   └── cam1/
     │   ├── videos/          # video files for this experiment's trials
-    │   ├── calibration.toml # written after calibrating this experiment
+    │   ├── calibrations/    # calibration registry: every solution, one .toml each
+    │   │   └── refined/     # refinements (Phase 12), each with a _points.csv
     │   └── points.csv       # 2D + 3D labels for this experiment's trials
     ├── PS19/
     │   └── …
@@ -55,10 +56,10 @@ Project
 
 **Key design properties:**
 - `trials.csv` is **global** at the project root; it has an `experiment` column so all experiments' trials live in one file. Trial names may repeat across experiments and are disambiguated by the `experiment` value.
-- Each experiment has its own `calibration.toml` and `points.csv` — per-experiment because each has a distinct calibration and independent label data.
+- Each experiment has its own calibration registry and `points.csv` — per-experiment because each has a distinct calibration and independent label data.
 - `.slp` files live in the top-level `slp/` folder; the adapter receives the full global `trials.csv` and resolves which `(experiment, trial, camera)` each file belongs to by matching video basenames across all rows.
 - `points.csv` row index is `(experiment, trial, frame, instance, bodypart)` — the `experiment` level is constant within a single file but allows cross-experiment aggregation via plain `pd.concat`.
-- The calibration for each experiment is `experiments/{name}/calibration.toml`; the geometry stack (triangulation, epipolar lines) always sees exactly one `CameraGroup` per experiment.
+- The calibration in use for each experiment is the registry entry named in `[calibration.active]` of `project.toml`; the geometry stack (triangulation, epipolar lines) always sees exactly one `CameraGroup` per experiment.
 
 ### Project configuration (`project.toml`)
 
@@ -78,9 +79,19 @@ dict_size = 50               # ArUco dictionary size (50, 100, 250, 1000)
 
 [calibration]
 frame_skip = 20              # detect corners on every Nth video frame
+repeats = 3                  # calibrate each take this many times, keep the best
 rotation_drift_deg = 0.5     # flag takes whose relative rotation differs by more
 baseline_drift_pct = 1.0     # flag takes whose camera baseline differs by more
+
+[calibration.active]         # experiment -> registry id of the calibration in use
+PS18 = "charuco-all_20260901-101500"
+"20260619" = "refine_20261005-142210"    # all-digit names quoted
+
+[calibration.triangulated_with]   # experiment -> id the 3D points were computed with
+PS18 = "charuco-all_20260901-101500"
 ```
+
+`[calibration.active]` and `[calibration.triangulated_with]` are written by `Project.set_active_calibration()` and `Project.set_triangulated_with()`. When the two differ for an experiment, the Label tab warns that its 3D points are stale. `triangulated_with = "legacy"` marks an experiment imported from a pre-registry project.
 
 The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init__` parameters. Both sections are written back by the calibration panel when the user changes a value.
 
@@ -90,12 +101,41 @@ The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init_
 
 | Path | Contents |
 |---|---|
-| `experiments/{exp}/calibration.toml` | the solution in use — written when the user picks a take |
-| `experiments/{exp}/calibration_takes/{take}.toml` | each take's own solution, plus the joint one |
-| `experiments/{exp}/calibration/{cam}/corners_{take}.csv` | detected corners for one take |
-| `experiments/{exp}/calibration/{cam}/corners.csv` | corners behind the solution in `calibration.toml` |
+| `experiments/{exp}/calibrations/{label}_{YYYYmmdd-HHMMSS}.toml` | one registry entry: a `charuco`, `imported` or `align` solution |
+| `experiments/{exp}/calibrations/refined/{id}.toml` | a `refine` entry (Phase 12) |
+| `experiments/{exp}/calibrations/refined/{id}_points.csv` | the exact points that went into that refinement |
+| `experiments/{exp}/calibration/{cam}/corners.csv` | every take's detected corners for one camera |
 
-Corner rows are keyed `source_key = "{take}:{frame}"`, so cross-camera correspondence is by take name and absolute video frame.
+**Registry entries** are plain `CameraGroup.dump()` files. Provenance is in the `[metadata]` table, which aniposelib keeps on load (`cgroup.metadata`). The id is the file stem; it never changes, and renaming changes only `label`. Each Calibrate run saves one `charuco` entry per take (`charuco-{take}`) and one for the joint solution (`charuco-all`). Deleting an entry also deletes every entry derived from it through `parent`. The module is `calibration_registry.py`.
+
+```toml
+[metadata]
+id = "charuco-all_20261005-142210"
+label = "charuco-all"
+created = "2026-10-05T14:22:10"
+method = "charuco"                    # charuco | refine | align | imported
+parent = ""                           # id this one was derived from (refine, align)
+charuco_takes = ["PreCal", "PostCal"]
+source_path = "…"                     # imported only: the file it came from
+
+[metadata.charuco]                    # charuco only: enough to redo the solve
+frame_skip = 20
+n_rows = 412
+board = { squares_x = 6, squares_y = 8, square_length = 30.0, marker_length = 22.0, marker_bits = 4, dict_size = 50 }
+take_ranges = { PreCal = { start = 0, end = 1800 }, PostCal = { start = 0 } }
+detected = { PreCal = "2026-10-05T14:20:03", PostCal = "2026-10-05T14:20:03" }
+
+[metadata.errors]                     # px, and run-to-run spread over repeats
+charuco = 0.41
+spread_rotation_deg = 0.02
+spread_baseline_pct = 0.1
+
+[metadata.alignment]                  # align only (Phase 14); see the schema below
+```
+
+**`corners.csv` columns:** `take, frame, corner_id, x, y, detected`. One row is one detected corner. Cross-camera correspondence is by take name and absolute video frame. `detected` is the time of the detection run that produced that take's rows. Re-detecting a take replaces only its rows, so a charuco entry whose `metadata.charuco.detected` no longer matches was solved from older corners. `load_corners(cam_dir, takes=…)` filters by take.
+
+**Legacy files.** Before Phase 11, the solution in use was `experiments/{exp}/calibration.toml`, take solutions were in `calibration_takes/{take}.toml`, and corners were split across `corners.csv` and `corners_{take}.csv` with a `"{take}:{frame}"` `source_key`. On load, a project with no `calibrations/` folder has those `.toml` files imported as `imported` entries, and `calibration.toml` becomes active. Old corner files are converted the first time they're read. The old files are left in place and never read again.
 
 ### Videos and trials
 
@@ -112,7 +152,7 @@ Corner rows are keyed `source_key = "{take}:{frame}"`, so cross-camera correspon
 - `_start` / `_end`: frame indices into the video file (inclusive). Blank = start (0) / end of file.
 - The per-camera offset is **implicit**: global frame `N` maps to video frame `_start + N` for each camera.
 - **Trial length** = `min(_end_i - _start_i + 1)` across all cameras. Blank `_end` resolved via `cv2.CAP_PROP_FRAME_COUNT`.
-- Camera ID columns must match the `name` field values in `calibration.toml`.
+- Camera ID columns must match the `name` field values in the calibration files.
 - Any column that is not `experiment`, `trial`, `is_calibration`, or a `*_start` / `*_end` suffix is taken to be a camera name — new metadata columns must be added to `project.NON_CAMERA_COLUMNS`.
 
 **Calibration takes** (`is_calibration = True`): a take is one synchronized calibration recording, typically one before and one after the trials. The `trial` column holds the take name (from the calibration keyword, e.g. `PreCal`). Takes reuse the camera / `_start` / `_end` triples, so a take can be trimmed to the segment where the board is visible. Take videos resolve relative to `experiments/{experiment}/calibration/{camera}/`; trial videos relative to `experiments/{experiment}/videos/`. Takes are excluded from `Project.trials` and from SLP cell matching.
@@ -229,10 +269,10 @@ translation = [tx, ty, tz]
 # …
 
 [metadata]
-# aniposelib internal; ignored by label3d
+# Registry provenance (see Calibration outputs); ignored by the geometry code
 
-[alignment]
-# Optional; written after axis alignment step
+[metadata.alignment]
+# align entries only; written by the axis alignment step
 # origin: 3D point used as origin in the new coordinate system, in old world coords (cm)
 origin = [ox, oy, oz]
 # R_align: 3×3 rotation matrix whose columns are [x_hat, y_hat, z_hat] in OLD world space
@@ -241,7 +281,7 @@ origin = [ox, oy, oz]
 R_align = [[r00, r01, r02], [r10, r11, r12], [r20, r21, r22]]
 ```
 
-`label3d`'s `load_cameras()` skips sections named `"metadata"` or `"alignment"`.
+`CameraGroup.load()` and `label3d`'s `load_cameras()` read every top-level table except `metadata` as a camera, so all other data must go under `[metadata]`.
 
 ---
 

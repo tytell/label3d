@@ -28,7 +28,7 @@ references the videos in place.
                       ├──► skeleton ──► skeleton.json              ├──► trials.csv (path cells)
                       │                                            └──► project.toml [video_roots]
                       └──► labels ───────────────────────────────► points.csv
-calibration.toml or calibration videos ────────────────────────────► experiments/{exp}/calibration.toml
+calibration.toml or calibration videos ────────────────────────────► experiments/{exp}/calibrations/ (registry)
 ```
 
 Both entry paths end in the same on-disk project, and everything downstream (labeling,
@@ -173,8 +173,10 @@ and `mtime` all work against external paths as-is. Experiment assignment likewis
 
 1. **An existing `calibration.toml`** — in the directory containing the `.slp` files, or in
    `calibration_dir` if given. Recognized by parsing it as an aniposelib `CameraGroup.dump()`
-   and checking that its camera names match the project's. Copied to
-   `experiments/{exp}/calibration.toml`; the calibrate step is then unnecessary.
+   and checking that its camera names match the project's. Saved as an `imported` entry in the
+   experiment's calibration registry (`experiments/{exp}/calibrations/`), with
+   `metadata.source_path` set to the original file, and made active. The calibrate step is then
+   unnecessary.
 2. **Calibration videos** — found by the usual `calib_keywords` / `calib_regex` rules in those
    same directories, matched into takes by the existing `_match_calibration_takes()`, and
    referenced in place like trial videos (rows in `trials.csv` with `is_calibration = True` and
@@ -192,7 +194,7 @@ calibration take must fall through to the path-resolution rule when the cell is 
       a filename match.
 - [x] `_find_calibration_videos(dirs, config) -> list[tuple[str, Path]]` — reuse
       `_is_calibration()` and `_identify_camera_from_path()`.
-- [x] `execute_setup()` — copy a found `calibration.toml` into the experiment directory.
+- [x] `execute_setup()` — save a found `calibration.toml` as an `imported` registry entry and make it active (Phase 11).
 - [x] Preview shows, per experiment, which of the three outcomes applies.
 
 ---
@@ -262,7 +264,7 @@ Videos (referenced in place):
   ...
 
 Calibration:
-  [default]  calibration.toml found at /Volumes/data/2026-03-14/calibration.toml
+  [default]  calibration found at /Volumes/data/2026-03-14/calibration.toml (imported into the calibration registry)
 ```
 
 `execute_setup` refuses to run while any video is MISSING unless the user confirms, in which case
