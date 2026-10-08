@@ -33,11 +33,11 @@ Configured in a settings panel before calibration. Maps directly to `CharucoBoar
 
 ```
 experiments/{name}/
-├── calibration/
-│   ├── cam0/        # images or a video for cam0
+├── calibrations/
+│   ├── cam0/        # take videos and corners.csv for cam0
 │   ├── cam1/
-│   └── …
-├── calibrations/    # registry: every solution saved here (see below)
+│   ├── …
+│   └── *.toml       # registry: every solution saved here (see below)
 ```
 
 For video input, `DetectionWorker` walks the video itself and runs `CharucoBoard.detect_image()` on exactly every Nth frame — the stride comes from the "Video frame step" spinbox in the calibration panel and persists as `frame_skip` in the `[calibration]` section of `project.toml` (default 20). Skipped frames are demuxed but never decoded. Image-based calibration is **deprecated** as of Phase 9: `CharucoBoard.detect_images(images)` is still present but guarded by an error, and a calibration folder holding images is rejected at setup and at detection. Calibration comes from videos matched into takes.

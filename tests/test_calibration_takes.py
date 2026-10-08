@@ -57,7 +57,7 @@ def _write_project(root: Path, calib_names: dict[str, dict[str, str]]) -> Path:
         (videos / f"{cam}_trial1.mp4").write_bytes(b"\x00" * 32)
 
     for cam in CAMERAS:
-        cam_dir = root / "experiments" / "exp1" / "calibration" / cam
+        cam_dir = root / "experiments" / "exp1" / "calibrations" / cam
         cam_dir.mkdir(parents=True)
         for cam_files in calib_names.values():
             (cam_dir / cam_files[cam]).write_bytes(b"\x00" * 32)
@@ -96,7 +96,7 @@ class TestTakePairing:
         take = _build_takes(project)[0]
         for cam, tv in take.videos.items():
             assert tv.path.parent.name == cam
-            assert tv.path.parent.parent.name == "calibration"
+            assert tv.path.parent.parent.name == "calibrations"
             assert tv.path.is_file()
 
     def test_missing_camera_leaves_take_incomplete(self, tmp_path, qapp):
@@ -115,7 +115,7 @@ class TestTakePairing:
         videos.mkdir(parents=True)
         for cam in CAMERAS:
             (videos / f"{cam}_trial1.mp4").write_bytes(b"\x00" * 32)
-        cam_dir = tmp_path / "experiments" / "exp1" / "calibration" / "cam1"
+        cam_dir = tmp_path / "experiments" / "exp1" / "calibrations" / "cam1"
         cam_dir.mkdir(parents=True)
         (cam_dir / "pre1.mp4").write_bytes(b"\x00" * 32)
 

@@ -19,6 +19,7 @@ from label3d.adapters.sleap_adapter import SleapAdapter
 from label3d.calibration_registry import (
     LEGACY_CALIBRATION,
     CalibrationEntry,
+    camera_dir,
     find_calibration,
     import_legacy,
     list_calibrations,
@@ -190,7 +191,7 @@ class Project:
             for trial in exp_trials:
                 _resolve_trial_length(trial, videos_dir, video_root, root)
 
-            # Calibration take videos live under calibration/{cam}/, not
+            # Calibration take videos live under calibrations/{cam}/, not
             # videos/, so their lengths are resolved on demand instead.
             exp_takes = _parse_calibration_takes(exp_rows, cameras)
 
@@ -253,7 +254,7 @@ class Project:
     def video_path(self, trial_name: str, camera: str) -> Path:
         """Resolve absolute path to a trial or calibration-take video.
 
-        Calibration takes live in calibration/{camera}/, trials in videos/ —
+        Calibration takes live in calibrations/{camera}/, trials in videos/ —
         unless the cell names a path, in which case the video is referenced
         where it already lives (see _resolve_video).
         """
@@ -264,10 +265,10 @@ class Project:
         except KeyError:
             take = self.get_calibration_take(trial_name)
             filename, _, _ = take.camera_videos[camera]
-            default_dir = exp_dir / "calibration" / camera
+            default_dir = camera_dir(exp_dir, camera)
             # Calibration videos are copied into the project even when trial
             # videos are referenced in place, so a cell naming a file in
-            # calibration/{camera}/ wins over the experiment's video_root.
+            # calibrations/{camera}/ wins over the experiment's video_root.
             local = default_dir / filename
             if local.exists():
                 return local
@@ -760,7 +761,7 @@ def _resolve_video(
     2. a path-valued cell, or any cell when the experiment has a ``video_root``
        — resolved against that root, falling back to the project root;
     3. a bare filename with no ``video_root`` — the classic layout, resolved
-       against ``default_dir`` (``videos/`` for trials, ``calibration/{cam}/``
+       against ``default_dir`` (``videos/`` for trials, ``calibrations/{cam}/``
        for takes).
 
     Projects written before external video references existed have no
@@ -867,7 +868,7 @@ def check_trial_videos(
                 raise LoadCancelled()
 
         if is_calibration[idx]:
-            path = _take_video_path(cell, video_root, exp_dir / "calibration" / cam, root)
+            path = _take_video_path(cell, video_root, camera_dir(exp_dir, cam), root)
         else:
             path = _resolve_video(cell, video_root, exp_dir / "videos", root)
         mtime = _video_mtime(path)

@@ -55,6 +55,7 @@ from label3d.calibration_io import (
 )
 from label3d.calibration_registry import (
     CalibrationEntry,
+    camera_dir,
     clean_label,
     delete_calibration,
     descendants,
@@ -721,7 +722,7 @@ class CalibrationView(QWidget):
         """Explain why there is nothing to detect."""
         exp_dir = self._project.root / "experiments" / self._project.active_experiment
         for cam in self._project.cameras:
-            cam_dir = exp_dir / "calibration" / cam
+            cam_dir = camera_dir(exp_dir, cam)
             if not cam_dir.is_dir():
                 continue
             images = [
@@ -937,7 +938,7 @@ class CalibrationView(QWidget):
         take_names = [t.name for t in self._takes]
         detected = datetime.now()
         for cam in self._project.cameras:
-            cam_dir = exp_dir / "calibration" / cam
+            cam_dir = camera_dir(exp_dir, cam)
             if not cam_dir.is_dir():
                 continue
             try:
@@ -1068,7 +1069,7 @@ class CalibrationView(QWidget):
         exp_dir = self._project.root / "experiments" / self._project.active_experiment
         detected: dict[str, str] = {}
         for cam in self._project.cameras:
-            for take, stamp in corner_detections(exp_dir / "calibration" / cam).items():
+            for take, stamp in corner_detections(camera_dir(exp_dir, cam)).items():
                 if take in takes:
                     detected[take] = max(stamp, detected.get(take, stamp))
         ranges = {}
@@ -1404,7 +1405,7 @@ class CalibrationView(QWidget):
         exp_dir = self._project.root / "experiments" / self._project.active_experiment
         loaded_rows: dict[str, list] = {}
         for cam in self._project.cameras:
-            rows = load_corners(exp_dir / "calibration" / cam)
+            rows = load_corners(camera_dir(exp_dir, cam))
             if rows is not None:
                 loaded_rows[cam] = rows
 

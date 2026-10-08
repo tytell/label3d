@@ -404,9 +404,17 @@ class TestExecuteSetup:
         assert result.is_dir()
         assert (result / "experiments" / "default" / "videos").is_dir()
         assert (result / "trials.csv").is_file()
-        assert (result / "experiments" / "default" / "calibration" / "left").is_dir()
-        assert (result / "experiments" / "default" / "calibration" / "right").is_dir()
+        assert (result / "experiments" / "default" / "calibrations" / "left").is_dir()
+        assert (result / "experiments" / "default" / "calibrations" / "right").is_dir()
         assert (result / "project.toml").is_file()
+
+    def test_refined_is_not_a_camera_name(self, source_dir, tmp_path):
+        with pytest.raises(ValueError, match="refined"):
+            SetupConfig(
+                source_dir=source_dir, output_dir=tmp_path / "project",
+                camera_names=["left", "refined"], calib_keyword="calib",
+                match_strategy="number",
+            )
 
     def test_trials_csv_content(self, basic_config):
         assignment = classify_files(basic_config)
@@ -453,7 +461,7 @@ class TestExecuteSetup:
         project = Project.load(basic_config.output_dir)
         path = project.video_path("calib", "left")
         assert path.parent.name == "left"
-        assert path.parent.parent.name == "calibration"
+        assert path.parent.parent.name == "calibrations"
         assert path.is_file()
 
     def test_files_moved(self, basic_config, source_dir):
@@ -476,7 +484,7 @@ class TestExecuteSetup:
         execute_setup(basic_config, assignment)
 
         calib_left = list(
-            (basic_config.output_dir / "experiments" / "default" / "calibration" / "left").iterdir()
+            (basic_config.output_dir / "experiments" / "default" / "calibrations" / "left").iterdir()
         )
         assert len(calib_left) == 1
         assert calib_left[0].name == "calib_left.mp4"

@@ -9,7 +9,7 @@ import pandas as pd
 import toml
 from aniposelib.cameras import Camera, CameraGroup
 
-from label3d.calibration_registry import CalibrationEntry, save_calibration
+from label3d.calibration_registry import CalibrationEntry, registry_dir, save_calibration
 
 
 def write_calibration(cameras: dict, experiment_dir: Path) -> CalibrationEntry:
@@ -302,7 +302,7 @@ def write_flat_folder(
     # Files are already named to carry the experiment, take and camera, so copy as-is.
     for exp in experiments:
         exp_name = exp["name"]
-        calib_dir = project_dir / "experiments" / exp_name / "calibration"
+        calib_dir = registry_dir(project_dir / "experiments" / exp_name)
         if calib_dir.exists():
             for cam_name in cam_names:
                 cam_calib = calib_dir / cam_name

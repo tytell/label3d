@@ -18,10 +18,10 @@ Generates:
     │   └── cam3.slp
     └── experiments/
         └── <experiment_name>/
-            ├── calibration/         (if [charuco] section present)
-            │   ├── cam1/board_000.png
-            │   └── ...
-            ├── calibrations/ground-truth_{timestamp}.toml
+            ├── calibrations/        (cam folders if [charuco] section present)
+            │   ├── cam1/<exp>_PreCal_cam1.mp4
+            │   ├── ...
+            │   └── ground-truth_{timestamp}.toml
             ├── points.csv
             └── videos/
                 ├── cam1_<exp>_trial1.mp4

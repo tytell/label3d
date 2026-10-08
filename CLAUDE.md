@@ -24,14 +24,14 @@ A PySide6 desktop app for 3D point labeling across multiple synchronized calibra
 project/
 ├── project.toml, skeleton.json, trials.csv, slp/
 └── experiments/{name}/
-    ├── calibration/{camera}/, videos/
-    ├── calibrations/          # registry; refined/ for refinements
+    ├── calibrations/          # {camera}/ (take videos, corners.csv), registry *.toml, refined/
+    ├── videos/
     └── points.csv
 ```
 
-- `trials.csv` — **global**, at project root; columns `experiment, trial, is_calibration, cam0, cam0_start, cam0_end, cam0_mtime, cam1, …`; blank `_end` / `_mtime` cells are measured and written back on load (`check_trial_videos`), so later loads don't open the videos; trial names are local to each experiment (disambiguated by the `experiment` column). `is_calibration = True` rows are **calibration takes** (one synchronized calibration recording, e.g. `PreCal` / `PostCal`); their videos live in `calibration/{cam}/`, not `videos/`. Any column that is not `experiment`, `trial`, `is_calibration` or a `*_start`/`*_end`/`*_mtime` suffix is read as a camera name
+- `trials.csv` — **global**, at project root; columns `experiment, trial, is_calibration, cam0, cam0_start, cam0_end, cam0_mtime, cam1, …`; blank `_end` / `_mtime` cells are measured and written back on load (`check_trial_videos`), so later loads don't open the videos; trial names are local to each experiment (disambiguated by the `experiment` column). `is_calibration = True` rows are **calibration takes** (one synchronized calibration recording, e.g. `PreCal` / `PostCal`); their videos live in `calibrations/{cam}/`, not `videos/`. Any column that is not `experiment`, `trial`, `is_calibration` or a `*_start`/`*_end`/`*_mtime` suffix is read as a camera name
 - `experiments/{name}/calibrations/` — the calibration registry (`calibration_registry.py`): every solution as an aniposelib `CameraGroup.dump()` file with provenance in `[metadata]`; refinements in `refined/`. The one in use is `[calibration.active]` in `project.toml`, and the one the 3D points came from is `[calibration.triangulated_with]`. Never read or write `calibration.toml` / `calibration_takes/` (legacy, imported once on load)
-- `calibration/{cam}/corners.csv` — every take's detected corners for one camera; columns `take, frame, corner_id, x, y, detected`
+- `calibrations/{cam}/corners.csv` — every take's detected corners for one camera; columns `take, frame, corner_id, x, y, detected`
 - **Calibration is video-only** — image-based calibration is deprecated and raises
 - `experiments/{name}/videos/` — video files for that experiment's trials (no trials.csv here)
 - `experiments/{name}/points.csv` — pandas MultiIndex CSV; row index `(experiment, trial, frame, instance, bodypart)` (5-level); column MultiIndex `(view, coord)` where cameras have `{x, y, xr, yr, state, source, score, sync}` and `"3d"` pseudo-camera has `{x, y, z}`; `state` ∈ `{set, predicted, not_set, not_visible}`; `source` ∈ `{label3d, sleap_user, sleap_pred}`; `sync` is the id of the sync that brought a point in (a point is new when it equals the latest id)

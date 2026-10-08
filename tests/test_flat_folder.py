@@ -88,9 +88,9 @@ def fake_project(tmp_path: Path) -> tuple[Path, list[str], list[dict]]:
         for cam in cam_names:
             (videos / f"{cam}_{exp_name}_{trial}.mp4").write_bytes(b"\x00" * 64)
 
-        # experiments/{exp}/calibration/{cam}/ — one video per take, names
+        # experiments/{exp}/calibrations/{cam}/ — one video per take, names
         # already carry the experiment, take keyword and camera
-        calib = exp_dir / "calibration"
+        calib = exp_dir / "calibrations"
         for cam in cam_names:
             cam_dir = calib / cam
             cam_dir.mkdir(parents=True)
@@ -201,9 +201,9 @@ class TestWriteFlatFolder:
         assert len(slps) == 0
 
     def test_no_calibration_dir_is_ok(self, fake_project, tmp_path):
-        """Projects without calibration/ should still produce a valid flat folder."""
+        """Projects without calibrations/ should still produce a valid flat folder."""
         proj, cam_names, experiments = fake_project
-        shutil.rmtree(proj / "experiments" / "exp1" / "calibration")
+        shutil.rmtree(proj / "experiments" / "exp1" / "calibrations")
         flat = tmp_path / "flat"
         write_flat_folder(proj, flat, cam_names, experiments, strategy="number")
 

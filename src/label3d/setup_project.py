@@ -14,7 +14,7 @@ import sleap_io as sio
 import toml
 from aniposelib.cameras import CameraGroup
 
-from label3d.calibration_registry import save_calibration
+from label3d.calibration_registry import REFINED_DIR, camera_dir, save_calibration
 from label3d.project import Project, check_trial_videos, write_trials_csv
 from label3d.slp_sync import SlpMapping
 
@@ -64,6 +64,11 @@ class SetupConfig:
     # Set up the project from the videos that could be located, leaving the
     # cameras whose videos are missing blank in trials.csv
     allow_missing_videos: bool = False
+
+    def __post_init__(self):
+        # Camera folders share calibrations/ with the refinements folder
+        if REFINED_DIR in self.camera_names:
+            raise ValueError(f"'{REFINED_DIR}' can't be used as a camera name")
 
     def effective_video_mode(self) -> str:
         """Video handling mode, falling back to the legacy copy_files flag."""
@@ -819,7 +824,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         experiments/
           default/
             videos/
-            calibration/{cam}/
+            calibrations/{cam}/
 
     Returns the output directory path.
     """
@@ -874,7 +879,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         # inputs.  Referenced trial videos are still left where they are.
         calib_transfer = shutil.copy2 if reference else transfer
         for cam, files in assignment.exp_calibration.get(exp_name, {}).items():
-            cam_dir = exp_dir / "calibration" / cam
+            cam_dir = camera_dir(exp_dir, cam)
             cam_dir.mkdir(parents=True, exist_ok=True)
             for f in files:
                 calib_transfer(str(f), str(cam_dir / f.name))
@@ -905,7 +910,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
 
         # Calibration files have already been copied above, so only record
         # them — always by bare filename, since they now live in the project's
-        # calibration/{cam}/ regardless of the video mode.
+        # calibrations/{cam}/ regardless of the video mode.
         for take in sorted(assignment.calibration_takes.get(exp_name, {})):
             cam_files = assignment.calibration_takes[exp_name][take]
             row = _blank_row(exp_name, take, True, config.camera_names)

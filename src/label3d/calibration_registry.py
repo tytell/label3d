@@ -55,6 +55,11 @@ def registry_dir(exp_dir: Path) -> Path:
     return Path(exp_dir) / REGISTRY_DIR
 
 
+def camera_dir(exp_dir: Path, camera: str) -> Path:
+    """Folder of one camera's calibration videos and corners.csv."""
+    return registry_dir(exp_dir) / camera
+
+
 def clean_label(text: str) -> str:
     """A label made of [A-Za-z0-9_-] only, so it is safe in a file name."""
     label = re.sub(r"\s+", "_", str(text).strip())

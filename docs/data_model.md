@@ -41,12 +41,12 @@ Project
 ├── sync_history.csv         # one row per trial for each SLEAP read that brought in points
 └── experiments/
     ├── PS18/                # one subfolder per experiment
-    │   ├── calibration/     # calibration media for this experiment
-    │   │   ├── cam0/
-    │   │   └── cam1/
-    │   ├── videos/          # video files for this experiment's trials
-    │   ├── calibrations/    # calibration registry: every solution, one .toml each
+    │   ├── calibrations/    # everything about calibrating this experiment
+    │   │   ├── cam0/        # take videos + corners.csv for cam0
+    │   │   ├── cam1/
+    │   │   ├── *.toml       # registry: every solution, one .toml each
     │   │   └── refined/     # refinements (Phase 12), each with a _points.csv
+    │   ├── videos/          # video files for this experiment's trials
     │   └── points.csv       # 2D + 3D labels for this experiment's trials
     ├── PS19/
     │   └── …
@@ -104,7 +104,7 @@ The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init_
 | `experiments/{exp}/calibrations/{label}_{YYYYmmdd-HHMMSS}.toml` | one registry entry: a `charuco`, `imported` or `align` solution |
 | `experiments/{exp}/calibrations/refined/{id}.toml` | a `refine` entry (Phase 12) |
 | `experiments/{exp}/calibrations/refined/{id}_points.csv` | the exact points that went into that refinement |
-| `experiments/{exp}/calibration/{cam}/corners.csv` | every take's detected corners for one camera |
+| `experiments/{exp}/calibrations/{cam}/corners.csv` | every take's detected corners for one camera |
 
 **Registry entries** are plain `CameraGroup.dump()` files. Provenance is in the `[metadata]` table, which aniposelib keeps on load (`cgroup.metadata`). The id is the file stem; it never changes, and renaming changes only `label`. Each Calibrate run saves one `charuco` entry per take (`charuco-{take}`) and one for the joint solution (`charuco-all`). Deleting an entry also deletes every entry derived from it through `parent`. The module is `calibration_registry.py`.
 
@@ -157,7 +157,7 @@ spread_baseline_pct = 0.1
 - Camera ID columns must match the `name` field values in the calibration files.
 - Any column that is not `experiment`, `trial`, `is_calibration`, or a `*_start` / `*_end` / `*_mtime` suffix is taken to be a camera name — new metadata columns must be added to `project.NON_CAMERA_COLUMNS`, new per-camera suffixes to `project.CAMERA_COLUMN_SUFFIXES`.
 
-**Calibration takes** (`is_calibration = True`): a take is one synchronized calibration recording, typically one before and one after the trials. The `trial` column holds the take name (from the calibration keyword, e.g. `PreCal`). Takes reuse the camera / `_start` / `_end` triples, so a take can be trimmed to the segment where the board is visible. Take videos resolve relative to `experiments/{experiment}/calibration/{camera}/`; trial videos relative to `experiments/{experiment}/videos/`. Takes are excluded from `Project.trials` and from SLP cell matching.
+**Calibration takes** (`is_calibration = True`): a take is one synchronized calibration recording, typically one before and one after the trials. The `trial` column holds the take name (from the calibration keyword, e.g. `PreCal`). Takes reuse the camera / `_start` / `_end` triples, so a take can be trimmed to the segment where the board is visible. Take videos resolve relative to `experiments/{experiment}/calibrations/{camera}/`; trial videos relative to `experiments/{experiment}/videos/`. Takes are excluded from `Project.trials` and from SLP cell matching.
 
 ### Primary storage: `points.csv`
 
@@ -339,7 +339,7 @@ class ExperimentAssignment:
 ### Output
 
 Files are **moved** (not copied). Creates:
-- `experiments/{name}/calibration/{camera}/` for calibration media
+- `experiments/{name}/calibrations/{camera}/` for calibration media
 - `experiments/{name}/videos/` for video files
 - `experiments/{name}/points.csv` placeholder (correct 5-level row index)
 - `trials.csv` (global) at project root with `experiment` column

@@ -10,6 +10,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from label3d.calibration_registry import registry_dir
 from synthetic.projection import project_points
 
 
@@ -255,7 +256,7 @@ def generate_charuco_videos(
 ) -> dict[str, list[Path]]:
     """Generate synthetic Charuco calibration videos, one per (camera, take).
 
-    Videos are written to output_dir/calibration/{cam_name}/ as
+    Videos are written to output_dir/calibrations/{cam_name}/ as
     {experiment_name}_{take}_{cam_name}.mp4. All cameras in a take see the same
     board poses at the same frame numbers, so the takes are simultaneous
     recordings in the sense Phase 9 matching expects.
@@ -277,7 +278,7 @@ def generate_charuco_videos(
     board_width_cm = charuco_cfg["squares_x"] * square_length_cm
     board_height_cm = charuco_cfg["squares_y"] * square_length_cm
 
-    cal_dir = output_dir / "calibration"
+    cal_dir = registry_dir(output_dir)
     written: dict[str, list[Path]] = {}
 
     for ti, take in enumerate(takes):
@@ -354,7 +355,7 @@ def generate_charuco_images(
 ):
     """Generate synthetic Charuco board calibration images for all cameras.
 
-    Images are written to output_dir/calibration/{cam_name}/ with filenames
+    Images are written to output_dir/calibrations/{cam_name}/ with filenames
     {calib_keyword}_{experiment_name}_{cam_name}_board_NNN.png, matching the
     flat folder naming convention so they can be copied without renaming.
 
@@ -374,7 +375,7 @@ def generate_charuco_images(
 
     poses = _compute_board_poses(charuco_cfg, cameras, rng)
 
-    cal_dir = output_dir / "calibration"
+    cal_dir = registry_dir(output_dir)
 
     prefix_parts = [p for p in (calib_keyword, experiment_name) if p]
     prefix = "_".join(prefix_parts)
