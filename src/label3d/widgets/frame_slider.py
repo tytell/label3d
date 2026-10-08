@@ -5,8 +5,9 @@ from PySide6.QtGui import QBrush, QColor, QPainter, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 
-_COLOR_USER = QColor(0, 0, 0)          # black — user-placed points
-_COLOR_PREDICTED = QColor(1, 170, 247) # light blue — SLEAP predictions
+SLIDER_COLOR_USER = QColor(0, 0, 0)          # black — user-placed points
+SLIDER_COLOR_PREDICTED = QColor(1, 170, 247) # light blue — SLEAP predictions
+SLIDER_COLOR_NEW_USER = QColor(255, 140, 0)  # orange — new SLEAP user labels
 _COLOR_ROW_BG = QColor(220, 220, 220)  # row background
 _COLOR_GROOVE = QColor(160, 160, 160)  # groove line
 _COLOR_HANDLE = QColor(80, 80, 80)     # handle triangle
@@ -33,6 +34,10 @@ class FrameSlider(QWidget):
 
     Optional start/end bounds (set_bounds) draw as draggable brackets; frames
     outside them are veiled.  Dragging a bracket emits bounds_changed.
+
+    Frames with points new since the latest sync (set_new_marks) get an extra
+    row above the camera rows: orange when a new point is a SLEAP user label,
+    blue when all of them are predictions.  The row is hidden when empty.
     """
 
     frame_changed = Signal(int)
@@ -45,6 +50,7 @@ class FrameSlider(QWidget):
         self._camera_order: list[str] = []
         # {camera: {frame_index: 'user'|'predicted'}}
         self._marks: dict[str, dict[int, str]] = {}
+        self._new_marks: dict[int, str] = {}  # frame → 'user' | 'predicted'
         self._bounds: tuple[int, int] | None = None
         self._dragging: str | None = None  # 'start' | 'end' while dragging a bound
 
@@ -64,6 +70,14 @@ class FrameSlider(QWidget):
     def set_marks(self, marks: dict[str, dict[int, str]]) -> None:
         """Replace all labeled-frame marks."""
         self._marks = marks
+        self.update()
+
+    def set_new_marks(self, marks: dict[int, str]) -> None:
+        """Replace the frames marked as having new points ('user' or 'predicted')."""
+        had_row = bool(self._new_marks)
+        self._new_marks = dict(marks)
+        if had_row != bool(self._new_marks):
+            self._refresh_height()
         self.update()
 
     def set_range(self, max_frame: int) -> None:
@@ -95,15 +109,15 @@ class FrameSlider(QWidget):
 
     # -- Geometry helpers ------------------------------------------------------
 
+    def _n_rows(self) -> int:
+        """Camera rows plus the "new" row when any frame has new points."""
+        return len(self._camera_order) + (1 if self._new_marks else 0)
+
     def _refresh_height(self) -> None:
-        n = len(self._camera_order)
-        rows_h = n * _ROW_H + max(0, n - 1) * _ROW_GAP if n > 0 else 0
-        spacer = 4 if n > 0 else 0
-        h = _V_PAD + rows_h + spacer + _GROOVE_H + _HANDLE_H + _V_PAD
-        self.setFixedHeight(max(h, 20))
+        self.setFixedHeight(max(self._groove_y() + _GROOVE_H + _HANDLE_H + _V_PAD, 20))
 
     def _groove_y(self) -> int:
-        n = len(self._camera_order)
+        n = self._n_rows()
         rows_h = n * _ROW_H + max(0, n - 1) * _ROW_GAP if n > 0 else 0
         spacer = 4 if n > 0 else 0
         return _V_PAD + rows_h + spacer
@@ -154,13 +168,24 @@ class FrameSlider(QWidget):
         content_w = self.width() - 2 * _H_MARGIN
         groove_y = self._groove_y()
 
+        # "New" row on top, when any frame has new points
+        first_cam_row = 0
+        if self._new_marks:
+            first_cam_row = 1
+            painter.fillRect(_H_MARGIN, _V_PAD, content_w, _ROW_H, _COLOR_ROW_BG)
+            if self._max_frame > 0:
+                for frame, kind in self._new_marks.items():
+                    color = SLIDER_COLOR_NEW_USER if kind == "user" else SLIDER_COLOR_PREDICTED
+                    x = int(self._frame_to_x(frame))
+                    painter.fillRect(x, _V_PAD, 2, _ROW_H, color)
+
         # Camera rows
         for i, cam in enumerate(self._camera_order):
-            row_y = _V_PAD + i * (_ROW_H + _ROW_GAP)
+            row_y = _V_PAD + (i + first_cam_row) * (_ROW_H + _ROW_GAP)
             painter.fillRect(_H_MARGIN, row_y, content_w, _ROW_H, _COLOR_ROW_BG)
             if self._max_frame > 0:
                 for frame, mark_type in self._marks.get(cam, {}).items():
-                    color = _COLOR_USER if mark_type == "user" else _COLOR_PREDICTED
+                    color = SLIDER_COLOR_USER if mark_type == "user" else SLIDER_COLOR_PREDICTED
                     x = int(self._frame_to_x(frame))
                     painter.fillRect(x, row_y, 2, _ROW_H, color)
 

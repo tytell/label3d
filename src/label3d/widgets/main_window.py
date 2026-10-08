@@ -12,6 +12,7 @@ from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -24,7 +25,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from label3d.workers.slp_sync_worker import SlpReadWorker, SlpWriteWorker
+from label3d.workers.slp_sync_worker import (
+    PredictionImportWorker,
+    SlpReadWorker,
+    SlpWriteWorker,
+)
 from label3d.workers.triangulation_worker import (
     AllExperimentsTriangulationWorker,
     TriangulationWorker,
@@ -39,7 +44,9 @@ from label3d.widgets.calibration_view import CalibrationView
 from label3d.widgets.camera_grid import CameraGrid, LayoutMode
 from label3d.widgets.frame_controls import FrameControls
 from label3d.widgets.label_view import LabelView
+from label3d.widgets.point_item import ColorMode
 from label3d.widgets.slp_setup_dialog import SlpSetupDialog
+from label3d.widgets.sync_summary_dialog import SyncSummaryDialog
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +192,11 @@ class MainWindow(QMainWindow):
         self._restore_and_apply_session()
 
         self._update_sync_action()
-        self._read_slp_on_open()
+        # The startup SLP read runs once the window is on screen (showEvent):
+        # its dialogs (conflict warning, sync summary) are application-modal,
+        # and one opened before the window appears ends up hidden behind it,
+        # blocking every click and key press.
+        self._startup_read_pending = True
 
     # -- Menus ---------------------------------------------------------------
 
@@ -211,6 +222,18 @@ class MainWindow(QMainWindow):
         self._sync_action = sync_action
         setup_slp_action = file_menu.addAction("Set up Sleap files...")
         setup_slp_action.triggered.connect(self._do_setup_slp)
+        import_action = file_menu.addAction("Import predictions...")
+        import_action.setToolTip(
+            "Read .slp prediction files (e.g. from sleap-nn track) into label3d"
+        )
+        import_action.triggered.connect(self._do_import_predictions)
+        self._last_summary_action = file_menu.addAction("Last sync summary...")
+        self._last_summary_action.triggered.connect(self._show_last_sync_summary)
+        file_menu.aboutToShow.connect(
+            lambda: self._last_summary_action.setEnabled(
+                self._project.latest_sync_id() is not None
+            )
+        )
         self._update_sync_action()
         file_menu.addSeparator()
         export_action = file_menu.addAction("Export points...")
@@ -224,9 +247,38 @@ class MainWindow(QMainWindow):
         next_labeled = nav_menu.addAction("Next labeled frame")
         next_labeled.setShortcut(QKeySequence("]"))
         next_labeled.triggered.connect(self._state.jump_to_next_labeled)
+        nav_menu.addSeparator()
+        prev_new = nav_menu.addAction("Previous new frame")
+        prev_new.setShortcuts([QKeySequence("{"), QKeySequence("Shift+[")])
+        prev_new.triggered.connect(lambda: self._jump_to_new(-1))
+        next_new = nav_menu.addAction("Next new frame")
+        next_new.setShortcuts([QKeySequence("}"), QKeySequence("Shift+]")])
+        next_new.triggered.connect(lambda: self._jump_to_new(1))
 
         # View menu
         view_menu = menu_bar.addMenu("View")
+
+        # View > Color points by
+        color_menu = view_menu.addMenu("Color points by")
+        color_group = QActionGroup(self)
+        color_group.setExclusive(True)
+        self._color_actions: dict[ColorMode, QAction] = {}
+        for mode, label in (
+            (ColorMode.ERROR, "Reprojection error"),
+            (ColorMode.SOURCE, "Source"),
+        ):
+            action = color_menu.addAction(label)
+            action.setCheckable(True)
+            color_group.addAction(action)
+            action.triggered.connect(lambda _checked, m=mode: self._set_color_mode(m))
+            self._color_actions[mode] = action
+        self._color_actions[ColorMode.ERROR].setChecked(True)
+        self._color_mode = ColorMode.ERROR
+
+        self._legend_action = view_menu.addAction("Show legend")
+        self._legend_action.setCheckable(True)
+        self._legend_action.setChecked(True)
+        self._legend_action.toggled.connect(self._label_view.set_legend_visible)
 
         # View > Cameras
         cameras_menu = view_menu.addMenu("Cameras")
@@ -317,6 +369,17 @@ class MainWindow(QMainWindow):
 
         inst_menu.addSeparator()
 
+        accept_point = inst_menu.addAction("Accept point")
+        accept_point.setShortcut(QKeySequence("A"))
+        accept_point.setToolTip("Mark the selected point as reviewed (clears its new mark)")
+        accept_point.triggered.connect(self._label_view.accept_selected_point)
+        accept_frame = inst_menu.addAction("Accept frame")
+        accept_frame.setShortcut(QKeySequence("Shift+A"))
+        accept_frame.setToolTip("Mark every point in this frame as reviewed")
+        accept_frame.triggered.connect(self._label_view.accept_frame)
+
+        inst_menu.addSeparator()
+
         triangulate_all = inst_menu.addAction("Triangulate all experiments...")
         triangulate_all.triggered.connect(self._do_triangulate_all_experiments)
 
@@ -396,9 +459,137 @@ class MainWindow(QMainWindow):
         trial = self._state.current_trial
         if store is None or not trial:
             self._frame_controls.update_marks({})
+            self._frame_controls.update_new_marks({})
             return
         marks = store.get_labeled_frames_by_camera(trial)
         self._frame_controls.update_marks(marks)
+        self._frame_controls.update_new_marks(store.get_new_frames(trial))
+
+    # -- New points ------------------------------------------------------------
+
+    def _set_color_mode(self, mode: ColorMode) -> None:
+        self._color_mode = mode
+        self._color_actions[mode].setChecked(True)
+        self._label_view.set_color_mode(mode)
+
+    def _jump_to_new(self, direction: int) -> None:
+        """Go to the next (1) or previous (-1) frame with new points, crossing trials."""
+        state = self._state
+        if (state.jump_to_next_new() if direction > 0 else state.jump_to_prev_new()):
+            return
+        store = state.points_store
+        if store is None:
+            return
+        with_new = set(store.trials_with_new_points())
+        order = [t for t in self._project.trial_names() if t in with_new]
+        if not order:
+            self._status_bar.showMessage("No new points", 3000)
+            return
+        current = state.current_trial
+        if current in order:
+            i = order.index(current)
+            candidates = order[i + 1:] if direction > 0 else order[:i][::-1]
+        else:
+            names = self._project.trial_names()
+            pos = names.index(current) if current in names else -1
+            candidates = [
+                t for t in (names[pos + 1:] if direction > 0 else names[:max(pos, 0)][::-1])
+                if t in with_new
+            ]
+        if not candidates:
+            self._status_bar.showMessage(
+                "No more new points" if direction > 0 else "No earlier new points", 3000
+            )
+            return
+        trial = candidates[0]
+        frames = sorted(store.get_new_frames(trial))
+        self._go_to_trial_frame(trial, frames[0] if direction > 0 else frames[-1])
+
+    def _go_to_trial_frame(self, trial: str, frame: int) -> None:
+        if trial != self._state.current_trial:
+            self._trial_combo.blockSignals(True)
+            self._trial_combo.setCurrentText(trial)
+            self._trial_combo.blockSignals(False)
+            self._load_trial(trial, start_frame=frame)
+        else:
+            self._state.current_frame = frame
+
+    def _go_to_first_new(self) -> None:
+        store = self._state.points_store
+        if store is None:
+            return
+        with_new = set(store.trials_with_new_points())
+        for trial in self._project.trial_names():
+            if trial in with_new:
+                self._go_to_trial_frame(trial, min(store.get_new_frames(trial)))
+                return
+
+    def _show_sync_summary(self, results=None, unmatched: list[str] | None = None) -> None:
+        """Show what the latest sync brought in, if the merge just applied recorded one."""
+        latest = self._project.latest_sync_id()
+        if results is not None:
+            ids = {r.sync_id for r in results.values() if r.sync_id is not None}
+            if latest not in ids:
+                if unmatched:
+                    QMessageBox.information(
+                        self, "Import predictions",
+                        "No new predictions were imported.\n\n"
+                        f"{len(unmatched)} video(s) match no trial: "
+                        + ", ".join(unmatched[:10]),
+                    )
+                return
+        if latest is None:
+            return
+        history = self._project.sync_history()
+        rows = history[history["id"] == latest]
+        dialog = SyncSummaryDialog(
+            rows, self._project.active_experiment, unmatched, parent=self
+        )
+        dialog.exec()
+        if dialog.go_to_first_new():
+            self._go_to_first_new()
+
+    def _show_last_sync_summary(self) -> None:
+        self._show_sync_summary()
+
+    # -- Import predictions ---------------------------------------------------
+
+    def _do_import_predictions(self) -> None:
+        """Read .slp files from anywhere, e.g. sleap-nn track output, and merge them."""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Import predictions", str(self._project.root), "SLEAP files (*.slp)"
+        )
+        if not paths:
+            return
+        if self._project.points is not None:
+            self._project.points.save_if_changed()
+        progress = self._busy_dialog("Reading prediction files…", "Import predictions")
+        self._import_worker = PredictionImportWorker(
+            self._project, [Path(p) for p in paths], parent=self
+        )
+        self._import_worker.done.connect(
+            lambda results, unmatched: self._on_import_read(results, unmatched, progress)
+        )
+        self._import_worker.error.connect(
+            lambda msg: self._on_slp_error("Import failed", msg, progress)
+        )
+        self._import_worker.start()
+
+    def _on_import_read(self, results, unmatched: list[str], progress: QProgressDialog) -> None:
+        progress.close()
+        overwrite = self._confirm_merge(results)
+        if overwrite is None:
+            self._status_bar.showMessage("Import cancelled — nothing changed")
+            return
+        self._project.apply_merge(results, overwrite=overwrite, kind="import")
+        self._refresh_after_merge()
+        n = sum(r.n_predictions for r in results.values())
+        message = f"Imported {n} prediction(s)"
+        if self._sync_action.isEnabled():
+            message += "; Sync to write them to the SLP files"
+        self._status_bar.showMessage(message)
+        self._retriangulate(results, overwrite)
+        self._show_sync_summary(results, unmatched)
 
     # -- Experiment switching ------------------------------------------------
 
@@ -596,6 +787,8 @@ class MainWindow(QMainWindow):
         s.setValue("frame", self._state.current_frame)
         s.setValue("layout_mode", self._camera_grid.layout_mode.value)
         s.setValue("view_index", self._view_combo.currentIndex())
+        s.setValue("color_mode", self._color_mode.value)
+        s.setValue("show_legend", self._legend_action.isChecked())
         s.endGroup()
 
         splitter_sizes = self._camera_grid.get_grid_splitter_sizes()
@@ -639,7 +832,16 @@ class MainWindow(QMainWindow):
         saved_frame = int(s.value("frame", 0) or 0)
         layout_val = s.value("layout_mode", "grid")
         view_index = int(s.value("view_index", 0) or 0)
+        color_val = s.value("color_mode", ColorMode.ERROR.value)
+        show_legend = str(s.value("show_legend", "true")).lower() != "false"
         s.endGroup()
+
+        self._legend_action.setChecked(show_legend)
+
+        try:
+            self._set_color_mode(ColorMode(color_val))
+        except ValueError:
+            pass
 
         # Apply layout mode
         try:
@@ -823,14 +1025,17 @@ class MainWindow(QMainWindow):
             return
         n_new = sum(r.n_new for r in results.values())
         n_predictions = sum(r.n_predictions for r in results.values())
-        if not n_new and not n_predictions and not (overwrite and any(r.conflicts for r in results.values())):
+        if not any(r.has_changes for r in results.values()) and not (
+            overwrite and any(r.conflicts for r in results.values())
+        ):
             return
-        self._project.apply_merge(results, overwrite=overwrite)
+        self._project.apply_merge(results, overwrite=overwrite, kind="open")
         self._refresh_after_merge()
         self._status_bar.showMessage(
             f"Loaded {n_new} new labels / {n_predictions} predictions from SLP files"
         )
         self._retriangulate(results, overwrite)
+        self._show_sync_summary(results)
 
     def _offer_slp_setup(self) -> None:
         """Once per session: point the user at Set up when slp/ has unassigned files."""
@@ -895,7 +1100,7 @@ class MainWindow(QMainWindow):
         if overwrite is None:
             self._status_bar.showMessage("Sync cancelled — nothing changed")
             return
-        self._project.apply_merge(results, overwrite=overwrite)
+        self._project.apply_merge(results, overwrite=overwrite, kind="sync")
         self._refresh_after_merge()
 
         n_new = sum(r.n_new for r in results.values())
@@ -925,6 +1130,7 @@ class MainWindow(QMainWindow):
         # Triangulation runs after the write so the two never touch the
         # DataFrame at the same time; 3D coordinates are not written to SLP.
         self._retriangulate(results, overwrite)
+        self._show_sync_summary(results)
 
     # -- Re-triangulation after a merge ---------------------------------------
 
@@ -1003,11 +1209,12 @@ class MainWindow(QMainWindow):
 
     def _on_setup_read(self, results, new_mapping, progress: QProgressDialog) -> None:
         progress.close()
+        self._setup_results = results
         overwrite = self._confirm_merge(results)
         if overwrite is None:
             self._status_bar.showMessage("Set up cancelled — nothing changed")
             return
-        self._project.apply_merge(results, overwrite=overwrite)
+        self._project.apply_merge(results, overwrite=overwrite, kind="setup")
         self._refresh_after_merge()
         self._project.save_slp_mapping(new_mapping)
 
@@ -1030,6 +1237,7 @@ class MainWindow(QMainWindow):
             message += f"; backup in {Path(backup_dir).relative_to(self._project.root).as_posix()}"
         self._status_bar.showMessage(message)
         self._update_sync_action()
+        self._show_sync_summary(self._setup_results)
 
     def _on_slp_error(self, title: str, msg: str, progress: QProgressDialog) -> None:
         progress.close()
@@ -1080,6 +1288,9 @@ class MainWindow(QMainWindow):
             self._restore_app_settings()
             if self._pending_session is not None:
                 QTimer.singleShot(0, self._apply_deferred_session)
+            if self._startup_read_pending:
+                self._startup_read_pending = False
+                QTimer.singleShot(0, self._read_slp_on_open)
 
     def _sync_on_close(self) -> bool:
         """Read, merge and write the SLP files on the main thread.  False = cancelled."""
@@ -1088,7 +1299,7 @@ class MainWindow(QMainWindow):
         overwrite = self._confirm_merge(results)
         if overwrite is None:
             return False
-        self._project.apply_merge(results, overwrite=overwrite)
+        self._project.apply_merge(results, overwrite=overwrite, kind="close")
         self._project.write_slp_files()
         return True
 

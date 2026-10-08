@@ -13,11 +13,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 from label3d.adapters.base import PoseAdapter
-from label3d.points import CAM_COORDS, INDEX_NAMES, THREE_D_COORDS
+from label3d.points import (
+    CAM_COORDS,
+    INDEX_NAMES,
+    SOURCE_SLEAP_PRED,
+    SOURCE_SLEAP_USER,
+    THREE_D_COORDS,
+)
 from label3d.slp_sync import (
     Cell,
     SlpMapping,
     camera_cells,
+    camera_scores,
     normalize_index,
     video_cells,
     written_instances,
@@ -42,6 +49,7 @@ class SleapAdapter(PoseAdapter):
         cameras: list[str],
         mapping: SlpMapping | None = None,
         root: Path | None = None,
+        unmatched: list[str] | None = None,
     ) -> pd.DataFrame:
         """Load .slp files and return a points-compatible DataFrame.
 
@@ -55,8 +63,13 @@ class SleapAdapter(PoseAdapter):
         that a user instance was corrected from (its from_predicted) is
         skipped too: as in SLEAP, the correction replaces it rather than
         becoming a second instance.
+
+        Frames before a video's {cam}_start or after its {cam}_end are dropped.
+        If unmatched is given, basenames of videos that match no trial video
+        are appended to it.
         """
         cells_info = video_cells(trials, cameras)
+        cell_ends = _cell_ends(trials, cameras)
         basename_to_cells = _build_basename_lookup(trials, cameras)
         rows: list[dict] = []
 
@@ -70,7 +83,11 @@ class SleapAdapter(PoseAdapter):
                 if not isinstance(lf.video.filename, str):
                     continue
                 video_basename = Path(lf.video.filename).name
-                matches = basename_to_cells.get(video_basename, [])
+                matches = [
+                    m for m in basename_to_cells.get(video_basename, []) if m in cells_info
+                ]
+                if not matches and unmatched is not None and video_basename not in unmatched:
+                    unmatched.append(video_basename)
                 if allowed is not None:
                     kept = [m for m in matches if m in allowed]
                     if matches and not kept and video_basename not in warned:
@@ -91,7 +108,8 @@ class SleapAdapter(PoseAdapter):
                 for cell in matches:
                     experiment_name, trial_name, cam_name = cell
                     global_frame = lf.frame_idx - cells_info[cell][1]
-                    if global_frame < 0:
+                    end = cell_ends.get(cell)
+                    if global_frame < 0 or (end is not None and lf.frame_idx > end):
                         continue
 
                     inst_idx = 0
@@ -103,16 +121,23 @@ class SleapAdapter(PoseAdapter):
                         if not finite.any():
                             continue
                         is_predicted = isinstance(inst, sio.PredictedInstance)
+                        scores = (
+                            inst.numpy(scores=True)[:, 2] if is_predicted
+                            else np.full(len(pts), np.nan)
+                        )
+                        source = SOURCE_SLEAP_PRED if is_predicted else SOURCE_SLEAP_USER
 
                         for node_idx, node_name in enumerate(inst.skeleton.node_names):
                             if finite[node_idx]:
                                 state = "predicted" if is_predicted else "set"
                                 x_val = float(pts[node_idx, 0])
                                 y_val = float(pts[node_idx, 1])
+                                score = float(scores[node_idx])
                             else:
                                 state = "not_set"
                                 x_val = np.nan
                                 y_val = np.nan
+                                score = np.nan
 
                             rows.append({
                                 "experiment": experiment_name,
@@ -124,6 +149,8 @@ class SleapAdapter(PoseAdapter):
                                 "x": x_val,
                                 "y": y_val,
                                 "state": state,
+                                "source": source if state != "not_set" else "",
+                                "score": score,
                             })
                         inst_idx += 1
 
@@ -328,25 +355,47 @@ def _cell_frames(
     labeled_frames = []
     for frame_idx, frame_df in group.groupby(level="frame", sort=True):
         cells = camera_cells(frame_df, cam)
+        scores = camera_scores(frame_df, cam)
         instances = []
         for inst, is_user in written_instances(cells):
             # not_visible points are written as NaN (SLEAP's "not visible")
             pts = np.full((len(node_names), 2), np.nan, dtype=np.float32)
+            point_scores = np.zeros(len(node_names), dtype=np.float64)
             for bp_idx, bp in enumerate(node_names):
                 x, y, state = cells.get((inst, bp), (np.nan, np.nan, "not_set"))
                 if state in ("set", "predicted") and np.isfinite(x) and np.isfinite(y):
                     pts[bp_idx] = [x, y]
+                    # Predictions without a stored score (label3d guesses) count as 1
+                    score = scores.get((inst, bp), np.nan)
+                    point_scores[bp_idx] = score if np.isfinite(score) else 1.0
             if is_user:
                 instances.append(sio.Instance.from_numpy(pts, skeleton=skeleton))
             else:
-                instances.append(
-                    sio.PredictedInstance.from_numpy(pts, skeleton=skeleton, score=1.0)
-                )
+                visible = np.isfinite(pts).all(axis=1)
+                instances.append(sio.PredictedInstance.from_numpy(
+                    pts,
+                    skeleton=skeleton,
+                    point_scores=point_scores,
+                    score=float(point_scores[visible].mean()) if visible.any() else 0.0,
+                ))
         if instances:
             labeled_frames.append(sio.LabeledFrame(
                 video=video, frame_idx=int(frame_idx) + start, instances=instances
             ))
     return labeled_frames
+
+
+def _cell_ends(trials: pd.DataFrame, cameras: list[str]) -> dict[Cell, int]:
+    """(experiment, trial, camera) → last video frame of the trial, where {cam}_end is set."""
+    ends: dict[Cell, int] = {}
+    has_experiment = "experiment" in trials.columns
+    for _, row in trials.iterrows():
+        experiment_name = str(row["experiment"]) if has_experiment else "default"
+        for cam in cameras:
+            end = row.get(f"{cam}_end")
+            if end is not None and pd.notna(end) and str(end).strip() != "":
+                ends[(experiment_name, str(row["trial"]), cam)] = int(float(end))
+    return ends
 
 
 def _build_basename_lookup(
@@ -386,7 +435,9 @@ def _rows_to_dataframe(
         key = (r.get("experiment", "default"), r["trial"], r["frame"], r["instance"], r["bodypart"])
         if key not in keys:
             keys[key] = {}
-        keys[key][r["camera"]] = (r["x"], r["y"], r["state"])
+        keys[key][r["camera"]] = (
+            r["x"], r["y"], r["state"], r.get("source", ""), r.get("score", np.nan)
+        )
 
     # Build column MultiIndex
     col_tuples = []
@@ -404,10 +455,10 @@ def _rows_to_dataframe(
         row_vals = []
         for cam in cameras:
             if cam in cam_data:
-                x, y, state = cam_data[cam]
-                row_vals.extend([x, y, np.nan, np.nan, state])
+                x, y, state, source, score = cam_data[cam]
+                row_vals.extend([x, y, np.nan, np.nan, state, source, score, np.nan])
             else:
-                row_vals.extend([np.nan, np.nan, np.nan, np.nan, "not_set"])
+                row_vals.extend([np.nan, np.nan, np.nan, np.nan, "not_set", "", np.nan, np.nan])
         # 3d columns: NaN (caller fills after triangulation)
         row_vals.extend([np.nan, np.nan, np.nan])
         data.append(row_vals)

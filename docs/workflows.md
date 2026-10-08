@@ -163,18 +163,29 @@ Before labeling, user must either:
 > File
   - New project...
   - Open project...
-  - Import from SLP files...
-  - Save                Ctrl+S
+  - Sync with Sleap...      Ctrl+S
+  - Set up Sleap files...
+  - Import predictions...   read .slp files from anywhere (e.g. sleap-nn track output)
+  - Last sync summary...
   - Export points...
 
+> Navigate
+  - Previous / Next labeled frame   [ / ]
+  - Previous / Next new frame       Shift+[ / Shift+]   (crosses trials)
+
 > View
-  - Cameras / Layout (Grid / Horizontal / Vertical)
+  - Color points by > Reprojection error / Source
+  - Show legend
+  - Cameras / Layout (Grid / Horizontal / Vertical) / Zoom
 
 > Instances
   > Add
     - Average / Random  Ctrl+I
     - Random            Ctrl+Shift+I
     - Reprojected       (greyed when unavailable)
+  - Accept point        A         clear the selected point's new mark
+  - Accept frame        Shift+A   clear every new mark in the frame
+  - Triangulate all experiments...
   - Delete instance     Ctrl+Backspace
 ```
 
@@ -187,20 +198,39 @@ The **full skeleton is always drawn** on every camera panel for every frame:
 
 ### Point coloring
 
-Points are **colored by reprojection error**:
+**View > Color points by** chooses between reprojection error (the default) and source. The choice is saved with the session.
+
+By **reprojection error**:
 
 | Color | Meaning |
 |---|---|
-| Green | Low error (< 1 px) |
-| Yellow | Medium error (1–3 px) |
-| Red | High error (> 3 px) |
+| Green | Low error (< 5 px) |
+| Yellow | Medium error (5–15 px) |
+| Red | High error (> 15 px) |
 | Grey | No reprojection error available |
 | White outline | Currently selected point |
+
+By **source**:
+
+| Color | Meaning |
+|---|---|
+| Magenta | Labeled (or guessed) in label3d |
+| Orange | Labeled by a user in SLEAP |
+| Light blue | Predicted by SLEAP |
+
+In both modes, a **white square** around a point marks it as new since the latest sync. Correcting the point, or accepting it (`A`, `Shift+A`), removes the square.
+
+### Legend
+
+A legend at the bottom of the Label tab's left sidebar explains the markers. It covers shapes (point state), the colours for the current **Color points by** mode, the new and selected marks, and the frame-slider ticks. Turn it off with **View > Show legend**; the setting is saved with the session. The legend icons are drawn with the same code as the markers (`point_item.point_style`), so they always match.
 
 ### Point hover tooltip
 
 ```
 head  —  cam0
+Source: SLEAP prediction
+Score: 0.93
+New since import 4 (2026-10-05 14:22)
 Clicked:     (342.1, 201.4)
 Reprojected: (341.3, 202.0)
 Error:        1.1 px
@@ -217,9 +247,17 @@ Error:        1.1 px
 | State | Render style | Meaning |
 |---|---|---|
 | `set` | Solid filled circle | User-placed ground truth |
-| `predicted` | Open circle (ring only) | Imported from external tracker |
+| `predicted` | Open circle (ring only) | Predicted by SLEAP, or a label3d guess |
 | `not_set` | Dim placeholder or absent | Instance exists but point not placed |
-| `occluded` | Hollow circle with X, grey | User marked as not visible |
+| `not_visible` | Grey filled circle | User marked as not visible |
+
+### Frame slider
+
+Each camera has a row of ticks: black for frames with user labels, light blue for frames with only predictions. When the trial has points new since the latest sync, an extra row on top marks those frames: orange if any new point is a SLEAP user label, light blue if all are predictions.
+
+### Reviewing new points
+
+After every SLEAP read that brings in points, a summary dialog lists new SLEAP labels, new and updated predictions, and conflicts per trial. **Go to first new frame** jumps there. Step through new frames with `Shift+]` / `Shift+[`, then correct points or accept them. See [user_workflow.md](user_workflow.md).
 
 ### Keyboard shortcuts
 
@@ -231,7 +269,8 @@ Error:        1.1 px
 | `Ctrl+→` / `Ctrl+←` | ±4 frames |
 | `Ctrl+Alt+→` / `Ctrl+Alt+←` | ±100 frames |
 | `Home` / `End` | First / last frame |
-| `Alt+→` / `Alt+←` | Next / prev labeled frame |
+| `]` / `[` | Next / prev labeled frame |
+| `Shift+]` / `Shift+[` | Next / prev frame with new points (crosses trials) |
 | `Space` / `Shift+Space` | Next / prev suggested frame |
 | `Ctrl+J` | Go to frame (dialog) |
 
@@ -251,6 +290,8 @@ Error:        1.1 px
 | `Ctrl+I` | Add instance (average if possible, random otherwise) |
 | `Ctrl+Shift+I` | Add instance: random unconditionally |
 | `Ctrl+Backspace` | Delete selected instance |
+| `A` | Accept selected point (clear its new mark in every camera) |
+| `Shift+A` | Accept every point in the frame |
 | `Ctrl+C` / `Ctrl+V` | Copy / paste instance |
 
 **Point manipulation**
@@ -259,7 +300,7 @@ Error:        1.1 px
 |---|---|
 | Place / move point | Left-click in any camera panel |
 | Delete point | `Backspace` while bodypart selected |
-| Mark as occluded | Right-click on placed point |
+| Mark as not visible | Right-click on placed point |
 | Move whole instance | `Alt`+drag any point |
 
 **Triangulation**
@@ -309,14 +350,17 @@ For each `(trial, camera)` pair → one `.slp` file:
 ### Iterative workflow
 
 ```
-Label (manual user frames) → Export → .slp → Train SLEAP model
+Label in label3d → File > Sync with Sleap → train in SLEAP
   ↓
-Import SLEAP predictions → predicted instances in points.csv
+Predictions reach label3d: on open / Sync (SLEAP GUI saved them into slp/)
+                       or: File > Import predictions... (sleap-nn track output)
   ↓
-Review / correct in Label view → promoted to user instances
+Sync summary → step through new frames (Shift+]) → correct or accept (A / Shift+A)
   ↓
-Export again → retrain  (repeat)
+Sync again → retrain  (repeat)
 ```
+
+The full user-facing guide is [user_workflow.md](user_workflow.md).
 
 ---
 
@@ -333,6 +377,9 @@ Export again → retrain  (repeat)
 - `Ctrl+Shift+T` triangulates all frames in background thread
 
 ### 3D view
+
+**Hidden.** The panel is not shown in the Label tab. The code is kept in `widgets/view_3d.py`; set `SHOW_3D_VIEW = True` in `widgets/label_view.py` to bring it back.
+
 - `pyqtgraph.opengl.GLViewWidget` panel in resizable splitter column
 - Points colored by reprojection error; skeleton edges; camera frustums (toggled independently)
 - Falls back gracefully if OpenGL unavailable

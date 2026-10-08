@@ -2,20 +2,53 @@
 
 from __future__ import annotations
 
+import math
+from enum import Enum
+
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPen
-from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem
+from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsRectItem
+
+from label3d.points import SOURCE_LABEL3D, SOURCE_SLEAP_PRED, SOURCE_SLEAP_USER
 
 # Point radius in pixels (screen-space, ignores view transform)
 POINT_RADIUS = 8
 
+# Reprojection error thresholds (px) for the error colors
+ERROR_OK_PX = 5
+ERROR_BAD_PX = 15
+
 # Colors for reprojection error ranges
-COLOR_GOOD = QColor(0, 200, 0)        # green: error < 5px
-COLOR_OK = QColor(255, 200, 0)        # yellow: 5-15px
-COLOR_BAD = QColor(255, 50, 50)       # red: error > 15px
+COLOR_GOOD = QColor(0, 200, 0)        # green: error < ERROR_OK_PX
+COLOR_OK = QColor(255, 200, 0)        # yellow: ERROR_OK_PX to ERROR_BAD_PX
+COLOR_BAD = QColor(255, 50, 50)       # red: error > ERROR_BAD_PX
 COLOR_NONE = QColor(160, 160, 160)    # grey: no error info
 COLOR_NOT_SET = QColor(100, 100, 100) # dim grey for points not yet positioned
 COLOR_NOT_VISIBLE = QColor(80, 80, 80, 120)  # grayed out for not-visible points
+
+# Colors by point source (View > Color points by > Source).  SLEAP predictions
+# use SLEAP's prediction blue, as on the frame slider.
+COLOR_SOURCE = {
+    SOURCE_LABEL3D: QColor(230, 60, 230),      # magenta: labeled in label3d
+    SOURCE_SLEAP_USER: QColor(255, 140, 0),    # orange: labeled in SLEAP
+    SOURCE_SLEAP_PRED: QColor(1, 170, 247),    # light blue: predicted by SLEAP
+}
+
+SOURCE_NAMES = {
+    SOURCE_LABEL3D: "label3d user",
+    SOURCE_SLEAP_USER: "SLEAP user",
+    SOURCE_SLEAP_PRED: "SLEAP prediction",
+}
+
+# Square outline around points that are new since the latest sync
+NEW_PEN = QPen(QColor(255, 255, 255), 1.5)
+NEW_HALF_SIZE = POINT_RADIUS + 4
+
+
+class ColorMode(Enum):
+    ERROR = "error"
+    SOURCE = "source"
+
 
 # Selection outline
 SELECT_PEN = QPen(Qt.GlobalColor.white, 2)
@@ -26,11 +59,32 @@ def _error_color(error: float | None) -> QColor:
     """Map reprojection error to a color."""
     if error is None:
         return COLOR_NONE
-    if error < 5:
+    if error < ERROR_OK_PX:
         return COLOR_GOOD
-    if error < 15:
+    if error < ERROR_BAD_PX:
         return COLOR_OK
     return COLOR_BAD
+
+
+def point_style(state: str, color: QColor, selected: bool = False) -> tuple[QBrush, QPen, float]:
+    """(brush, pen, radius) for a point marker.  Shared by PointItem and the legend.
+
+    Shape encodes state: set is a filled circle, predicted a ring, not_visible a
+    grey circle, not_set a small dim dot.  color applies to set and predicted.
+    """
+    r = POINT_RADIUS
+    if state == "set":
+        return QBrush(color), SELECT_PEN if selected else QPen(color.darker(150), 1), r
+    if state == "predicted":
+        pen_color = QColor(Qt.GlobalColor.white) if selected else color
+        return QBrush(Qt.GlobalColor.transparent), QPen(pen_color, 2), r
+    if state == "not_visible":
+        # Grayed out — excluded from epipolar and triangulation
+        pen = SELECT_PEN if selected else QPen(COLOR_NOT_VISIBLE.darker(120), 1)
+        return QBrush(COLOR_NOT_VISIBLE), pen, r
+    # not_set — small dim dot at default position
+    pen = SELECT_PEN if selected else QPen(COLOR_NOT_SET.darker(130), 1)
+    return QBrush(COLOR_NOT_SET), pen, r * 0.5
 
 
 class PointItem(QGraphicsEllipseItem):
@@ -54,6 +108,19 @@ class PointItem(QGraphicsEllipseItem):
         self._xr: float | None = None
         self._yr: float | None = None
         self._selected: bool = False
+        self._source: str = ""
+        self._score: float | None = None
+        self._is_new: bool = False
+        self._new_label: str = ""
+        self._color_mode: ColorMode = ColorMode.ERROR
+
+        # Square shown around new points; a child, so it moves and hides with the point
+        self._new_marker = QGraphicsRectItem(
+            -NEW_HALF_SIZE, -NEW_HALF_SIZE, 2 * NEW_HALF_SIZE, 2 * NEW_HALF_SIZE, self
+        )
+        self._new_marker.setPen(NEW_PEN)
+        self._new_marker.setBrush(QBrush(Qt.GlobalColor.transparent))
+        self._new_marker.setVisible(False)
 
         # Constant screen size regardless of zoom
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
@@ -74,6 +141,14 @@ class PointItem(QGraphicsEllipseItem):
     def state(self) -> str:
         return self._state
 
+    @property
+    def source(self) -> str:
+        return self._source
+
+    @property
+    def is_new(self) -> bool:
+        return self._is_new
+
     def configure(
         self,
         bodypart: str,
@@ -86,6 +161,11 @@ class PointItem(QGraphicsEllipseItem):
         yr: float | None = None,
         error: float | None = None,
         selected: bool = False,
+        source: str = "",
+        score: float | None = None,
+        is_new: bool = False,
+        new_label: str = "",
+        color_mode: ColorMode = ColorMode.ERROR,
     ):
         """Update all properties and reposition."""
         self._bodypart = bodypart
@@ -96,6 +176,11 @@ class PointItem(QGraphicsEllipseItem):
         self._xr = xr
         self._yr = yr
         self._selected = selected
+        self._source = source
+        self._score = score if score is not None and not math.isnan(score) else None
+        self._is_new = is_new
+        self._new_label = new_label
+        self._color_mode = color_mode
         self.setPos(x, y)
         self._apply_style()
 
@@ -106,48 +191,36 @@ class PointItem(QGraphicsEllipseItem):
 
     def _apply_style(self):
         """Update visual appearance based on state and selection."""
-        r = POINT_RADIUS
-        color = _error_color(self._error)
-
-        if self._state == "set":
-            self.setBrush(QBrush(color))
-            self.setPen(SELECT_PEN if self._selected else QPen(color.darker(150), 1))
-            self.setRect(-r, -r, 2 * r, 2 * r)
-            self.setVisible(True)
-
-        elif self._state == "predicted":
-            self.setBrush(QBrush(Qt.GlobalColor.transparent))
-            pen_color = Qt.GlobalColor.white if self._selected else color
-            self.setPen(QPen(pen_color, 2))
-            self.setRect(-r, -r, 2 * r, 2 * r)
-            self.setVisible(True)
-
-        elif self._state == "not_visible":
-            # Grayed out — excluded from epipolar and triangulation
-            self.setBrush(QBrush(COLOR_NOT_VISIBLE))
-            self.setPen(SELECT_PEN if self._selected else QPen(COLOR_NOT_VISIBLE.darker(120), 1))
-            self.setRect(-r, -r, 2 * r, 2 * r)
-            self.setVisible(True)
-
+        if self._color_mode is ColorMode.SOURCE:
+            color = COLOR_SOURCE.get(self._source, COLOR_NONE)
         else:
-            # not_set — small dim dot at default position
-            hr = r * 0.5
-            self.setBrush(QBrush(COLOR_NOT_SET))
-            self.setPen(SELECT_PEN if self._selected else QPen(COLOR_NOT_SET.darker(130), 1))
-            self.setRect(-hr, -hr, 2 * hr, 2 * hr)
-            self.setVisible(True)
+            color = _error_color(self._error)
+        self._new_marker.setVisible(
+            self._is_new and self._state in ("set", "predicted", "not_visible")
+        )
+
+        brush, pen, radius = point_style(self._state, color, self._selected)
+        self.setBrush(brush)
+        self.setPen(pen)
+        self.setRect(-radius, -radius, 2 * radius, 2 * radius)
+        self.setVisible(True)
 
     def hoverEnterEvent(self, event):
         """Show tooltip with point info."""
         cam_label = f"  —  {self._camera}" if self._camera else ""
         lines = [f"{self._bodypart}{cam_label}"]
 
-        if self._state == "predicted":
-            lines.append("Source: Predicted (external tracker)")
-        elif self._state == "set":
-            lines.append("Source: User labeled")
-        elif self._state == "not_visible":
-            lines.append("Source: Marked not visible")
+        if self._state == "not_visible":
+            lines.append("Marked not visible")
+        if self._state in ("set", "predicted", "not_visible") and self._source:
+            source = SOURCE_NAMES.get(self._source, self._source)
+            if self._source == SOURCE_LABEL3D and self._state == "predicted":
+                source = "label3d guess"
+            lines.append(f"Source: {source}")
+        if self._score is not None:
+            lines.append(f"Score: {self._score:.2f}")
+        if self._is_new:
+            lines.append(f"New since {self._new_label}" if self._new_label else "New")
 
         pos = self.pos()
         lines.append(f"Clicked:     ({pos.x():.1f}, {pos.y():.1f})")

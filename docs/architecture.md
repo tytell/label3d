@@ -31,7 +31,7 @@ label3d/
 │   ├── skeleton_overlay.py      # ✓ Manages all point_items + edges for one camera
 │   ├── epipolar_overlay.py      # ✓ Epipolar line items for one camera
 │   ├── charuco_overlay.py       # ✓ Detected / reprojected corner overlays for calibration
-│   ├── view_3d.py               # ✓ pyqtgraph GLViewWidget: 3D points, edges, frustums
+│   ├── view_3d.py               # ✓ pyqtgraph GLViewWidget: 3D points, edges, frustums (hidden; SHOW_3D_VIEW in label_view.py)
 │   ├── bodypart_list.py         # ✓ Sidebar: bodypart names, click to select
 │   ├── calibration_view.py      # ✓ Calibration mode: settings panel + camera grid
 │   ├── axis_alignment_widget.py # Phase 14: Axis alignment panel (not yet created)

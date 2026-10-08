@@ -212,3 +212,23 @@ class ProjectState(QObject):
         f = self._points_store.get_prev_labeled_frame(self._current_trial, self._current_frame)
         if f is not None:
             self.current_frame = f
+
+    def jump_to_next_new(self) -> bool:
+        """Go to the next frame of this trial with new points.  False if there is none."""
+        if self._points_store is None or not self._current_trial:
+            return False
+        f = self._points_store.get_next_new_frame(self._current_trial, self._current_frame)
+        if f is None:
+            return False
+        self.current_frame = f
+        return True
+
+    def jump_to_prev_new(self) -> bool:
+        """Go to the previous frame of this trial with new points.  False if there is none."""
+        if self._points_store is None or not self._current_trial:
+            return False
+        f = self._points_store.get_prev_new_frame(self._current_trial, self._current_frame)
+        if f is None:
+            return False
+        self.current_frame = f
+        return True

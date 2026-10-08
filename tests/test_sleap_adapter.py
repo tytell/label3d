@@ -32,6 +32,13 @@ def _trials_df(starts=None) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _cam_values(x, y, state, source=None, score=NAN, sync=NAN) -> list:
+    """One camera's CAM_COORDS values; source defaults to label3d for labeled states."""
+    if source is None:
+        source = "label3d" if state in ("set", "predicted", "not_visible") else ""
+    return [x, y, NAN, NAN, state, source, score, sync]
+
+
 def _df(cells: dict, experiment=EXP) -> pd.DataFrame:
     """cells: {(trial, frame, instance, bodypart): {camera: (x, y, state)}}"""
     col_tuples = [(c, coord) for c in CAMERAS for coord in CAM_COORDS]
@@ -41,8 +48,8 @@ def _df(cells: dict, experiment=EXP) -> pd.DataFrame:
     for (trial, frame, inst, bp), cams in cells.items():
         row = []
         for c in CAMERAS:
-            x, y, s = cams.get(c, (NAN, NAN, "not_set"))
-            row += [x, y, NAN, NAN, s]
+            x, y, s, *extra = cams.get(c, (NAN, NAN, "not_set"))
+            row += _cam_values(x, y, s, *extra)
         row += [NAN, NAN, NAN]
         idx.append((experiment, trial, frame, inst, bp))
         data.append(row)

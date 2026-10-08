@@ -7,7 +7,7 @@ A PySide6 desktop app for 3D point labeling across multiple synchronized calibra
 ## Iterative Workflow
 
 1. **Calibrate** — detect Charuco board corners across cameras, run bundle adjustment via aniposelib
-2. **Label** — display synchronized video frames, click to place skeleton keypoints, view epipolar lines and 3D reconstruction in real time
+2. **Label** — display synchronized video frames, click to place skeleton keypoints, view epipolar lines and reprojection errors in real time (the 3D view panel is hidden; `SHOW_3D_VIEW` in `label_view.py`)
 3. **Export** — write per-camera `.slp` files for SLEAP training/inference
 4. **Re-import** — train a SLEAP model on the exported `.slp` files, run inference, drop the resulting `.slp` predictions back into `project/slp/`, then import again. Repeat from step 2 to review, correct, and add more ground-truth labels
 
@@ -33,7 +33,8 @@ project/
 - `experiments/{name}/calibration.toml` — aniposelib `CameraGroup.dump()` format; the solution in use. Per-take solutions go to `experiments/{name}/calibration_takes/{take}.toml`, per-take corners to `calibration/{cam}/corners_{take}.csv`
 - **Calibration is video-only** — image-based calibration is deprecated and raises
 - `experiments/{name}/videos/` — video files for that experiment's trials (no trials.csv here)
-- `experiments/{name}/points.csv` — pandas MultiIndex CSV; row index `(experiment, trial, frame, instance, bodypart)` (5-level); column MultiIndex `(view, coord)` where cameras have `{x, y, xr, yr, state}` and `"3d"` pseudo-camera has `{x, y, z}`; `state` ∈ `{set, predicted, not_set, not_visible}`
+- `experiments/{name}/points.csv` — pandas MultiIndex CSV; row index `(experiment, trial, frame, instance, bodypart)` (5-level); column MultiIndex `(view, coord)` where cameras have `{x, y, xr, yr, state, source, score, sync}` and `"3d"` pseudo-camera has `{x, y, z}`; `state` ∈ `{set, predicted, not_set, not_visible}`; `source` ∈ `{label3d, sleap_user, sleap_pred}`; `sync` is the id of the sync that brought a point in (a point is new when it equals the latest id)
+- `sync_history.csv` — at project root; one row per (sync, experiment, trial) for each SLEAP read that brought in points
 - `skeleton.json` — `{nodes, edges, symmetries, node_offsets_cm}` (shared at project root)
 - `slp/` — imported `.slp` files (global, at project root)
 
@@ -59,4 +60,4 @@ uv run python <script>  # run any script in the project venv
 
 ## Implementation phases
 
-Phases 1–9 complete. Phases 10–13 are next, in order: point provenance and review of new SLEAP points ([docs/phases/phase_10.md](docs/phases/phase_10.md)), calibration registry and switching ([phase_11.md](docs/phases/phase_11.md)), calibration refinement with labelled points ([phase_12.md](docs/phases/phase_12.md)), batch triangulation and export ([phase_13.md](docs/phases/phase_13.md)). Deferred: axis alignment ([phase_14.md](docs/phases/phase_14.md); geometry helpers and CameraPanel pick mode exist, the UI widget does not), export view and polish ([phase_15_16.md](docs/phases/phase_15_16.md)), multi-instance support ([phase_17.md](docs/phases/phase_17.md)). [docs/phases/phase_9.md](docs/phases/phase_9.md) covers the finished calibration-take work, [docs/phases/phase_8.md](docs/phases/phase_8.md) the finished SLP sync work.
+Phases 1–10 complete. Phases 11–13 are next, in order: calibration registry and switching ([docs/phases/phase_11.md](docs/phases/phase_11.md)), calibration refinement with labelled points ([phase_12.md](docs/phases/phase_12.md)), batch triangulation and export ([phase_13.md](docs/phases/phase_13.md)). Deferred: axis alignment ([phase_14.md](docs/phases/phase_14.md); geometry helpers and CameraPanel pick mode exist, the UI widget does not), export view and polish ([phase_15_16.md](docs/phases/phase_15_16.md)), multi-instance support ([phase_17.md](docs/phases/phase_17.md)). [docs/phases/phase_10.md](docs/phases/phase_10.md) covers the finished point provenance and review work, [phase_9.md](docs/phases/phase_9.md) the finished calibration-take work, [phase_8.md](docs/phases/phase_8.md) the finished SLP sync work.

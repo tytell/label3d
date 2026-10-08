@@ -51,7 +51,7 @@ def write_points_csv(
     # Column MultiIndex
     col_tuples = []
     for cam_name in cam_names:
-        for coord in ("x", "y", "xr", "yr", "state"):
+        for coord in ("x", "y", "xr", "yr", "state", "source", "score", "sync"):
             col_tuples.append((cam_name, coord))
     for coord in ("x", "y", "z"):
         col_tuples.append(("3d", coord))
@@ -72,6 +72,9 @@ def write_points_csv(
                 row[(cam_name, "xr")] = px
                 row[(cam_name, "yr")] = py
                 row[(cam_name, "state")] = "set"
+                row[(cam_name, "source")] = "label3d"
+                row[(cam_name, "score")] = np.nan
+                row[(cam_name, "sync")] = np.nan
             p3 = all_pts_3d[fi][bi]
             row[("3d", "x")] = p3[0]
             row[("3d", "y")] = p3[1]

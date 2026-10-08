@@ -12,7 +12,15 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCursor, QKeySequence, QShortcut
-from PySide6.QtWidgets import QHBoxLayout, QMenu, QSplitter, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QMenu,
+    QScrollArea,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -33,7 +41,16 @@ from label3d.project import Project
 from label3d.state import ProjectState
 from label3d.widgets.bodypart_list import BodypartList
 from label3d.widgets.camera_grid import CameraGrid
+from label3d.widgets.point_item import ColorMode
+from label3d.widgets.point_legend import PointLegend
 from label3d.widgets.view_3d import View3D
+
+# The 3D view (widgets/view_3d.py) is kept but not shown; set True to add it
+# back to the right of the camera grid.
+SHOW_3D_VIEW = False
+
+# Below this the Points list stops shrinking and the sidebar scrolls instead
+SIDEBAR_LIST_MIN_HEIGHT = 160
 
 
 class LabelView(QWidget):
@@ -74,23 +91,43 @@ class LabelView(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Bodypart sidebar
+        # Sidebar: bodypart list above the point legend, in a scroll area so
+        # a short window scrolls instead of squeezing the list
+        sidebar = QWidget()
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
         self._bodypart_list = BodypartList(state)
         self._bodypart_list.set_skeleton(state.skeleton)
-        splitter.addWidget(self._bodypart_list)
+        self._bodypart_list.setMinimumHeight(SIDEBAR_LIST_MIN_HEIGHT)
+        sidebar_layout.addWidget(self._bodypart_list, stretch=1)
+        self._legend = PointLegend()
+        sidebar_layout.addWidget(self._legend, stretch=0)
+
+        self._sidebar_scroll = QScrollArea()
+        self._sidebar_scroll.setWidget(sidebar)
+        self._sidebar_scroll.setWidgetResizable(True)
+        self._sidebar_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._sidebar_scroll.setMinimumWidth(sidebar.minimumSizeHint().width() + 16)
+        self._sidebar_scroll.setMaximumWidth(240)
+        splitter.addWidget(self._sidebar_scroll)
 
         # Camera grid (reparented into this splitter)
         splitter.addWidget(camera_grid)
 
-        # 3D view
-        self._view_3d = View3D(self._cameras if self._cameras else None)
-        splitter.addWidget(self._view_3d)
+        # 3D view (hidden: not built unless SHOW_3D_VIEW)
+        self._view_3d: View3D | None = None
+        if SHOW_3D_VIEW:
+            self._view_3d = View3D(self._cameras if self._cameras else None)
+            splitter.addWidget(self._view_3d)
 
         # Set initial sizes: sidebar ~150px, grid gets the rest, 3D ~300px
-        splitter.setSizes([150, 800, 300])
+        splitter.setSizes([150, 800, 300] if SHOW_3D_VIEW else [150, 1100])
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 0)
+        if SHOW_3D_VIEW:
+            splitter.setStretchFactor(2, 0)
 
         layout.addWidget(splitter)
 
@@ -131,7 +168,8 @@ class LabelView(QWidget):
         else:
             self._cameras = {}
             self._epipolar_cache = None
-        self._view_3d.set_cameras(self._cameras)
+        if self._view_3d is not None:
+            self._view_3d.set_cameras(self._cameras)
 
     def reload_calibration(self) -> None:
         """Pick up a calibration.toml written during this session and redraw."""
@@ -246,6 +284,8 @@ class LabelView(QWidget):
 
     def _update_3d_view(self):
         """Refresh the 3D view for the current frame."""
+        if self._view_3d is None:
+            return
         self._view_3d.update_frame(
             self._state.points_store,
             self._state.skeleton,
@@ -374,6 +414,42 @@ class LabelView(QWidget):
         store.delete_instance(trial, frame, inst)
         self._state.deselect()
         self._state.points_changed.emit(trial, frame, inst, "")
+
+    def accept_selected_point(self) -> None:
+        """Mark the selected bodypart as reviewed in every camera (clears its new mark)."""
+        store = self._state.points_store
+        inst = self._state.selected_instance
+        bp = self._state.selected_bodypart
+        if store is None or inst < 0 or not bp:
+            self._show_status("Select a point to accept")
+            return
+        n = store.accept_points(self._state.current_trial, self._state.current_frame, inst, bp)
+        self._show_status(f"Accepted {bp}" if n else f"{bp} has no new points")
+        self._update_all_overlays()
+
+    def accept_frame(self) -> None:
+        """Mark every point in the current frame as reviewed."""
+        store = self._state.points_store
+        if store is None:
+            return
+        n = store.accept_points(self._state.current_trial, self._state.current_frame)
+        self._show_status(f"Accepted {n} point(s)" if n else "No new points in this frame")
+        self._update_all_overlays()
+
+    def set_color_mode(self, mode: ColorMode) -> None:
+        """Color points by reprojection error or by source."""
+        for cam_name in self._camera_grid.camera_names:
+            panel = self._camera_grid.get_panel(cam_name)
+            if panel is not None:
+                panel.skeleton_overlay.color_mode = mode
+        self._legend.set_color_mode(mode)
+        self._update_all_overlays()
+
+    def set_legend_visible(self, visible: bool) -> None:
+        self._legend.setVisible(visible)
+
+    def legend_visible(self) -> bool:
+        return not self._legend.isHidden()
 
     def _toggle_instance_visibility(self):
         """Toggle visibility of non-selected instances."""

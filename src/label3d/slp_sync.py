@@ -15,7 +15,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from label3d.points import INDEX_NAMES
+from label3d.points import (
+    INDEX_NAMES,
+    SOURCE_SLEAP_PRED,
+    SOURCE_SLEAP_USER,
+    TEXT_COORDS,
+)
 
 Cell = tuple[str, str, str]  # (experiment, trial, camera)
 
@@ -380,6 +385,29 @@ def camera_cells(
     }
 
 
+def camera_scores(frame_df: pd.DataFrame | None, cam: str) -> dict[tuple[int, str], float]:
+    """Return (instance, bodypart) → SLEAP score for one camera in one frame (NaN if none)."""
+    if frame_df is None or frame_df.empty or (cam, "score") not in frame_df.columns:
+        return {}
+    instances = frame_df.index.get_level_values("instance")
+    bodyparts = frame_df.index.get_level_values("bodypart")
+    scores = pd.to_numeric(frame_df[(cam, "score")], errors="coerce").to_numpy(dtype=float)
+    return {(int(i), str(b)): float(sc) for i, b, sc in zip(instances, bodyparts, scores)}
+
+
+def camera_sources(frame_df: pd.DataFrame | None, cam: str) -> dict[tuple[int, str], str]:
+    """Return (instance, bodypart) → source for one camera in one frame."""
+    if frame_df is None or frame_df.empty or (cam, "source") not in frame_df.columns:
+        return {}
+    instances = frame_df.index.get_level_values("instance")
+    bodyparts = frame_df.index.get_level_values("bodypart")
+    sources = frame_df[(cam, "source")].to_numpy()
+    return {
+        (int(i), str(b)): (src if isinstance(src, str) else "")
+        for i, b, src in zip(instances, bodyparts, sources)
+    }
+
+
 def written_instances(
     cells: dict[tuple[int, str], tuple[float, float, str]]
 ) -> list[tuple[int, bool]]:
@@ -406,21 +434,69 @@ def written_instances(
 
 @dataclass
 class MergeResult:
-    """Outcome of merging SLP labels into the current points."""
+    """Outcome of merging SLP labels into the current points.
+
+    Counts are kept per (experiment, trial) in trial_counts, with keys
+    new_user (SLEAP user labels taken), new_pred (predictions where the store
+    had none), updated_pred (predictions that replaced a moved prediction)
+    and conflicts.
+    """
 
     df: pd.DataFrame            # store df with non-conflicting SLP data applied
     df_overwrite: pd.DataFrame  # same, plus conflicting cells taken from SLP
-    n_new: int = 0              # user cells taken from SLP
-    n_predictions: int = 0      # predicted cells added or replaced
     conflicts: list[tuple] = field(default_factory=list)  # (exp, trial, frame, inst, bp, cam)
     changed_frames: set[tuple[str, str, int]] = field(default_factory=set)
+    # Frames where a cell was given this merge's sync id (excluding conflicts)
+    new_frames: set[tuple[str, str, int]] = field(default_factory=set)
+    trial_counts: dict[tuple[str, str], dict[str, int]] = field(default_factory=dict)
+    n_score_updates: int = 0    # predictions that kept their x/y but got a new score
+    sync_id: int | None = None
 
     @property
     def conflict_frames(self) -> set[tuple[str, str, int]]:
         return {c[:3] for c in self.conflicts}
 
+    def _total(self, key: str) -> int:
+        return sum(c.get(key, 0) for c in self.trial_counts.values())
 
-def compute_merge(store_df: pd.DataFrame, slp_df: pd.DataFrame) -> MergeResult:
+    @property
+    def n_new(self) -> int:
+        """SLEAP user labels taken from the SLP files."""
+        return self._total("new_user")
+
+    @property
+    def n_new_pred(self) -> int:
+        return self._total("new_pred")
+
+    @property
+    def n_updated_pred(self) -> int:
+        return self._total("updated_pred")
+
+    @property
+    def n_predictions(self) -> int:
+        """Predicted cells added or replaced."""
+        return self.n_new_pred + self.n_updated_pred
+
+    @property
+    def has_changes(self) -> bool:
+        """True when applying df (without overwrite) changes the store."""
+        return bool(self.changed_frames) or self.n_score_updates > 0
+
+    def count(self, frame_key: tuple[str, str, int], kind: str) -> None:
+        counts = self.trial_counts.setdefault(frame_key[:2], {})
+        counts[kind] = counts.get(kind, 0) + 1
+
+
+# A re-run prediction that moved less than this keeps its x/y, source and sync
+# id, so re-running inference does not mark every prediction as new.
+PREDICTION_MOVE_PX = 0.5
+
+SLEAP_SOURCES = {"set": SOURCE_SLEAP_USER, "predicted": SOURCE_SLEAP_PRED}
+
+
+def compute_merge(
+    store_df: pd.DataFrame, slp_df: pd.DataFrame, sync_id: int | None = None
+) -> MergeResult:
     """Merge labels read from SLP files into the store DataFrame.
 
     Merge is per camera cell.  For each (frame, camera) present in the SLP data:
@@ -439,13 +515,18 @@ def compute_merge(store_df: pd.DataFrame, slp_df: pd.DataFrame) -> MergeResult:
         SLP point missing (NaN)              → keep store
 
     - Otherwise SLP predictions replace the store's predictions for that camera.
+      A stored prediction within PREDICTION_MOVE_PX keeps its x/y, source and
+      sync id; only a SLEAP prediction's score is updated.
 
-    Frames or cameras absent from the SLP data are left unchanged.
+    Every cell taken from SLP gets source sleap_user / sleap_pred, the SLP
+    score, and sync = sync_id (NaN when sync_id is None).  Frames or cameras
+    absent from the SLP data are left unchanged.
     """
     store_df = normalize_index(store_df)
     if slp_df.empty:
-        return MergeResult(df=store_df, df_overwrite=store_df)
+        return MergeResult(df=store_df, df_overwrite=store_df, sync_id=sync_id)
     slp_df = normalize_index(slp_df)
+    sync_value = float(sync_id) if sync_id is not None else np.nan
 
     cameras = [
         c for c in store_df.columns.get_level_values(0).unique()
@@ -457,9 +538,15 @@ def compute_merge(store_df: pd.DataFrame, slp_df: pd.DataFrame) -> MergeResult:
         if not store_df.empty else {}
     )
 
-    result = MergeResult(df=store_df, df_overwrite=store_df)
-    updates: dict[tuple[tuple, str], tuple[float, float, str]] = {}
-    conflict_updates: dict[tuple[tuple, str], tuple[float, float, str]] = {}
+    result = MergeResult(df=store_df, df_overwrite=store_df, sync_id=sync_id)
+    updates: dict[tuple[tuple, str], dict] = {}
+    conflict_updates: dict[tuple[tuple, str], dict] = {}
+
+    def taken(x: float, y: float, state: str, score: float) -> dict:
+        return {
+            "x": x, "y": y, "state": state, "source": SLEAP_SOURCES[state],
+            "score": score if state == "predicted" else np.nan, "sync": sync_value,
+        }
 
     for key, slp_group in slp_df.groupby(level=frame_levels, sort=False):
         store_group = store_groups.get(key)
@@ -474,7 +561,10 @@ def compute_merge(store_df: pd.DataFrame, slp_df: pd.DataFrame) -> MergeResult:
             slp_insts = written_instances(slp_cells)
             if not slp_insts:
                 continue
+            slp_scores = camera_scores(slp_group, cam)
             store_cells = camera_cells(store_group, cam)
+            store_sources = camera_sources(store_group, cam)
+            store_scores = camera_scores(store_group, cam)
             store_insts = [inst for inst, _ in written_instances(store_cells)]
             targets = store_insts + [i for i in frame_instances if i not in store_insts]
 
@@ -505,36 +595,54 @@ def compute_merge(store_df: pd.DataFrame, slp_df: pd.DataFrame) -> MergeResult:
                             # predicted points in a user instance come back as set
                             continue
                         if cstate in ("not_set", "predicted"):
-                            updates[(idx, cam)] = (sx, sy, "set")
-                            result.n_new += 1
+                            updates[(idx, cam)] = taken(sx, sy, "set", np.nan)
+                            result.count(key, "new_user")
                             result.changed_frames.add(key)
+                            result.new_frames.add(key)
                         else:
-                            conflict_updates[(idx, cam)] = (sx, sy, "set")
+                            conflict_updates[(idx, cam)] = taken(sx, sy, "set", np.nan)
                             result.conflicts.append((*idx, cam))
+                            result.count(key, "conflicts")
             else:
-                new_preds: dict[tuple[int, str], tuple[float, float]] = {}
+                new_preds: dict[tuple[int, str], tuple[float, float, float]] = {}
                 for pos, (slp_inst, _) in enumerate(slp_insts):
                     inst = target(pos)
                     for bp, sx, sy, sstate in slp_by_inst[slp_inst]:
                         if sstate == "predicted" and np.isfinite(sx) and np.isfinite(sy):
-                            new_preds[(inst, bp)] = (sx, sy)
+                            score = slp_scores.get((slp_inst, bp), np.nan)
+                            new_preds[(inst, bp)] = (sx, sy, score)
 
                 for (inst, bp), (_, _, cstate) in store_cells.items():
                     if cstate == "predicted" and (inst, bp) not in new_preds:
-                        updates[((*key, inst, bp), cam)] = (np.nan, np.nan, "not_set")
+                        updates[((*key, inst, bp), cam)] = {
+                            "x": np.nan, "y": np.nan, "state": "not_set",
+                            "source": "", "score": np.nan, "sync": np.nan,
+                        }
                         result.changed_frames.add(key)
 
-                for (inst, bp), (sx, sy) in new_preds.items():
+                for (inst, bp), (sx, sy, score) in new_preds.items():
+                    idx = (*key, inst, bp)
                     cx, cy, cstate = store_cells.get((inst, bp), (np.nan, np.nan, "not_set"))
-                    if (
-                        cstate == "predicted"
-                        and abs(cx - sx) <= COORD_TOL
-                        and abs(cy - sy) <= COORD_TOL
-                    ):
-                        continue
-                    updates[((*key, inst, bp), cam)] = (sx, sy, "predicted")
-                    result.n_predictions += 1
+                    if cstate == "predicted":
+                        if (
+                            abs(cx - sx) <= PREDICTION_MOVE_PX
+                            and abs(cy - sy) <= PREDICTION_MOVE_PX
+                        ):
+                            old_score = store_scores.get((inst, bp), np.nan)
+                            if (
+                                store_sources.get((inst, bp)) == SOURCE_SLEAP_PRED
+                                and np.isfinite(score)
+                                and not np.isclose(score, old_score, equal_nan=False)
+                            ):
+                                updates[(idx, cam)] = {"score": score}
+                                result.n_score_updates += 1
+                            continue
+                        result.count(key, "updated_pred")
+                    else:
+                        result.count(key, "new_pred")
+                    updates[(idx, cam)] = taken(sx, sy, "predicted", score)
                     result.changed_frames.add(key)
+                    result.new_frames.add(key)
 
     result.df = _apply_updates(store_df, updates)
     result.df_overwrite = (
@@ -544,9 +652,9 @@ def compute_merge(store_df: pd.DataFrame, slp_df: pd.DataFrame) -> MergeResult:
 
 
 def _apply_updates(
-    base_df: pd.DataFrame, updates: dict[tuple[tuple, str], tuple[float, float, str]]
+    base_df: pd.DataFrame, updates: dict[tuple[tuple, str], dict]
 ) -> pd.DataFrame:
-    """Return a copy of base_df with (index, camera) → (x, y, state) updates applied."""
+    """Return a copy of base_df with (index, camera) → {coord: value} updates applied."""
     if not updates:
         return base_df
 
@@ -561,22 +669,25 @@ def _apply_updates(
         )
         for cam in cameras:
             added[(cam, "state")] = "not_set"
+            if (cam, "source") in added.columns:
+                added[(cam, "source")] = ""
         df = pd.concat([base_df, added]) if not base_df.empty else added
         df = df.sort_index()
     else:
         df = base_df.copy()
 
-    # Coordinate columns must be float to accept NaN and sub-pixel values
+    # Numeric columns must be float to accept NaN and sub-pixel values
     for col in df.columns:
-        if col[1] != "state" and df[col].dtype != float:
+        if col[1] not in TEXT_COORDS and df[col].dtype != float:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
 
-    by_cam: dict[str, list[tuple[tuple, float, float, str]]] = {}
-    for (idx, cam), (x, y, state) in updates.items():
-        by_cam.setdefault(cam, []).append((idx, x, y, state))
-    for cam, items in by_cam.items():
+    by_cam_coord: dict[tuple[str, str], list[tuple[tuple, object]]] = {}
+    for (idx, cam), values in updates.items():
+        for coord, value in values.items():
+            by_cam_coord.setdefault((cam, coord), []).append((idx, value))
+    for col, items in by_cam_coord.items():
+        if col not in df.columns:
+            continue
         index = pd.MultiIndex.from_tuples([it[0] for it in items], names=INDEX_NAMES)
-        df.loc[index, (cam, "x")] = [it[1] for it in items]
-        df.loc[index, (cam, "y")] = [it[2] for it in items]
-        df.loc[index, (cam, "state")] = [it[3] for it in items]
+        df.loc[index, col] = [it[1] for it in items]
     return df
