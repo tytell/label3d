@@ -346,6 +346,63 @@ class Project:
         """Write the [slp] section to project.toml, keeping all other sections."""
         self.save_config_sections({"slp": mapping.to_config()})
 
+    # -- Skeleton --------------------------------------------------------------
+
+    def skeleton_removals(self, skeleton: Skeleton) -> dict[str, int]:
+        """Labelled points, by node, that set_skeleton(skeleton) would delete.
+
+        Counts (frame, instance) points of nodes missing from skeleton, across
+        all experiments, that are set, predicted or not visible in at least one
+        camera or have 3D coordinates. Rows that hold nothing aren't counted.
+        """
+        keep = set(skeleton.nodes)
+        counts: dict[str, int] = {}
+        for name in self.experiments:
+            df = self.experiment_points_df(name)
+            if df.empty:
+                continue
+            gone = df[~df.index.get_level_values("bodypart").isin(keep)]
+            if gone.empty:
+                continue
+            labelled = pd.Series(False, index=gone.index)
+            for view in gone.columns.get_level_values("view").unique():
+                if view == "3d":
+                    labelled |= gone["3d"].notna().any(axis=1)
+                else:
+                    labelled |= gone[(view, "state")].fillna("not_set") != "not_set"
+            for node, n in gone[labelled].groupby(level="bodypart").size().items():
+                counts[node] = counts.get(node, 0) + int(n)
+        return counts
+
+    def set_skeleton(self, skeleton: Skeleton) -> None:
+        """Make skeleton the project's skeleton, merging it into the points.
+
+        Points of nodes in both skeletons are kept as they are; new nodes start
+        unlabelled. Points of nodes missing from skeleton are deleted in every
+        experiment (see skeleton_removals). skeleton.json is rewritten, the old
+        one kept as skeleton.json.bak.
+        """
+        keep = set(skeleton.nodes)
+        for name, exp in self.experiments.items():
+            df = self.experiment_points_df(name)
+            drop = ~df.index.get_level_values("bodypart").isin(keep)
+            if df.empty or not drop.any():
+                continue
+            df = df[~drop]
+            if name == self.active_experiment and self.points is not None:
+                self.points.replace_df(df)
+                self.points.save_if_changed()
+            else:
+                path = exp.root / "points.csv"
+                path.replace(path.with_suffix(".csv.bak"))
+                df.to_csv(path)
+
+        path = self.root / "skeleton.json"
+        if path.exists():
+            path.replace(path.with_suffix(".json.bak"))
+        skeleton.to_json(path)
+        self.skeleton = skeleton
+
     def experiment_points_df(self, experiment: str) -> pd.DataFrame:
         """Points for an experiment: the live store if active, else its points.csv."""
         if experiment == self.active_experiment and self.points is not None:
@@ -397,6 +454,16 @@ class Project:
     def _merge_by_experiment(
         self, slp_df: pd.DataFrame, sync_id: int | None
     ) -> dict[str, MergeResult]:
+        # Nodes outside the skeleton (e.g. ones removed by set_skeleton) are
+        # left out, so a .slp file still carrying them doesn't bring them back.
+        if self.skeleton is not None and not slp_df.empty:
+            known = slp_df.index.get_level_values("bodypart").isin(self.skeleton.nodes)
+            if not known.all():
+                logger.info(
+                    "Ignoring SLP points of nodes not in the skeleton: %s",
+                    ", ".join(sorted(set(slp_df.index.get_level_values("bodypart")[~known]))),
+                )
+                slp_df = slp_df[known]
         results = {}
         for name in self.experiments:
             exp_slp = slp_df

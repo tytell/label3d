@@ -39,6 +39,7 @@ from label3d.calibration_registry import entry_summary, entry_tree, find_calibra
 from label3d.geometry import load_cameras
 from label3d.points import PointsStore
 from label3d.project import Project
+from label3d.skeleton import Skeleton
 from label3d.state import ProjectState
 from label3d.video import FrameProvider
 from label3d.widgets.calibration_view import CalibrationView
@@ -254,6 +255,13 @@ class MainWindow(QMainWindow):
             )
         )
         self._update_sync_action()
+        file_menu.addSeparator()
+        load_skeleton_action = file_menu.addAction("Load skeleton...")
+        load_skeleton_action.setToolTip(
+            "Replace the skeleton from a skeleton.json; points of nodes with the "
+            "same name are kept"
+        )
+        load_skeleton_action.triggered.connect(self._do_load_skeleton)
         file_menu.addSeparator()
         export_action = file_menu.addAction("Export points...")
         export_action.setEnabled(False)
@@ -609,6 +617,55 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(message)
         self._retriangulate(results, overwrite)
         self._show_sync_summary(results, unmatched)
+
+    # -- Skeleton --------------------------------------------------------------
+
+    def _do_load_skeleton(self) -> None:
+        """Merge a skeleton.json into the project, asking before deleting points."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load skeleton", str(self._project.root), "Skeleton files (*.json)"
+        )
+        if not path:
+            return
+        try:
+            skeleton = Skeleton.from_json(Path(path))
+        except (OSError, ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "Load skeleton", f"Could not read {path}:\n{exc}")
+            return
+
+        removals = self._project.skeleton_removals(skeleton)
+        if removals:
+            lines = "\n".join(
+                f"  {node}: {n} point(s)" for node, n in sorted(removals.items())
+            )
+            reply = QMessageBox.warning(
+                self,
+                "Delete points?",
+                "These nodes have labelled points but are not in the new skeleton:\n\n"
+                f"{lines}\n\n"
+                "Loading it deletes those points in every experiment. "
+                "Delete them and load the skeleton?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self._status_bar.showMessage("Load skeleton cancelled — nothing changed")
+                return
+
+        old_nodes = set(self._project.skeleton.nodes) if self._project.skeleton else set()
+        self._project.set_skeleton(skeleton)
+        self._state.skeleton = skeleton
+        self._label_view.set_skeleton(skeleton)
+        self._refresh_after_merge()
+
+        added = [n for n in skeleton.nodes if n not in old_nodes]
+        removed = sorted(old_nodes - set(skeleton.nodes))
+        parts = [f"Loaded skeleton with {len(skeleton.nodes)} node(s)"]
+        if added:
+            parts.append(f"added {', '.join(added)}")
+        if removed:
+            parts.append(f"removed {', '.join(removed)}")
+        self._status_bar.showMessage("; ".join(parts))
 
     # -- Experiment switching ------------------------------------------------
 

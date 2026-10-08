@@ -38,6 +38,7 @@ from label3d.instance_init import (
     init_reprojected,
 )
 from label3d.project import Project
+from label3d.skeleton import Skeleton
 from label3d.state import ProjectState
 from label3d.widgets.bodypart_list import BodypartList
 from label3d.widgets.camera_grid import CameraGrid
@@ -174,6 +175,16 @@ class LabelView(QWidget):
     def reload_calibration(self) -> None:
         """Pick up a change of active calibration and redraw."""
         self.reload_for_experiment()
+        self._update_all_overlays()
+        self._update_3d_view()
+
+    def set_skeleton(self, skeleton: Skeleton | None) -> None:
+        """Show a new skeleton: bodypart list, selection and overlays."""
+        self._bodypart_list.set_skeleton(skeleton)
+        state = self._state
+        bodypart = state.selected_bodypart
+        if skeleton is not None and bodypart and bodypart not in skeleton.nodes:
+            state.select(state.selected_instance, skeleton.nodes[0])
         self._update_all_overlays()
         self._update_3d_view()
 

@@ -210,6 +210,10 @@ xyz = df["3d"][["x", "y", "z"]]                         # world coords, shape (n
 
 Missing coordinates are `NaN`. Reprojected coords (`xr`, `yr`) are `NaN` until triangulation has been run.
 
+### Skeleton: `skeleton.json`
+
+At the project root, shared by all experiments: `{nodes, edges, symmetries, node_offsets_cm}`. It comes from the setup file's `[skeleton]` table or the `.slp` files, and can be replaced later with **File > Load skeleton...** (`Project.set_skeleton`). Loading merges by node name: points of nodes in both skeletons are kept, new nodes start unlabelled, and edges, symmetries and offsets come from the new file. Points of nodes missing from the new skeleton are deleted in every experiment, after a warning listing how many labelled points each node has (`Project.skeleton_removals`); cancelling changes nothing. The old file is kept as `skeleton.json.bak`. SLP reads ignore nodes that aren't in the skeleton, so a `.slp` file that still has a removed node doesn't bring it back.
+
 ### Sync history: `sync_history.csv`
 
 At the project root. One row per (sync, experiment, trial) for every SLEAP read that brought in new points (startup read, Sync, Import predictions, Set up, sync on close). A read that changes nothing adds no row.

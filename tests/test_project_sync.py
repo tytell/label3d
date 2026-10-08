@@ -16,6 +16,7 @@ from label3d.calibration_registry import save_calibration
 from label3d.geometry import load_cameras
 from label3d.points import CAM_COORDS, INDEX_NAMES, THREE_D_COORDS, PointsStore
 from label3d.project import Project
+from label3d.skeleton import Skeleton
 from label3d.workers.triangulation_worker import AllExperimentsTriangulationWorker
 
 sleap_io = pytest.importorskip("sleap_io", reason="sleap_io not installed")
@@ -249,3 +250,40 @@ class TestSwitchCalibration:
         assert config["calibration"]["repeats"] == 2
         assert config["calibration"]["triangulated_with"][EXP] == "x"
         assert config["calibration"]["active"][EXP] == project.active_calibration_id(EXP)
+
+
+class TestSetSkeleton:
+    def test_kept_and_added_nodes_delete_nothing(self, project):
+        new = Skeleton(["tail", "head", "fin"], edges=[("head", "fin")])
+        assert project.skeleton_removals(new) == {}
+        before = project.points.df.copy()
+        project.set_skeleton(new)
+        pd.testing.assert_frame_equal(project.points.df, before)
+        assert Skeleton.from_json(project.root / "skeleton.json").edges == [("head", "fin")]
+        assert (project.root / "skeleton.json.bak").exists()
+
+    def test_removed_node_counts_and_deletes(self, project):
+        new = Skeleton(["head", "fin"])
+        assert project.skeleton_removals(new) == {"tail": len(TRIALS)}
+        project.set_skeleton(new)
+        assert set(project.points.df.index.get_level_values("bodypart")) == {"head"}
+        on_disk = PointsStore.read_csv_df(project.experiments[EXP].root / "points.csv")
+        assert set(on_disk.index.get_level_values("bodypart")) == {"head"}
+        assert project.skeleton.nodes == ["head", "fin"]
+
+    def test_unlabelled_rows_are_not_counted(self, project):
+        df = project.points.df.copy()
+        tail = df.index.get_level_values("bodypart") == "tail"
+        for cam in CAMERAS:
+            df.loc[tail, (cam, "state")] = "not_set"
+            df.loc[tail, (cam, "x")] = np.nan
+        project.points.replace_df(df)
+        assert project.skeleton_removals(Skeleton(["head"])) == {}
+
+    def test_removed_node_is_not_read_back_from_slp(self, project):
+        project.write_slp_files()   # .slp files still carry "tail"
+        project.set_skeleton(Skeleton(["head"]))
+        results = project.read_slp_for_sync()
+        assert results[EXP].n_new == 0
+        bodyparts = set(results[EXP].df.index.get_level_values("bodypart"))
+        assert bodyparts == {"head"}
