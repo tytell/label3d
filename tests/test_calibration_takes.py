@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
+import pandas as pd
 import pytest
 from aniposelib.cameras import Camera, CameraGroup
 
 from label3d.calibration_compare import noise_adjusted_thresholds, run_spread
-from label3d.calibration_io import corners_path, load_corners, save_corners
+from label3d.calibration_io import corner_detections, corners_path, load_corners, save_corners
 from label3d.calibration_registry import save_calibration
 from label3d.project import Project
 from label3d.widgets.calibration_view import (
     CalibFrameProvider,
     _build_takes,
     _scan_take_media,
+    charuco_label,
     nearest_row,
     rekey_frame_errors,
     take_range,
@@ -27,6 +30,7 @@ from label3d.workers.calibration_worker import (
     JOINT_TAKE,
     CalibrationTake,
     DetectionWorker,
+    TakeCalibration,
     TakeVideo,
     rows_in_range,
 )
@@ -120,6 +124,9 @@ class TestTakePairing:
         assert set(take.videos) == {"cam1"}
 
 
+WHEN = datetime(2026, 10, 5, 14, 20, 3)
+
+
 class TestCornersIO:
     def _rows(self, take: str) -> list[dict]:
         return [
@@ -133,30 +140,56 @@ class TestCornersIO:
             for frame in (0, 20)
         ]
 
-    def test_per_take_file_naming(self, tmp_path):
-        assert corners_path(tmp_path, "PreCal").name == "corners_PreCal.csv"
-        assert corners_path(tmp_path).name == "corners.csv"
+    def test_single_file(self, tmp_path):
+        save_corners(tmp_path, self._rows("PreCal") + self._rows("PostCal"), WHEN)
+        assert corners_path(tmp_path) == tmp_path / "corners.csv"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["corners.csv"]
+        df = pd.read_csv(tmp_path / "corners.csv")
+        assert list(df.columns) == ["take", "frame", "corner_id", "x", "y", "detected"]
 
     def test_round_trip_preserves_take_key(self, tmp_path):
-        save_corners(tmp_path, self._rows("PreCal"), take="PreCal")
-        assert (tmp_path / "corners_PreCal.csv").is_file()
-
-        loaded = load_corners(tmp_path, take="PreCal")
+        save_corners(tmp_path, self._rows("PreCal"), WHEN)
+        loaded = load_corners(tmp_path)
         assert [r["framenum"] for r in loaded] == [("PreCal", 0), ("PreCal", 20)]
         np.testing.assert_allclose(loaded[0]["corners"].reshape(-1, 2),
                                    [[1.0, 2.0], [3.0, 4.0]])
 
-    def test_takes_do_not_collide(self, tmp_path):
-        save_corners(tmp_path, self._rows("PreCal"), take="PreCal")
-        save_corners(tmp_path, self._rows("PostCal"), take="PostCal")
-        joint = self._rows("PreCal") + self._rows("PostCal")
-        save_corners(tmp_path, joint)
-
-        assert [r["framenum"] for r in load_corners(tmp_path, take="PostCal")] == [
+    def test_filter_by_take(self, tmp_path):
+        save_corners(tmp_path, self._rows("PreCal") + self._rows("PostCal"), WHEN)
+        assert [r["framenum"] for r in load_corners(tmp_path, takes=["PostCal"])] == [
             ("PostCal", 0), ("PostCal", 20),
         ]
         keys = [r["framenum"] for r in load_corners(tmp_path)]
         assert keys == [("PreCal", 0), ("PreCal", 20), ("PostCal", 0), ("PostCal", 20)]
+        assert load_corners(tmp_path, takes=["Nope"]) == []
+
+    def test_redetecting_one_take_keeps_the_others(self, tmp_path):
+        save_corners(tmp_path, self._rows("PreCal") + self._rows("PostCal"), WHEN)
+        later = datetime(2026, 10, 6, 9, 0, 0)
+        redetected = self._rows("PreCal")[:1]
+        save_corners(tmp_path, redetected, later, takes=["PreCal"])
+
+        keys = [r["framenum"] for r in load_corners(tmp_path)]
+        assert sorted(keys) == [("PostCal", 0), ("PostCal", 20), ("PreCal", 0)]
+        assert corner_detections(tmp_path) == {
+            "PreCal": later.isoformat(), "PostCal": WHEN.isoformat(),
+        }
+
+    def test_legacy_files_are_converted(self, tmp_path):
+        legacy = pd.DataFrame({
+            "source_key": ["PreCal:0", "PreCal:0", "PostCal:20"],
+            "corner_id": [0, 1, 0],
+            "x": [1.0, 3.0, 5.0],
+            "y": [2.0, 4.0, 6.0],
+        })
+        legacy.iloc[:2].to_csv(tmp_path / "corners.csv", index=False)
+        legacy.iloc[:2].to_csv(tmp_path / "corners_PreCal.csv", index=False)
+        legacy.iloc[2:].to_csv(tmp_path / "corners_PostCal.csv", index=False)
+
+        keys = [r["framenum"] for r in load_corners(tmp_path)]
+        assert sorted(keys) == [("PostCal", 20), ("PreCal", 0)]
+        df = pd.read_csv(tmp_path / "corners.csv")
+        assert "take" in df.columns and len(df) == 3
 
     def test_merge_rows_pairs_by_take(self, tmp_path):
         """Two cameras' rows merge only where take AND frame agree."""
@@ -172,7 +205,7 @@ class TestCornersIO:
         assert len(only1) == 2  # PostCal, which cam2 never recorded
 
     def test_missing_file_returns_none(self, tmp_path):
-        assert load_corners(tmp_path, take="Nope") is None
+        assert load_corners(tmp_path) is None
 
 
 # --- Drift comparison between takes ---
@@ -579,3 +612,51 @@ class TestReloadCalibration:
         assert project.has_calibration
         assert project.experiments["exp1"].has_calibration
         assert project.camera_info["cam2"].size == (800, 600)
+
+
+class TestRegistryEntries:
+    """The Calibration tab saves one registry entry per solution (Phase 11.4)."""
+
+    def _view(self, tmp_path):
+        from label3d.widgets.calibration_view import CalibrationView
+
+        _write_project(tmp_path, {
+            "PreCal": {"cam1": "p1.mp4", "cam2": "p2.mp4"},
+            "Post Cal": {"cam1": "q1.mp4", "cam2": "q2.mp4"},
+        })
+        project = Project.load(tmp_path)
+        return project, CalibrationView(project)
+
+    def _results(self):
+        cams = [Camera(name="cam1", size=(640, 480)), Camera(name="cam2", size=(640, 480))]
+        return [
+            TakeCalibration(name, CameraGroup(cams), err, {}, 10, (0.1, 0.2))
+            for name, err in (("PreCal", 0.5), ("Post Cal", 0.6), (JOINT_TAKE, 0.4))
+        ]
+
+    def test_labels(self):
+        assert charuco_label(JOINT_TAKE) == "charuco-all"
+        assert charuco_label("Post Cal") == "charuco-Post_Cal"
+
+    def test_one_entry_per_result_and_use_take_moves_pointer(self, tmp_path, qapp):
+        project, view = self._view(tmp_path)
+        results = self._results()
+        view._save_registry_entries(results)
+
+        entries = project.calibrations()
+        assert sorted(e.label for e in entries) == [
+            "charuco-Post_Cal", "charuco-PreCal", "charuco-all",
+        ]
+        joint = next(e for e in entries if e.label == "charuco-all")
+        assert joint.charuco_takes == ["PreCal", "Post Cal"]
+        assert joint.metadata["errors"]["charuco"] == pytest.approx(0.4)
+        assert joint.metadata["charuco"]["board"]["squares_x"] > 0
+
+        view._take_results = results
+        view._take_combo.addItems([r.name for r in results])
+        view._take_combo.setCurrentText("PreCal")
+        view._on_use_take()
+        assert project.active_calibration().label == "charuco-PreCal"
+        assert project.has_calibration
+        assert len(project.calibrations()) == 3   # no file was copied
+        view.close()

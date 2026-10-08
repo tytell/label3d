@@ -8,6 +8,7 @@ Layout:
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -42,7 +44,18 @@ logger = logging.getLogger(__name__)
 from aniposelib.boards import CharucoBoard, merge_rows
 from aniposelib.cameras import CameraGroup
 
-from label3d.calibration_io import compute_frame_errors, load_corners, save_corners
+from label3d.calibration_io import (
+    compute_frame_errors,
+    corner_detections,
+    load_corners,
+    save_corners,
+)
+from label3d.calibration_registry import (
+    CalibrationEntry,
+    clean_label,
+    find_calibration,
+    save_calibration,
+)
 from label3d.geometry import EpipolarCache, cameras_from_cgroup
 from label3d.project import Project
 from label3d.video import VideoReader
@@ -160,6 +173,13 @@ def rekey_frame_errors(
             if idx is not None:
                 rekeyed[idx] = errs
     return rekeyed
+
+
+def charuco_label(result_name: str) -> str:
+    """Registry label for a charuco solution: charuco-{take}, or charuco-all."""
+    if result_name == JOINT_TAKE:
+        return "charuco-all"
+    return clean_label(f"charuco-{result_name}")
 
 
 def _build_takes(project: Project) -> list[CalibrationTake]:
@@ -318,8 +338,9 @@ class CalibFrameProvider:
 class CalibrationView(QWidget):
     """Full calibration panel: board settings, detect, inspect, calibrate, save.
 
-    Emits calibration_saved after writing the experiment's calibration.toml,
-    so views that loaded the old one can reload it.
+    Each calibration run saves one registry entry per solution (Phase 11).
+    Emits calibration_saved when the active calibration changes, so views that
+    loaded the old one can reload it.
     """
 
     calibration_saved = Signal()
@@ -332,6 +353,7 @@ class CalibrationView(QWidget):
         self._all_rows: dict[str, list] | None = None
         self._takes: list[CalibrationTake] = []
         self._take_results: list = []   # list[TakeCalibration], joint last
+        self._result_entries: dict[str, str] = {}   # result name -> registry id
         self._browse_rows: list[dict] = []  # every frame, before take filtering
         self._display_map: list[int] = []   # display index -> index in _browse_rows
         self._cam_sizes: dict[str, tuple[int, int]] = {}
@@ -879,24 +901,17 @@ class CalibrationView(QWidget):
         self._all_rows = all_rows
         self._cam_sizes = cam_sizes
 
-        # Save corners for later reload: one file per take, plus the joint
-        # corners.csv holding every take's detections.
+        # Save corners for later reload. Each camera's corners.csv holds every
+        # take; the takes detected now replace their earlier rows.
         exp_dir = self._project.root / "experiments" / self._project.active_experiment
         take_names = [t.name for t in self._takes]
+        detected = datetime.now()
         for cam in self._project.cameras:
             cam_dir = exp_dir / "calibration" / cam
             if not cam_dir.is_dir():
                 continue
-            rows = all_rows.get(cam, [])
             try:
-                for take in take_names:
-                    take_rows = [
-                        r for r in rows
-                        if isinstance(r.get("framenum"), tuple)
-                        and r["framenum"][0] == take
-                    ]
-                    save_corners(cam_dir, take_rows, take=take)
-                save_corners(cam_dir, rows)
+                save_corners(cam_dir, all_rows.get(cam, []), detected, takes=take_names)
             except Exception as exc:
                 self._log_msg(f"  Warning: could not save corners for {cam}: {exc}")
 
@@ -931,6 +946,19 @@ class CalibrationView(QWidget):
             return
         if self._calibration_worker and self._calibration_worker.isRunning():
             return
+        active = self._project.active_calibration()
+        if active is not None and active.method == "refine":
+            reply = QMessageBox.question(
+                self,
+                "Replace refined calibration?",
+                f"The active calibration is the refined '{active.label}'. "
+                "Calibrating makes the new joint solution active instead.\n\n"
+                "The refined calibration stays in the registry, and you can "
+                "switch back to it.",
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Ok:
+                return
         self._calibrate_btn.setEnabled(False)
         self._log_msg("=== Calibration started ===")
 
@@ -976,7 +1004,7 @@ class CalibrationView(QWidget):
                 result.frame_errors, rows, self._project.cameras, self._merged_rows
             )
 
-        self._save_take_calibrations(results)
+        self._save_registry_entries(results)
         self._populate_take_table(results)
         self._log_msg("=== Calibration complete ===")
 
@@ -986,21 +1014,53 @@ class CalibrationView(QWidget):
         self._on_take_selected(results[-1].name)
         self._on_use_take()
 
-    def _save_take_calibrations(self, results: list) -> None:
-        """Write each take's solution to calibration_takes/{take}.toml."""
+    def _save_registry_entries(self, results: list) -> None:
+        """Save each solution (each take, and the joint one) as a registry entry."""
         exp_dir = self._project.root / "experiments" / self._project.active_experiment
-        takes_dir = exp_dir / "calibration_takes"
-        try:
-            takes_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:
-            self._log_msg(f"  Warning: could not create {takes_dir}: {exc}")
-            return
+        self._result_entries = {}
         for result in results:
-            safe = result.name.replace(" ", "_").replace("(", "").replace(")", "")
             try:
-                result.cgroup.dump(str(takes_dir / f"{safe}.toml"))
+                entry = save_calibration(
+                    exp_dir, result.cgroup, charuco_label(result.name), "charuco",
+                    **self._charuco_metadata(result),
+                )
             except Exception as exc:
-                self._log_msg(f"  Warning: could not save take '{result.name}': {exc}")
+                self._log_msg(f"  Warning: could not save [{result.name}]: {exc}")
+                continue
+            self._result_entries[result.name] = entry.id
+            self._log_msg(f"Saved [{result.name}] as {entry.id}")
+
+    def _charuco_metadata(self, result) -> dict:
+        """[metadata] for a charuco entry: enough to redo the solve."""
+        all_takes = [t.name for t in self._takes]
+        takes = all_takes if result.name == JOINT_TAKE else [result.name]
+        exp_dir = self._project.root / "experiments" / self._project.active_experiment
+        detected: dict[str, str] = {}
+        for cam in self._project.cameras:
+            for take, stamp in corner_detections(exp_dir / "calibration" / cam).items():
+                if take in takes:
+                    detected[take] = max(stamp, detected.get(take, stamp))
+        ranges = {}
+        for take in self._takes:
+            if take.name in takes:
+                ranges[take.name] = {"start": take.start}
+                if take.end is not None:
+                    ranges[take.name]["end"] = take.end
+        return {
+            "charuco_takes": takes,
+            "charuco": {
+                "board": self._board_params(),
+                "frame_skip": self._skip,
+                "take_ranges": ranges,
+                "detected": detected,
+                "n_rows": result.n_rows,
+            },
+            "errors": {
+                "charuco": float(result.error),
+                "spread_rotation_deg": float(result.spread[0]),
+                "spread_baseline_pct": float(result.spread[1]),
+            },
+        }
 
     def _populate_take_table(self, results: list) -> None:
         """Fill the comparison table and flag takes that drifted.
@@ -1093,34 +1153,17 @@ class CalibrationView(QWidget):
         self._show_frame(self._current_frame)
 
     def _on_use_take(self) -> None:
-        """Write the chosen solution to calibration.toml and corners.csv."""
+        """Make the chosen solution's registry entry the active calibration."""
         result = self._selected_take()
         if result is None:
             return
-
-        out_path = self._project.calibration_path()
-        try:
-            result.cgroup.dump(str(out_path))
-            self._log_msg(f"Saved [{result.name}]: {out_path}")
-        except Exception as exc:
-            self._log_msg(f"  Warning: could not save calibration: {exc}")
+        entry_id = self._result_entries.get(result.name)
+        if entry_id is None:
+            self._log_msg(f"  Warning: [{result.name}] was not saved; nothing to activate")
             return
-        self._project.reload_calibration()
+        self._project.set_active_calibration(None, entry_id)
+        self._log_msg(f"Active calibration: {entry_id}")
         self.calibration_saved.emit()
-
-        # corners.csv holds whatever produced the saved calibration.
-        exp_dir = self._project.root / "experiments" / self._project.active_experiment
-        rows_by_cam = self._calib_rows
-        if result.name != JOINT_TAKE:
-            rows_by_cam = rows_for_take(rows_by_cam, result.name)
-        for cam in self._project.cameras:
-            cam_dir = exp_dir / "calibration" / cam
-            if not cam_dir.is_dir():
-                continue
-            try:
-                save_corners(cam_dir, rows_by_cam.get(cam, []))
-            except Exception as exc:
-                self._log_msg(f"  Warning: could not save corners for {cam}: {exc}")
 
     # ── Calibration helpers ───────────────────────────────────────────────
 
@@ -1133,8 +1176,12 @@ class CalibrationView(QWidget):
         except Exception as exc:
             self._log_msg(f"  Warning: could not build epipolar cache: {exc}")
 
-    def _apply_frame_errors(self, cgroup) -> None:
-        """Compute per-frame reprojection errors from loaded corners + calibration."""
+    def _apply_frame_errors(self, cgroup, takes: list[str] | None = None) -> None:
+        """Compute per-frame reprojection errors from loaded corners + calibration.
+
+        takes limits the corners to the takes the calibration was solved from
+        (None: all of them), within each take's frame range.
+        """
         if not self._all_rows or cgroup is None:
             return
         bp = self._board_params()
@@ -1146,11 +1193,33 @@ class CalibrationView(QWidget):
             marker_bits=bp["marker_bits"],
             dict_size=bp["dict_size"],
         )
-        rows_list = [self._all_rows.get(cam, []) for cam in self._project.cameras]
-        mean_error, self._frame_errors = compute_frame_errors(
-            cgroup, board, rows_list, self._project.cameras
+        rows_by_cam = rows_in_range(self._all_rows, self._takes)
+        if takes is not None:
+            rows_by_cam = {
+                cam: [r for r in rows if r["framenum"][0] in takes]
+                for cam, rows in rows_by_cam.items()
+            }
+        cams = self._project.cameras
+        rows_list = [rows_by_cam.get(cam, []) for cam in cams]
+        mean_error, frame_errors = compute_frame_errors(cgroup, board, rows_list, cams)
+        self._frame_errors = rekey_frame_errors(
+            frame_errors, rows_by_cam, cams, self._merged_rows
         )
         self._error_label.setText(f"Reprojection error: {mean_error:.3f} px")
+
+    def _solved_takes(self) -> list[str] | None:
+        """Charuco takes behind the active calibration (None: unknown, use all).
+
+        A refined or aligned entry is traced back through its parents to the
+        charuco solution it started from.
+        """
+        exp_dir = self._project.root / "experiments" / self._project.active_experiment
+        entry: CalibrationEntry | None = self._project.active_calibration()
+        seen: set[str] = set()
+        while entry is not None and entry.method != "charuco" and entry.id not in seen:
+            seen.add(entry.id)
+            entry = find_calibration(exp_dir, entry.parent) if entry.parent else None
+        return entry.charuco_takes if entry is not None else None
 
     # ── Experiment reload ─────────────────────────────────────────────────
 
@@ -1218,13 +1287,14 @@ class CalibrationView(QWidget):
         # Without saved corners the provider already holds the raw take frames
         # that _load_take_media() set up.
 
-        # Load existing calibration to show reprojection errors
+        # Load the active calibration to show reprojection errors on the
+        # corners it was solved from
         calib_path = self._project.calibration_path()
         if calib_path is not None and has_corners:
             try:
                 cgroup = CameraGroup.load(str(calib_path))  # type: ignore[arg-type]
                 self._apply_calibration(cgroup)
-                self._apply_frame_errors(cgroup)
+                self._apply_frame_errors(cgroup, self._solved_takes())
             except Exception as exc:
                 self._log_msg(f"  Warning: could not load calibration: {exc}")
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -14,108 +15,149 @@ from aniposelib.boards import merge_rows
 logger = logging.getLogger(__name__)
 
 
-def corners_path(cam_dir: Path, take: str | None = None) -> Path:
-    """Path to a camera's corners file.
+# corners.csv columns. One file per camera holds every take's detections;
+# `detected` is the time of the detection run that produced a take's rows.
+CORNER_COLUMNS = ["take", "frame", "corner_id", "x", "y", "detected"]
 
-    One take: corners_{take}.csv. The joint solution, or whichever single take
-    the user selects as final: corners.csv.
-    """
-    return cam_dir / (f"corners_{take}.csv" if take else "corners.csv")
+# Pre-Phase 11 layout: corners.csv plus corners_{take}.csv, keyed by a
+# "{take}:{frame}" source_key. Read once and rewritten as CORNER_COLUMNS.
+_LEGACY_KEY = "source_key"
 
 
-def save_corners(cam_dir: Path, rows: list[dict], take: str | None = None) -> None:
-    """Save detected Charuco corners for one camera.
+def corners_path(cam_dir: Path) -> Path:
+    """Path to a camera's corners file."""
+    return cam_dir / "corners.csv"
 
-    Schema: source_key (str), corner_id (int), x (float), y (float).
-    source_key is "{take}:{frame_in_video}" for video-based calibration, or an
-    image basename for the deprecated image path.
-    """
+
+def _rows_to_df(rows: list[dict], detected: str) -> pd.DataFrame:
     records = []
     for row in rows:
-        fname = row.get("fname")
         framenum = row.get("framenum")
-
-        if framenum is not None and isinstance(framenum, tuple):
-            take_name, fi = framenum
-            source_key = f"{take_name}:{fi}"
-        elif fname is not None:
-            source_key = Path(fname).name
-        elif framenum is not None:
-            source_key = f"{take or ''}:{int(framenum)}"
-        else:
+        ids, corners = row.get("ids"), row.get("corners")
+        if not isinstance(framenum, tuple) or ids is None or corners is None:
             continue
-
-        ids = row.get("ids")
-        corners = row.get("corners")
-        if ids is None or corners is None:
-            continue
-
+        take, frame = framenum
         ids_flat = np.asarray(ids, dtype=np.int32).ravel()
         corners_flat = np.asarray(corners, dtype=np.float32).reshape(-1, 2)
-
         for corner_id, (x, y) in zip(ids_flat, corners_flat):
-            records.append({
-                "source_key": source_key,
-                "corner_id": int(corner_id),
-                "x": float(x),
-                "y": float(y),
-            })
-
-    df = pd.DataFrame(records, columns=["source_key", "corner_id", "x", "y"])
-    df.to_csv(corners_path(cam_dir, take), index=False)
+            records.append((str(take), int(frame), int(corner_id), float(x), float(y), detected))
+    return pd.DataFrame(records, columns=CORNER_COLUMNS)
 
 
-def load_corners(cam_dir: Path, take: str | None = None) -> list[dict] | None:
-    """Load saved Charuco corners for one camera.
-
-    Returns a list of row dicts compatible with aniposelib's merge_rows —
-    each dict has 'corners' (N,1,2), 'ids' (N,1), and either 'fname' (Path)
-    or 'framenum' (a (take, frame) tuple). Returns None if the file is absent.
-    """
-    csv_path = corners_path(cam_dir, take)
+def _read_corners_df(cam_dir: Path) -> pd.DataFrame | None:
+    """The corners file as a DataFrame, converting the legacy layout if found."""
+    csv_path = corners_path(cam_dir)
     if not csv_path.exists():
         return None
-
     try:
-        df = pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path, dtype={"take": str})
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame(columns=CORNER_COLUMNS)
     except Exception as exc:
         logger.warning("Failed to load corners from %s: %s", csv_path, exc)
         return None
+    if _LEGACY_KEY in df.columns:
+        df = _migrate_legacy_corners(cam_dir)
+    return df
 
+
+def _migrate_legacy_corners(cam_dir: Path) -> pd.DataFrame:
+    """Merge corners.csv and corners_{take}.csv into the new single file.
+
+    The old files hold the same detections in different subsets, so rows are
+    de-duplicated on (take, frame, corner_id). `detected` is each file's
+    modification time. The per-take files are left where they are.
+    """
+    frames = []
+    for path in [corners_path(cam_dir), *sorted(cam_dir.glob("corners_*.csv"))]:
+        try:
+            old = pd.read_csv(path, dtype={_LEGACY_KEY: str})
+        except Exception:
+            continue
+        if _LEGACY_KEY not in old.columns or old.empty:
+            continue
+        parts = old[_LEGACY_KEY].str.rsplit(":", n=1, expand=True)
+        if parts.shape[1] != 2:
+            continue
+        ok = parts[1].str.isdigit().fillna(False)
+        old, parts = old[ok], parts[ok]
+        detected = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+        frames.append(pd.DataFrame({
+            "take": parts[0].to_numpy(),
+            "frame": parts[1].astype(int).to_numpy(),
+            "corner_id": old["corner_id"].astype(int).to_numpy(),
+            "x": old["x"].to_numpy(),
+            "y": old["y"].to_numpy(),
+            "detected": detected,
+        }))
+    if frames:
+        df = pd.concat(frames, ignore_index=True)
+        df = df.drop_duplicates(["take", "frame", "corner_id"], keep="first")
+    else:
+        df = pd.DataFrame(columns=CORNER_COLUMNS)
+    df.to_csv(corners_path(cam_dir), index=False)
+    logger.info("Converted %s to the single-file corners layout", cam_dir)
+    return df
+
+
+def save_corners(
+    cam_dir: Path,
+    rows: list[dict],
+    detected: datetime | str,
+    takes: list[str] | None = None,
+) -> None:
+    """Save detected Charuco corners for one camera.
+
+    Replaces the rows of `takes` (default: the takes present in `rows`) and
+    keeps every other take's rows. Each row needs 'framenum' = (take, frame),
+    'ids' and 'corners', as aniposelib's detection produces them.
+    """
+    if isinstance(detected, datetime):
+        detected = detected.isoformat(timespec="seconds")
+    new = _rows_to_df(rows, detected)
+    if takes is None:
+        takes = sorted(set(new["take"]))
+    old = _read_corners_df(cam_dir)
+    if old is not None and not old.empty:
+        old = old[~old["take"].astype(str).isin(takes)]
+        new = pd.concat([old, new], ignore_index=True) if not new.empty else old
+    new.to_csv(corners_path(cam_dir), index=False)
+
+
+def corner_detections(cam_dir: Path) -> dict[str, str]:
+    """take -> timestamp of the detection run its saved corners came from."""
+    df = _read_corners_df(cam_dir)
+    if df is None or df.empty:
+        return {}
+    return {str(t): str(d) for t, d in df.groupby("take")["detected"].first().items()}
+
+
+def load_corners(cam_dir: Path, takes: list[str] | None = None) -> list[dict] | None:
+    """Load saved Charuco corners for one camera, optionally only some takes.
+
+    Returns a list of row dicts compatible with aniposelib's merge_rows —
+    each dict has 'corners' (N,1,2), 'ids' (N,1) and 'framenum', a
+    (take, frame) tuple. Returns None if the file is absent.
+    """
+    df = _read_corners_df(cam_dir)
+    if df is None:
+        return None
+    if takes is not None:
+        df = df[df["take"].astype(str).isin([str(t) for t in takes])]
     if df.empty:
         return []
 
-    # Collect unique source_keys in original order
-    seen: list[str] = []
-    for key in df["source_key"].astype(str):
-        if key not in seen:
-            seen.append(key)
-
     rows: list[dict] = []
-    for i, source_key in enumerate(seen):
-        group = df[df["source_key"].astype(str) == source_key]
+    for (take, frame), group in df.groupby(["take", "frame"], sort=False):
         ids_arr = group["corner_id"].to_numpy(dtype=np.int32)
         xs = group["x"].to_numpy(dtype=np.float32)
         ys = group["y"].to_numpy(dtype=np.float32)
-
         n = len(ids_arr)
-        corners = np.column_stack([xs, ys]).reshape(n, 1, 2)
-        ids = ids_arr.reshape(n, 1)
-
-        row: dict = {"corners": corners, "ids": ids}
-
-        # Reconstruct source reference: "{take}:{frame}" → video frame, else an
-        # image basename from the deprecated image path. merge_rows always keys
-        # on 'framenum', so image rows fall back to the sequence index.
-        parts = source_key.rsplit(":", 1)
-        if len(parts) == 2 and parts[1].isdigit():
-            row["framenum"] = (parts[0], int(parts[1]))
-        else:
-            row["framenum"] = i
-            row["fname"] = cam_dir / source_key
-
-        rows.append(row)
-
+        rows.append({
+            "corners": np.column_stack([xs, ys]).reshape(n, 1, 2),
+            "ids": ids_arr.reshape(n, 1),
+            "framenum": (str(take), int(frame)),
+        })
     return rows
 
 
