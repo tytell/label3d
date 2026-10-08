@@ -2,7 +2,7 @@
 
 **Goal**: After a sync with SLEAP, show the user which points are new and where every point came from. There are three sources: labelled by a user in label3d, labelled by a user in SLEAP, and predicted by SLEAP. Mark frames with new points on the frame slider, mark the points themselves in the camera views, and add ways to jump to new frames and accept them.
 
-**Status**: Implemented on branch `new_points`; awaiting UI testing. See *As implemented* at the end.
+**Status**: Complete. See *As implemented* at the end.
 
 **Compatibility**: The `points.csv` schema changes with no fallback. When an old file is read, the missing columns are filled in. Existing points get `source = label3d`, and there's no attempt to work out where they came from.
 
