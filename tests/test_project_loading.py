@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import toml
 
-from label3d.project import Project
+from label3d.calibration_registry import import_legacy
+from label3d import project as project_module
+from label3d.project import LoadCancelled, Project
 from tests.conftest import TEST_PROJECT, requires_test_project
 
 
@@ -172,3 +176,86 @@ def _copy_project_without(src: Path, dst: Path, exclude: set[str]) -> None:
         target = dst / rel
         if target.exists():
             target.unlink()
+
+
+class TestInterruptedLegacyImport:
+    def test_registry_without_pointer_gets_one(self, tmp_path):
+        """A load killed after the registry was written but before project.toml."""
+        _copy_project_without(TEST_PROJECT, tmp_path, exclude=set())
+        exp_dir = tmp_path / "experiments/exp1"
+        shutil.rmtree(exp_dir / "calibrations")
+        shutil.copy(next((TEST_PROJECT / "experiments/exp1/calibrations").glob("*.toml")),
+                    exp_dir / "calibration.toml")
+        import_legacy(exp_dir)   # registry written, pointer never saved
+        config = toml.load(tmp_path / "project.toml")
+        config["calibration"]["active"].pop("exp1")
+        config["calibration"]["triangulated_with"].pop("exp1")
+        (tmp_path / "project.toml").write_text(toml.dumps(config))
+
+        proj = Project.load(tmp_path)
+        assert proj.active_calibration("exp1").metadata["source_path"] == "calibration.toml"
+        assert proj.triangulation_is_stale("exp1")
+
+
+class TestVideoCheck:
+    """Blank end frames and video mtimes are filled in once and written back."""
+
+    def _project(self, tmp_path):
+        _copy_project_without(TEST_PROJECT, tmp_path, exclude=set())
+        df = pd.read_csv(tmp_path / "trials.csv")
+        df = df[[c for c in df.columns if not c.endswith(("_end", "_mtime"))]]
+        df.to_csv(tmp_path / "trials.csv", index=False)
+        (tmp_path / "trials.csv.bak").unlink(missing_ok=True)
+        return tmp_path
+
+    def test_fills_ends_and_mtimes(self, tmp_path):
+        root = self._project(tmp_path)
+        proj = Project.load(root)
+        df = pd.read_csv(root / "trials.csv")
+        assert df["cam1_end"].tolist() == [9, 9]
+        assert df["cam1_mtime"].str.endswith("Z").all()
+        assert list(df.columns[:6]) == [
+            "experiment", "trial", "cam1", "cam1_start", "cam1_end", "cam1_mtime",
+        ]
+        assert proj.cameras == ["cam1", "cam2", "cam3"]   # _mtime is not a camera
+        assert proj.trial_length("trial1") == 10
+        assert (root / "trials.csv.bak").exists()
+        assert proj.video_warnings == []
+
+    def test_second_load_does_not_open_videos(self, tmp_path, monkeypatch):
+        root = self._project(tmp_path)
+        Project.load(root)
+        before = (root / "trials.csv").read_text()
+
+        def fail(path):
+            raise AssertionError(f"opened {path}")
+
+        monkeypatch.setattr(project_module, "_frame_count", fail)
+        proj = Project.load(root)
+        assert proj.trial_length("trial1") == 10
+        assert (root / "trials.csv").read_text() == before
+
+    def test_changed_video_is_a_warning(self, tmp_path):
+        root = self._project(tmp_path)
+        Project.load(root)
+        video = root / "experiments/exp1/videos/cam2_exp1_trial1.mp4"
+        os.utime(video, (0, 1_000_000))
+        proj = Project.load(root)
+        assert len(proj.video_warnings) == 1
+        assert "cam2_exp1_trial1.mp4" in proj.video_warnings[0]
+
+    def test_progress_and_cancel(self, tmp_path):
+        root = self._project(tmp_path)
+        calls = []
+
+        def progress(done, total, text):
+            calls.append((done, total, text))
+            return True
+
+        Project.load(root, progress=progress)
+        assert calls[0][:2] == (0, 6)
+        assert calls[0][2].startswith("Measuring videos: exp1/trial1")
+        assert calls[-1][:2] == (6, 6)
+
+        with pytest.raises(LoadCancelled):
+            Project.load(self._project(tmp_path / "again"), progress=lambda *a: False)

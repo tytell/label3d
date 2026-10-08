@@ -15,7 +15,7 @@ import toml
 from aniposelib.cameras import CameraGroup
 
 from label3d.calibration_registry import save_calibration
-from label3d.project import Project
+from label3d.project import Project, check_trial_videos, write_trials_csv
 from label3d.slp_sync import SlpMapping
 
 logger = logging.getLogger(__name__)
@@ -764,6 +764,7 @@ def _blank_row(
         row[cam] = ""
         row[f"{cam}_start"] = ""
         row[f"{cam}_end"] = ""
+        row[f"{cam}_mtime"] = ""
     return row
 
 
@@ -916,9 +917,15 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     if trials_rows:
         columns = ["experiment", "trial", "is_calibration"]
         for cam in config.camera_names:
-            columns.extend([cam, f"{cam}_start", f"{cam}_end"])
+            columns.extend([cam, f"{cam}_start", f"{cam}_end", f"{cam}_mtime"])
         df = pd.DataFrame(trials_rows, columns=columns)
-        df.to_csv(out / "trials.csv", index=False)
+        # Record each video's last frame and modification time now, so the
+        # first open doesn't have to measure them.
+        roots = {
+            exp: Path(root) for exp, root in (assignment.video_roots if reference else {}).items()
+        }
+        check_trial_videos(df, out, roots, config.camera_names)
+        write_trials_csv(out / "trials.csv", df, backup=False)
 
     # Move/copy SLP files (deduplicate: one slp_path may cover multiple trial+camera pairs).
     # In reference mode the .slp files are copied, not moved: the source folder

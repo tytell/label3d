@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import sleap_io as sio
 import toml
@@ -163,6 +164,15 @@ class TestExecute:
         out = execute_setup(config, classify_slp_files(config))
         text = (out / "trials.csv").read_text()
         assert "cam1_Trial1.mp4" in text
+
+    def test_trials_csv_records_end_frames_and_mtimes(self, source):
+        """Setup measures the referenced videos, so the first open needn't."""
+        config = _config(source)
+        out = execute_setup(config, classify_slp_files(config))
+        df = pd.read_csv(out / "trials.csv")
+        assert (df["cam1_end"] == 4).all()      # _make_video writes 5 frames
+        assert df["cam1_mtime"].str.endswith("Z").all()
+        assert not (out / "trials.csv.bak").exists()
 
     def test_project_toml_records_video_root(self, source):
         config = _config(source)

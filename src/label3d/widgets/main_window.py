@@ -1453,7 +1453,27 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, self._apply_deferred_session)
             if self._startup_read_pending:
                 self._startup_read_pending = False
-                QTimer.singleShot(0, self._read_slp_on_open)
+                QTimer.singleShot(0, self._after_startup)
+
+    def _after_startup(self) -> None:
+        """Startup dialogs, one after another: a timer firing inside one
+        dialog's event loop would stack the next one under it."""
+        if self._project.video_warnings:
+            self._warn_changed_videos()
+        self._read_slp_on_open()
+
+    def _warn_changed_videos(self) -> None:
+        """Videos modified since their frame range was recorded in trials.csv."""
+        warnings = self._project.video_warnings
+        shown = warnings[:20]
+        more = f"\n…and {len(warnings) - len(shown)} more" if len(warnings) > len(shown) else ""
+        QMessageBox.warning(
+            self,
+            "Videos have changed",
+            f"{len(warnings)} video(s) were modified after trials.csv recorded them. "
+            "Their frame ranges and labels may no longer line up.\n\n"
+            + "\n".join(shown) + more,
+        )
 
     def _sync_on_close(self) -> bool:
         """Read, merge and write the SLP files on the main thread.  False = cancelled."""

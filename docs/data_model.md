@@ -150,10 +150,12 @@ spread_baseline_pct = 0.1
 | PS19 | trial1 | False | cam0_t1.mp4 | 0 | 600 | cam1_t1.mp4 | 0 | 600 | … |
 
 - `_start` / `_end`: frame indices into the video file (inclusive). Blank = start (0) / end of file.
+- `_mtime`: the video's modification time when its `_end` was recorded (UTC, `2026-07-23T22:52:38Z`).
+- **Filled in on load.** `Project.load()` checks every video (`check_trial_videos`). A blank `_end` is set to the video's last frame, and a blank `_mtime` to its modification time, and `trials.csv` is rewritten (the original is kept once as `trials.csv.bak`). Counting frames means opening each video, which is slow on a network share, so this happens once; later loads only check that each file exists and compare its time. A video whose time differs from `_mtime` gets a warning when the project opens, and nothing is changed. Project setup fills both columns when it writes `trials.csv`. The app shows a progress dialog when opening takes more than half a second.
 - The per-camera offset is **implicit**: global frame `N` maps to video frame `_start + N` for each camera.
 - **Trial length** = `min(_end_i - _start_i + 1)` across all cameras. Blank `_end` resolved via `cv2.CAP_PROP_FRAME_COUNT`.
 - Camera ID columns must match the `name` field values in the calibration files.
-- Any column that is not `experiment`, `trial`, `is_calibration`, or a `*_start` / `*_end` suffix is taken to be a camera name — new metadata columns must be added to `project.NON_CAMERA_COLUMNS`.
+- Any column that is not `experiment`, `trial`, `is_calibration`, or a `*_start` / `*_end` / `*_mtime` suffix is taken to be a camera name — new metadata columns must be added to `project.NON_CAMERA_COLUMNS`, new per-camera suffixes to `project.CAMERA_COLUMN_SUFFIXES`.
 
 **Calibration takes** (`is_calibration = True`): a take is one synchronized calibration recording, typically one before and one after the trials. The `trial` column holds the take name (from the calibration keyword, e.g. `PreCal`). Takes reuse the camera / `_start` / `_end` triples, so a take can be trimmed to the segment where the board is visible. Take videos resolve relative to `experiments/{experiment}/calibration/{camera}/`; trial videos relative to `experiments/{experiment}/videos/`. Takes are excluded from `Project.trials` and from SLP cell matching.
 

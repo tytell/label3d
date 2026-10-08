@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -25,6 +26,28 @@ from label3d.calibration_registry import (
 from label3d.points import PointsStore
 from label3d.skeleton import Skeleton
 from label3d.slp_sync import MergeResult, SlpMapping, compute_merge
+
+
+# Per-camera trials.csv columns: {cam}_start, {cam}_end, {cam}_mtime. Any other
+# column that is not in NON_CAMERA_COLUMNS is a camera name.
+CAMERA_COLUMN_SUFFIXES = ("_start", "_end", "_mtime")
+
+# Called as progress(done, total, text) while videos are checked on load;
+# returning False cancels the load (Project.load raises LoadCancelled).
+ProgressCallback = Callable[[int, int, str], bool]
+
+
+class LoadCancelled(Exception):
+    """Project.load was cancelled through its progress callback."""
+
+
+@dataclass
+class VideoCheck:
+    """Result of check_trial_videos."""
+
+    changed: bool = False                               # trials_df was filled in
+    missing: list[str] = field(default_factory=list)    # external references not found
+    mismatched: list[str] = field(default_factory=list) # videos modified since recorded
 
 
 # triangulated_with value for experiments whose 3D points predate the
@@ -89,13 +112,21 @@ class Project:
     config: dict = field(default_factory=dict)  # from project.toml
     experiments: dict[str, ExperimentInfo] = field(default_factory=dict)
     active_experiment: str = ""
+    # Videos whose modification time differs from the one in trials.csv
+    video_warnings: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._attach_latest_sync()
 
     @classmethod
-    def load(cls, path: Path) -> Project:
-        """Load a project from a directory."""
+    def load(cls, path: Path, progress: ProgressCallback | None = None) -> Project:
+        """Load a project from a directory.
+
+        Every video in trials.csv is checked first (check_trial_videos): blank
+        end frames and modification times are measured and written back, so
+        later loads don't open the videos. progress, if given, is called once
+        per video; returning False raises LoadCancelled.
+        """
         root = Path(path)
         if not root.is_dir():
             raise FileNotFoundError(f"Project directory not found: {root}")
@@ -123,6 +154,19 @@ class Project:
             for name, value in config.get("video_roots", {}).items()
         }
 
+        # Videos referenced outside the project must exist — a broken reference
+        # is a stale [video_roots] entry or an unmounted drive, and failing here
+        # names the trial and path instead of failing later inside OpenCV.
+        check = check_trial_videos(trials_df, root, video_roots, cameras, progress)
+        if check.missing:
+            raise FileNotFoundError(
+                "Referenced videos not found:\n  "
+                + "\n  ".join(check.missing)
+                + "\nCheck the [video_roots] section of project.toml."
+            )
+        if check.changed:
+            write_trials_csv(trials_path, trials_df)
+
         # --- Build ExperimentInfo for each experiment ---
         if "experiment" in trials_df.columns:
             experiment_names = sorted(trials_df["experiment"].unique().tolist())
@@ -130,7 +174,6 @@ class Project:
             experiment_names = ["default"]
 
         experiments: dict[str, ExperimentInfo] = {}
-        missing: list[str] = []
         config_changed = False
         for exp_name in experiment_names:
             exp_dir = root / "experiments" / exp_name
@@ -146,9 +189,6 @@ class Project:
             video_root = video_roots.get(exp_name)
             for trial in exp_trials:
                 _resolve_trial_length(trial, videos_dir, video_root, root)
-            missing.extend(
-                _missing_references(exp_name, exp_trials, video_root, videos_dir, root)
-            )
 
             # Calibration take videos live under calibration/{cam}/, not
             # videos/, so their lengths are resolved on demand instead.
@@ -167,16 +207,6 @@ class Project:
                 camera_info=camera_info,
                 calibration_takes=exp_takes,
                 video_root=video_root,
-            )
-
-        # Videos referenced outside the project must exist — a broken reference
-        # is a stale [video_roots] entry or an unmounted drive, and failing here
-        # names the trial and path instead of failing later inside OpenCV.
-        if missing:
-            raise FileNotFoundError(
-                "Referenced videos not found:\n  "
-                + "\n  ".join(missing)
-                + "\nCheck the [video_roots] section of project.toml."
             )
 
         if config_changed:
@@ -217,6 +247,7 @@ class Project:
             config=config,
             experiments=experiments,
             active_experiment=active_experiment,
+            video_warnings=check.mismatched,
         )
 
     def video_path(self, trial_name: str, camera: str) -> Path:
@@ -619,6 +650,10 @@ def _import_legacy_calibrations(config: dict, experiment: str, exp_dir: Path) ->
     when config was changed (the caller writes it).
     """
     entries = import_legacy(exp_dir)
+    if not entries and _pointer(config, "active", experiment) is None:
+        # An import interrupted before project.toml was written leaves the
+        # registry without a pointer; finish it.
+        entries = list_calibrations(exp_dir)
     active = next(
         (e for e in entries if e.metadata.get("source_path") == LEGACY_CALIBRATION), None
     )
@@ -654,7 +689,7 @@ NON_CAMERA_COLUMNS = ("trial", "experiment", "is_calibration")
 def _extract_cameras(columns: list[str]) -> list[str]:
     """Extract ordered camera names from trials.csv columns.
 
-    Skips NON_CAMERA_COLUMNS and any *_start / *_end suffix columns. Anything
+    Skips NON_CAMERA_COLUMNS and any CAMERA_COLUMN_SUFFIXES columns. Anything
     else is taken to be a camera, so every new metadata column must be added to
     NON_CAMERA_COLUMNS or it becomes a phantom camera.
     """
@@ -662,7 +697,7 @@ def _extract_cameras(columns: list[str]) -> list[str]:
     for col in columns:
         if col in NON_CAMERA_COLUMNS:
             continue
-        if col.endswith("_start") or col.endswith("_end"):
+        if col.endswith(CAMERA_COLUMN_SUFFIXES):
             continue
         cameras.append(col)
     return cameras
@@ -748,28 +783,133 @@ def _is_external_cell(cell: str, video_root: Path | None) -> bool:
     return video_root is not None or len(Path(cell).parts) > 1 or Path(cell).is_absolute()
 
 
-def _missing_references(
-    experiment: str,
-    trials: list[TrialInfo],
-    video_root: Path | None,
-    videos_dir: Path,
-    project_root: Path,
-) -> list[str]:
-    """Describe every external video reference that does not exist on disk.
+def _video_mtime(path: Path) -> str | None:
+    """A video's modification time as stored in trials.csv (UTC, to the second),
+    or None if it can't be read. One stat call, which also tells if it exists."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return datetime.fromtimestamp(int(st.st_mtime), tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
-    Only external references are checked: a bare filename under videos/ may be
-    legitimately absent (a trial one camera did not record), and those projects
-    predate this check.
+
+def _frame_count(path: Path) -> int:
+    cap = cv2.VideoCapture(str(path))
+    try:
+        return int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
+    finally:
+        cap.release()
+
+
+def _take_video_path(
+    cell: str, video_root: Path | None, calib_dir: Path, project_root: Path
+) -> Path:
+    """Where a calibration take's video is (see Project.video_path)."""
+    local = calib_dir / cell
+    if local.exists():
+        return local
+    return _resolve_video(cell, video_root, calib_dir, project_root)
+
+
+def check_trial_videos(
+    trials_df: pd.DataFrame,
+    root: Path,
+    video_roots: dict[str, Path],
+    cameras: list[str],
+    progress: ProgressCallback | None = None,
+) -> VideoCheck:
+    """Check every video in trials.csv, filling in what's missing (in place).
+
+    For each camera cell: a blank {cam}_end is set to the video's last frame,
+    and a blank {cam}_mtime to its modification time. Opening a video to count
+    frames is slow on a network share, so this happens once; later loads only
+    stat each file. A stored mtime that no longer matches is reported in
+    `mismatched` and left as it is. External references that don't exist are
+    reported in `missing`; a bare filename under videos/ may be legitimately
+    absent (a trial one camera did not record).
     """
-    problems = []
-    for trial in trials:
-        for cam, (filename, _, _) in trial.camera_videos.items():
-            if not _is_external_cell(filename, video_root):
-                continue
-            path = _resolve_video(filename, video_root, videos_dir, project_root)
-            if not path.exists():
-                problems.append(f"{experiment}/{trial.name} [{cam}]: {path}")
-    return problems
+    # Missing columns go in the usual order: cam, _start, _end, _mtime.
+    for cam in cameras:
+        previous = cam
+        for suffix in CAMERA_COLUMN_SUFFIXES:
+            column = f"{cam}{suffix}"
+            if column not in trials_df.columns:
+                position = trials_df.columns.get_loc(previous) + 1
+                trials_df.insert(position, column, 0 if suffix == "_start" else None)
+            previous = column
+        for suffix in ("_end", "_mtime"):
+            trials_df[f"{cam}{suffix}"] = trials_df[f"{cam}{suffix}"].astype(object)
+
+    is_calibration = (
+        _calibration_mask(trials_df) if "is_calibration" in trials_df.columns
+        else pd.Series(False, index=trials_df.index)
+    )
+    cells = [
+        (idx, cam) for idx in trials_df.index for cam in cameras
+        if not _is_blank_cell(str(trials_df.at[idx, cam]))
+    ]
+
+    check = VideoCheck()
+    for done, (idx, cam) in enumerate(cells):
+        row = trials_df.loc[idx]
+        exp = str(row["experiment"]) if "experiment" in trials_df.columns else "default"
+        trial = str(row["trial"])
+        cell = str(row[cam])
+        exp_dir = root / "experiments" / exp
+        video_root = video_roots.get(exp)
+        end_blank = pd.isna(row[f"{cam}_end"]) or row[f"{cam}_end"] == ""
+
+        if progress is not None:
+            verb = "Measuring" if end_blank else "Checking"
+            if not progress(done, len(cells), f"{verb} videos: {exp}/{trial} [{cam}]"):
+                raise LoadCancelled()
+
+        if is_calibration[idx]:
+            path = _take_video_path(cell, video_root, exp_dir / "calibration" / cam, root)
+        else:
+            path = _resolve_video(cell, video_root, exp_dir / "videos", root)
+        mtime = _video_mtime(path)
+        if mtime is None:
+            if not is_calibration[idx] and _is_external_cell(cell, video_root):
+                check.missing.append(f"{exp}/{trial} [{cam}]: {path}")
+            continue
+
+        stored = row[f"{cam}_mtime"]
+        if pd.isna(stored) or stored == "":
+            trials_df.at[idx, f"{cam}_mtime"] = mtime
+            check.changed = True
+        elif str(stored) != mtime:
+            check.mismatched.append(
+                f"{exp}/{trial} [{cam}]: {path.name} (recorded {stored}, now {mtime})"
+            )
+
+        if end_blank:
+            total = _frame_count(path)
+            if total > 0:
+                trials_df.at[idx, f"{cam}_end"] = total - 1
+                check.changed = True
+
+    if progress is not None:
+        progress(len(cells), len(cells), "Opening project…")
+    return check
+
+
+def write_trials_csv(path: Path, trials_df: pd.DataFrame, backup: bool = True) -> None:
+    """Write trials.csv, keeping frame numbers as integers.
+
+    With backup, the first rewrite of an existing file keeps the original as
+    trials.csv.bak.
+    """
+    backup_path = path.with_name(path.name + ".bak")
+    if backup and path.exists() and not backup_path.exists():
+        shutil.copy2(path, backup_path)
+    out = trials_df.copy()
+    for col in out.columns:
+        if str(col).endswith(("_start", "_end")):
+            out[col] = pd.to_numeric(out[col], errors="coerce").astype("Int64")
+    out.to_csv(path, index=False)
 
 
 def _resolve_trial_length(
