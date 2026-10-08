@@ -129,7 +129,7 @@ Field by field:
   `node_offsets_cm` inline. It must match the `.slp` files' skeleton (same
   nodes, edges and symmetries) or setup stops with an error; a matching one wins,
   so its node order and offsets are kept. Needed for a flat folder with no
-  `.slp` files, or add one later with **File > Load Skeleton…**.
+  `.slp` files, or add one later with **File > Load skeleton...**.
 
 ## 4. Run it
 

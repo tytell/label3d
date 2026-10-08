@@ -629,7 +629,7 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
         source = "setup file" if config.skeleton is not None else ".slp files"
         lines.append(f"Skeleton: {', '.join(assignment.skeleton['nodes'])} (from {source})")
     else:
-        lines.append("Skeleton: none (add one later with File > Load Skeleton…)")
+        lines.append("Skeleton: none (add one later with File > Load skeleton...)")
     strategy_str = config.match_strategy
     if config.match_strategy == "keyword":
         strategy_str += f" (keyword={config.trial_keyword!r})"
