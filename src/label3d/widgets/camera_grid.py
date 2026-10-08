@@ -269,16 +269,29 @@ class CameraGrid(QWidget):
             panel.fit_view()
 
     def zoom_to_instance(self, instance: int):
-        """Zoom the target panels to the visible points of one instance."""
+        """Zoom the target panels to the placed points of one instance.
+
+        A camera where the instance has no placed points shows the whole image.
+        """
         for panel in self._zoom_targets():
-            panel.zoom_to_points(panel.skeleton_overlay.visible_points(instance))
+            points = panel.skeleton_overlay.placed_points(instance)
+            if points:
+                panel.zoom_to_points(points)
+            else:
+                panel.fit_view()
 
     def zoom_to_point(self, instance: int, bodypart: str):
-        """Zoom the target panels to a small box around one point."""
+        """Zoom the target panels to a small box around one point.
+
+        A camera where the point isn't placed (not set, or not visible) shows
+        the whole image.
+        """
         for panel in self._zoom_targets():
-            item = panel.skeleton_overlay.get_point_item(instance, bodypart)
-            if item is not None and item.isVisible():
-                panel.zoom_to_point(item.pos())
+            point = panel.skeleton_overlay.placed_point(instance, bodypart)
+            if point is not None:
+                panel.zoom_to_point(point)
+            else:
+                panel.fit_view()
 
     def get_panel(self, camera: str) -> CameraPanel | None:
         return self._panels.get(camera)
