@@ -29,7 +29,7 @@ Config file format (TOML):
     video_mode = "reference"                 # "reference" | "copy" | "move"
     video_search_dirs = ["/mnt/videos"]      # searched when a recorded path moved
     allow_missing_videos = false             # true: proceed with the videos that were found
-    calibration_toml = "/path/calibration.toml"   # or calibration_dir to search
+    calibration_toml = "/path/calibration.toml"   # aniposelib file, imported into the registry; or calibration_dir
     import_labels = true                     # import SLP labels into points.csv
 
     [project]
@@ -272,8 +272,9 @@ def run_interactive_slp(dry_run: bool = False, do_import: bool = True) -> None:
 
     print()
     print("--- Calibration ---")
-    print("  A calibration.toml or calibration videos beside the .slp files are")
-    print("  found automatically. Give another folder here, or leave blank.")
+    print("  An aniposelib calibration .toml or calibration videos beside the .slp")
+    print("  files are found automatically. A .toml is imported into the project's")
+    print("  calibration registry. Give another folder here, or leave blank.")
     calib_raw = input("Calibration file or folder (blank to auto-detect): ").strip()
     calibration_toml = None
     calibration_dir = None
@@ -673,7 +674,10 @@ def main() -> None:
         help="Set up the project from the videos that were found, leaving the "
         "cameras whose videos are missing blank in trials.csv",
     )
-    slp.add_argument("--calibration", help="calibration.toml, or a folder to search")
+    slp.add_argument(
+        "--calibration",
+        help="aniposelib calibration .toml (imported into the registry), or a folder to search",
+    )
     slp.add_argument(
         "--no-import",
         action="store_true",

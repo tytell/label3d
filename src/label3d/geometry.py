@@ -14,6 +14,8 @@ import cv2
 import numpy as np
 import toml
 
+from label3d.calibration_registry import CalibrationEntry, save_calibration
+
 if TYPE_CHECKING:
     from label3d.points import PointsStore
 
@@ -419,38 +421,22 @@ def apply_alignment_to_cameras(
 
 def save_aligned_calibration(
     cameras: dict[str, "CameraParams"],
-    path: "Path",
+    exp_dir: "Path",
     R_align: np.ndarray,
     origin: np.ndarray,
-) -> None:
-    """Write calibration.toml with aligned camera extrinsics.
+    parent: str,
+    label: str = "align",
+) -> CalibrationEntry:
+    """Save aligned camera extrinsics as an "align" registry entry.
 
-    The file follows the aniposelib CameraGroup.dump() format so that
-    CameraGroup.load() can read it directly.  An extra [alignment] section
-    records the rotation matrix and origin used, purely for reference.
+    parent is the id of the calibration that was aligned. The rotation matrix
+    and origin go under [metadata.alignment]: CameraGroup.load() would read a
+    top-level [alignment] table as a camera.
     """
-    import toml as _toml
-
-    data: dict = {}
-    for i, name in enumerate(sorted(cameras.keys())):
-        cp = cameras[name]
-        section = f"cam_{i}"
-        data[section] = {
-            "name": cp.name,
-            "size": list(cp.size),
-            "matrix": cp.matrix.tolist(),
-            "distortions": cp.dist.tolist(),
-            "rotation": cp.rvec.ravel().tolist(),
-            "translation": cp.tvec.ravel().tolist(),
-        }
-
-    data["alignment"] = {
-        "origin": origin.tolist(),
-        "R_align": R_align.tolist(),
-    }
-
-    with open(path, "w") as fh:
-        _toml.dump(data, fh)
+    return save_calibration(
+        exp_dir, build_camera_group(cameras), label, "align", parent=parent,
+        alignment={"origin": np.asarray(origin).tolist(), "R_align": np.asarray(R_align).tolist()},
+    )
 
 
 # -- Triangulation (frame-level, for labeling) ---------------------------------

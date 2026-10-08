@@ -20,6 +20,7 @@ from label3d.calibration_registry import (
     rename_calibration,
     save_calibration,
 )
+from label3d.geometry import cameras_from_cgroup, save_aligned_calibration
 
 CAMERAS = ["cam0", "cam1"]
 WHEN = datetime(2026, 10, 5, 14, 22, 10)
@@ -162,3 +163,16 @@ class TestImportLegacy:
     def test_nothing_to_import(self, tmp_path):
         assert import_legacy(tmp_path) == []
         assert not registry_dir(tmp_path).exists()
+
+
+class TestAlignment:
+    def test_aligned_entry_keeps_alignment_in_metadata(self, tmp_path):
+        parent = save_calibration(tmp_path, make_cgroup(), "charuco-all", "charuco")
+        entry = save_aligned_calibration(
+            cameras_from_cgroup(make_cgroup()), tmp_path, np.eye(3), np.zeros(3),
+            parent=parent.id,
+        )
+        assert entry.method == "align"
+        assert entry.parent == parent.id
+        np.testing.assert_allclose(entry.metadata["alignment"]["R_align"], np.eye(3))
+        assert load_calibration(entry).get_names() == CAMERAS

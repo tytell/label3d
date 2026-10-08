@@ -12,7 +12,9 @@ from pathlib import Path
 import pandas as pd
 import sleap_io as sio
 import toml
+from aniposelib.cameras import CameraGroup
 
+from label3d.calibration_registry import save_calibration
 from label3d.project import Project
 from label3d.slp_sync import SlpMapping
 
@@ -714,7 +716,10 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
                 lines.append(f"    {trial_name}  " + "  ".join(parts))
         if assignment.calibration_toml:
             for exp_name, path in sorted(assignment.calibration_toml.items()):
-                lines.append(f"  [{exp_name}]  calibration.toml found at {path}")
+                lines.append(
+                    f"  [{exp_name}]  calibration found at {path} "
+                    "(imported into the calibration registry)"
+                )
         lines.append("")
 
     if assignment.video_remaps:
@@ -852,6 +857,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     # Calibration takes get rows too, flagged with is_calibration.
     all_experiments = sorted(set(exp_trials) | set(assignment.calibration_takes))
     trials_rows: list[dict] = []
+    active_calibrations: dict[str, str] = {}
     for exp_name in all_experiments:
         exp_dir = out / "experiments" / exp_name
         video_root = assignment.video_roots.get(exp_name)
@@ -872,10 +878,16 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
             for f in files:
                 calib_transfer(str(f), str(cam_dir / f.name))
 
+        # An existing aniposelib calibration becomes an "imported" registry
+        # entry, and the active one.
         src_toml = assignment.calibration_toml.get(exp_name)
         if src_toml is not None:
             exp_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(src_toml), str(exp_dir / "calibration.toml"))
+            entry = save_calibration(
+                exp_dir, CameraGroup.load(str(src_toml)), "imported", "imported",
+                source_path=str(src_toml),
+            )
+            active_calibrations[exp_name] = entry.id
 
         for trial_name in sorted(exp_trials.get(exp_name, [])):
             cam_files = assignment.trials[trial_name]
@@ -929,6 +941,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         config.charuco,
         video_roots=assignment.video_roots if reference else None,
         slp_mapping=_slp_mapping_config(assignment),
+        active_calibrations=active_calibrations,
     )
 
     # Write skeleton.json if a skeleton was extracted from SLP files
@@ -1023,8 +1036,12 @@ def write_project_toml(
     charuco: dict | None = None,
     video_roots: dict[str, Path] | None = None,
     slp_mapping: dict | None = None,
+    active_calibrations: dict[str, str] | None = None,
 ) -> Path:
-    """Write project.toml to the project directory."""
+    """Write project.toml to the project directory.
+
+    active_calibrations (experiment -> registry id) becomes [calibration.active].
+    """
     config_data: dict = {
         "project": {"name": project_name},
     }
@@ -1036,6 +1053,8 @@ def write_project_toml(
         }
     if slp_mapping:
         config_data["slp"] = slp_mapping
+    if active_calibrations:
+        config_data["calibration"] = {"active": dict(sorted(active_calibrations.items()))}
 
     path = project_dir / "project.toml"
     with open(path, "w") as f:

@@ -232,7 +232,10 @@ class TestExecute:
 class TestCalibration:
     def _write_calib(self, path: Path) -> Path:
         data = {
-            cam: {"name": cam, "size": [16, 16], "matrix": [[1, 0, 8], [0, 1, 8], [0, 0, 1]]}
+            cam: {
+                "name": cam, "size": [16, 16], "matrix": [[1, 0, 8], [0, 1, 8], [0, 0, 1]],
+                "distortions": [0.0] * 5, "rotation": [0.0] * 3, "translation": [0.0] * 3,
+            }
             for cam in CAMERAS
         }
         path.write_text(toml.dumps(data))
@@ -244,7 +247,12 @@ class TestCalibration:
         assignment = classify_slp_files(config)
         assert assignment.calibration_toml["default"].name == "calibration.toml"
         out = execute_setup(config, assignment)
-        assert (out / "experiments/default/calibration.toml").exists()
+        assert not (out / "experiments/default/calibration.toml").exists()
+        project = Project.load(out)
+        entry = project.active_calibration("default")
+        assert entry.method == "imported"
+        assert entry.metadata["source_path"].endswith("calibration.toml")
+        assert project.has_calibration
 
     def test_unrelated_toml_is_not_mistaken_for_calibration(self, source):
         (source["slps"][0].parent / "notes.toml").write_text('[meta]\nauthor = "x"\n')
