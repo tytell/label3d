@@ -35,6 +35,16 @@ Config file format (TOML):
     [project]
     name = "my_experiment"
 
+    # Optional; must match the .slp files' skeleton if they have one.
+    # Either a skeleton.json (relative paths from the working directory) …
+    [skeleton]
+    file = "/path/to/skeleton.json"
+    # … or the skeleton inline:
+    # nodes = ["snout", "left_eye", "right_eye", "tail"]
+    # edges = [["snout", "left_eye"], ["snout", "right_eye"], ["snout", "tail"]]
+    # symmetries = [["left_eye", "right_eye"]]
+    # node_offsets_cm = { snout = [2.0, 0.0, 0.0], tail = [-3.0, 0.0, 0.0] }
+
     [charuco]
     squares_x = 6
     squares_y = 8
@@ -60,6 +70,7 @@ from label3d.setup_project import (
     execute_setup,
     import_labels,
     preview_assignment,
+    skeleton_from_setup,
 )
 
 # Default charuco board parameters (from DESIGN.md)
@@ -577,6 +588,11 @@ def run_from_config(config_path: Path, copy_files: bool = False, dry_run: bool =
         calibration_dir=(
             Path(setup["calibration_dir"]).expanduser().resolve()
             if setup.get("calibration_dir")
+            else None
+        ),
+        skeleton=(
+            skeleton_from_setup(raw["skeleton"], base_dir=Path.cwd())
+            if "skeleton" in raw
             else None
         ),
     )

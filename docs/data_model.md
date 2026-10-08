@@ -343,6 +343,6 @@ Files are **moved** (not copied). Creates:
 - `experiments/{name}/videos/` for video files
 - `experiments/{name}/points.csv` placeholder (correct 5-level row index)
 - `trials.csv` (global) at project root with `experiment` column
-- `project.toml`, `skeleton.json`, `slp/` at project root
+- `project.toml`, `skeleton.json`, `slp/` at project root (`skeleton.json` from the setup file's `[skeleton]` table, else from the `.slp` files)
 
 Core module: `label3d/setup_project.py` — `SetupConfig`, `ExperimentAssignment`, `FileAssignment`, `classify_files()`, `preview_assignment()`, `execute_setup()`.

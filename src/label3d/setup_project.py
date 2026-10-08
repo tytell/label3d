@@ -16,6 +16,7 @@ from aniposelib.cameras import CameraGroup
 
 from label3d.calibration_registry import REFINED_DIR, camera_dir, save_calibration
 from label3d.project import Project, check_trial_videos, write_trials_csv
+from label3d.skeleton import Skeleton
 from label3d.slp_sync import SlpMapping
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,9 @@ class SetupConfig:
     # Set up the project from the videos that could be located, leaving the
     # cameras whose videos are missing blank in trials.csv
     allow_missing_videos: bool = False
+    # Skeleton given in the setup file (see skeleton_from_setup); must match
+    # the skeleton of any .slp files
+    skeleton: Skeleton | None = None
 
     def __post_init__(self):
         # Camera folders share calibrations/ with the refinements folder
@@ -344,6 +348,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
                 f"Experiment '{exp}' has no calibration video for: {', '.join(missing)}"
             )
 
+    _apply_config_skeleton(config, assignment)
     return assignment
 
 
@@ -454,7 +459,42 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
         )
 
     _assign_calibration(config, assignment, slp_paths)
+    _apply_config_skeleton(config, assignment)
     return assignment
+
+
+def skeleton_from_setup(table: dict, base_dir: Path | None = None) -> Skeleton:
+    """The skeleton named by a setup file's [skeleton] table.
+
+    The table either names a skeleton.json (``file``, relative to base_dir
+    when not absolute) or gives ``nodes``, ``edges``, ``symmetries`` and
+    ``node_offsets_cm`` inline, not both.
+    """
+    if "file" in table:
+        if set(table) - {"file"}:
+            raise ValueError("[skeleton] takes either 'file' or inline nodes, not both")
+        path = Path(table["file"]).expanduser()
+        if not path.is_absolute() and base_dir is not None:
+            path = base_dir / path
+        if not path.exists():
+            raise FileNotFoundError(f"Skeleton file not found: {path}")
+        return Skeleton.from_json(path)
+    return Skeleton.from_dict(table)
+
+
+def _apply_config_skeleton(config: SetupConfig, assignment: FileAssignment) -> None:
+    """Use the setup file's skeleton, after checking it against the .slp one."""
+    if config.skeleton is None:
+        return
+    if assignment.skeleton is not None:
+        from_slp = Skeleton.from_dict(assignment.skeleton)
+        if not config.skeleton.same_topology(from_slp):
+            raise ValueError(
+                "The skeleton in the setup file does not match the .slp files' skeleton "
+                f"(setup: {', '.join(config.skeleton.nodes)}; "
+                f".slp: {', '.join(from_slp.nodes)})"
+            )
+    assignment.skeleton = config.skeleton.to_dict()
 
 
 def _expand_slp_paths(paths: list[Path]) -> list[Path]:
@@ -585,6 +625,11 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
     lines.append(f"Output:  {config.output_dir}")
     lines.append(f"Experiments: {', '.join(config.experiment_keywords) if config.experiment_keywords else '(default)'}")
     lines.append(f"Cameras: {', '.join(config.camera_names)}")
+    if assignment.skeleton:
+        source = "setup file" if config.skeleton is not None else ".slp files"
+        lines.append(f"Skeleton: {', '.join(assignment.skeleton['nodes'])} (from {source})")
+    else:
+        lines.append("Skeleton: none (add one later with File > Load Skeleton…)")
     strategy_str = config.match_strategy
     if config.match_strategy == "keyword":
         strategy_str += f" (keyword={config.trial_keyword!r})"
@@ -818,7 +863,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     Output layout:
       project/
         project.toml
-        skeleton.json            <- written if SLP files provided a skeleton
+        skeleton.json            <- from the setup file or the SLP files
         trials.csv               <- experiment, trial, is_calibration columns
         slp/
         experiments/
@@ -956,7 +1001,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         active_calibrations=active_calibrations,
     )
 
-    # Write skeleton.json if a skeleton was extracted from SLP files
+    # Write skeleton.json from the setup file or the SLP files
     if assignment.skeleton:
         with open(out / "skeleton.json", "w") as fh:
             json.dump(assignment.skeleton, fh, indent=2)
@@ -1021,6 +1066,7 @@ def split_project_groups(
             trial_keyword=config.trial_keyword,
             trial_regex=config.trial_regex,
             experiment_keywords=config.experiment_keywords,
+            skeleton=config.skeleton,
         )
 
         sub_trials = {

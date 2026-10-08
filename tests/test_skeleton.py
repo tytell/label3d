@@ -159,3 +159,54 @@ class TestNodeNavigation:
 
     def test_prev_node_with_spaces(self, skeleton_with_spaces):
         assert skeleton_with_spaces.prev_node("right front paw") == "left front paw"
+
+
+# ---------------------------------------------------------------------------
+# Building from a dict
+# ---------------------------------------------------------------------------
+
+class TestFromDict:
+    def test_round_trip(self):
+        data = {
+            "nodes": ["a", "b", "c"],
+            "edges": [["a", "b"]],
+            "symmetries": [["b", "c"]],
+            "node_offsets_cm": {"a": [1.0, 0.0, 0.0]},
+        }
+        assert Skeleton.from_dict(data).to_dict() == data
+
+    def test_no_nodes_rejected(self):
+        with pytest.raises(ValueError, match="no nodes"):
+            Skeleton.from_dict({"nodes": []})
+
+    def test_repeated_node_rejected(self):
+        with pytest.raises(ValueError, match="repeats"):
+            Skeleton.from_dict({"nodes": ["a", "b", "a"]})
+
+    def test_edge_to_unknown_node_rejected(self):
+        with pytest.raises(ValueError, match="edge"):
+            Skeleton.from_dict({"nodes": ["a", "b"], "edges": [["a", "z"]]})
+
+    def test_symmetry_to_unknown_node_rejected(self):
+        with pytest.raises(ValueError, match="symmetry"):
+            Skeleton.from_dict({"nodes": ["a", "b"], "symmetries": [["a", "z"]]})
+
+    def test_offset_for_unknown_node_rejected(self):
+        with pytest.raises(ValueError, match="offsets"):
+            Skeleton.from_dict({"nodes": ["a"], "node_offsets_cm": {"z": [0, 0, 0]}})
+
+
+class TestSameTopology:
+    def test_ignores_order_direction_and_offsets(self):
+        a = Skeleton(["a", "b", "c"], edges=[("a", "b")], symmetries=[("b", "c")])
+        b = Skeleton(["c", "b", "a"], edges=[("b", "a")], symmetries=[("c", "b")],
+                     node_offsets_cm={"a": [1.0, 0.0, 0.0]})
+        assert a.same_topology(b)
+
+    def test_different_edges(self):
+        a = Skeleton(["a", "b", "c"], edges=[("a", "b")])
+        b = Skeleton(["a", "b", "c"], edges=[("a", "c")])
+        assert not a.same_topology(b)
+
+    def test_different_nodes(self):
+        assert not Skeleton(["a", "b"]).same_topology(Skeleton(["a", "c"]))

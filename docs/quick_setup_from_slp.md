@@ -124,6 +124,12 @@ Field by field:
   labels straight into `points.csv`, so the project opens already labeled.
 - **`[charuco]`** — your calibration board's parameters (squares, marker size in
   cm, ArUco dictionary), used when you calibrate in the app.
+- **`[skeleton]`** — optional. Either `file = "path/to/skeleton.json"` (relative
+  to the working directory) or `nodes`, `edges`, `symmetries` and
+  `node_offsets_cm` inline. It must match the `.slp` files' skeleton (same
+  nodes, edges and symmetries) or setup stops with an error; a matching one wins,
+  so its node order and offsets are kept. Needed for a flat folder with no
+  `.slp` files, or add one later with **File > Load Skeleton…**.
 
 ## 4. Run it
 
