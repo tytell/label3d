@@ -175,22 +175,6 @@ class TestCornersIO:
             "PreCal": later.isoformat(), "PostCal": WHEN.isoformat(),
         }
 
-    def test_legacy_files_are_converted(self, tmp_path):
-        legacy = pd.DataFrame({
-            "source_key": ["PreCal:0", "PreCal:0", "PostCal:20"],
-            "corner_id": [0, 1, 0],
-            "x": [1.0, 3.0, 5.0],
-            "y": [2.0, 4.0, 6.0],
-        })
-        legacy.iloc[:2].to_csv(tmp_path / "corners.csv", index=False)
-        legacy.iloc[:2].to_csv(tmp_path / "corners_PreCal.csv", index=False)
-        legacy.iloc[2:].to_csv(tmp_path / "corners_PostCal.csv", index=False)
-
-        keys = [r["framenum"] for r in load_corners(tmp_path)]
-        assert sorted(keys) == [("PostCal", 20), ("PreCal", 0)]
-        df = pd.read_csv(tmp_path / "corners.csv")
-        assert "take" in df.columns and len(df) == 3
-
     def test_merge_rows_pairs_by_take(self, tmp_path):
         """Two cameras' rows merge only where take AND frame agree."""
         from aniposelib.boards import merge_rows

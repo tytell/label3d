@@ -38,7 +38,7 @@ from label3d.workers.triangulation_worker import (
 from label3d.calibration_registry import entry_summary, entry_tree, find_calibration
 from label3d.geometry import load_cameras
 from label3d.points import PointsStore
-from label3d.project import LEGACY_TRIANGULATION, Project
+from label3d.project import Project
 from label3d.state import ProjectState
 from label3d.video import FrameProvider
 from label3d.widgets.calibration_view import CalibrationView
@@ -710,7 +710,7 @@ class MainWindow(QMainWindow):
             self._calib_status.setVisible(False)
             return
         used = project.triangulated_with()
-        if used is None or used == LEGACY_TRIANGULATION:
+        if used is None:
             source = "an earlier calibration"
         else:
             entry = find_calibration(project.experiments[project.active_experiment].root, used)

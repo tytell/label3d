@@ -27,10 +27,6 @@ REFINED_DIR = "refined"
 
 METHODS = ("charuco", "refine", "align", "imported")
 
-# Legacy files imported by import_legacy, relative to the experiment folder.
-LEGACY_CALIBRATION = "calibration.toml"
-LEGACY_TAKES_DIR = "calibration_takes"
-
 _TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S"
 
 
@@ -188,39 +184,6 @@ def delete_calibration(exp_dir: Path, entry: CalibrationEntry) -> list[Calibrati
             (e.path.parent / points_file).unlink(missing_ok=True)
         e.path.unlink(missing_ok=True)
     return removed
-
-
-def import_legacy(exp_dir: Path) -> list[CalibrationEntry]:
-    """Copy calibration.toml and calibration_takes/*.toml into the registry.
-
-    Runs only when the registry folder doesn't exist yet, and leaves the old
-    files in place. Each entry is method "imported", created at its file's
-    modification time, with metadata.source_path set to the file it came from
-    (relative to the experiment folder). The entry from calibration.toml, if
-    any, comes first.
-    """
-    exp_dir = Path(exp_dir)
-    if registry_dir(exp_dir).exists():
-        return []
-    sources = [(exp_dir / LEGACY_CALIBRATION, "imported")]
-    for path in sorted((exp_dir / LEGACY_TAKES_DIR).glob("*.toml")):
-        sources.append((path, f"imported-{path.stem}"))
-
-    entries: list[CalibrationEntry] = []
-    for path, label in sources:
-        if not path.exists():
-            continue
-        try:
-            cgroup = CameraGroup.load(str(path))
-        except Exception as exc:
-            logger.warning("Could not import %s: %s", path, exc)
-            continue
-        entries.append(save_calibration(
-            exp_dir, cgroup, label, "imported",
-            created=datetime.fromtimestamp(path.stat().st_mtime),
-            source_path=path.relative_to(exp_dir).as_posix(),
-        ))
-    return entries
 
 
 def entry_tree(entries: list[CalibrationEntry]) -> list[tuple[CalibrationEntry, int]]:

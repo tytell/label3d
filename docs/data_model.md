@@ -91,7 +91,7 @@ PS18 = "charuco-all_20260901-101500"
 PS18 = "charuco-all_20260901-101500"
 ```
 
-`[calibration.active]` and `[calibration.triangulated_with]` are written by `Project.set_active_calibration()` and `Project.set_triangulated_with()`. When the two differ for an experiment, the Label tab warns that its 3D points are stale. `triangulated_with = "legacy"` marks an experiment imported from a pre-registry project.
+`[calibration.active]` and `[calibration.triangulated_with]` are written by `Project.set_active_calibration()` and `Project.set_triangulated_with()`. When the two differ for an experiment, the Label tab warns that its 3D points are stale.
 
 The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init__` parameters. Both sections are written back by the calibration panel when the user changes a value.
 
@@ -135,7 +135,7 @@ spread_baseline_pct = 0.1
 
 **`corners.csv` columns:** `take, frame, corner_id, x, y, detected`. One row is one detected corner. Cross-camera correspondence is by take name and absolute video frame. `detected` is the time of the detection run that produced that take's rows. Re-detecting a take replaces only its rows, so a charuco entry whose `metadata.charuco.detected` no longer matches was solved from older corners. `load_corners(cam_dir, takes=…)` filters by take.
 
-**Legacy files.** Before Phase 11, the solution in use was `experiments/{exp}/calibration.toml`, take solutions were in `calibration_takes/{take}.toml`, and corners were split across `corners.csv` and `corners_{take}.csv` with a `"{take}:{frame}"` `source_key`. On load, a project with no `calibrations/` folder has those `.toml` files imported as `imported` entries, and `calibration.toml` becomes active. Old corner files are converted the first time they're read. The old files are left in place and never read again.
+**Old projects.** Projects made before Phase 11 kept solutions in `calibration.toml` and `calibration_takes/`, and calibration media in `calibration/{cam}/`. None of these are read any more; set such projects up again.
 
 ### Videos and trials
 

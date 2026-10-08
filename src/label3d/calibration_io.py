@@ -19,10 +19,6 @@ logger = logging.getLogger(__name__)
 # `detected` is the time of the detection run that produced a take's rows.
 CORNER_COLUMNS = ["take", "frame", "corner_id", "x", "y", "detected"]
 
-# Pre-Phase 11 layout: corners.csv plus corners_{take}.csv, keyed by a
-# "{take}:{frame}" source_key. Read once and rewritten as CORNER_COLUMNS.
-_LEGACY_KEY = "source_key"
-
 
 def corners_path(cam_dir: Path) -> Path:
     """Path to a camera's corners file."""
@@ -45,7 +41,7 @@ def _rows_to_df(rows: list[dict], detected: str) -> pd.DataFrame:
 
 
 def _read_corners_df(cam_dir: Path) -> pd.DataFrame | None:
-    """The corners file as a DataFrame, converting the legacy layout if found."""
+    """The corners file as a DataFrame."""
     csv_path = corners_path(cam_dir)
     if not csv_path.exists():
         return None
@@ -56,47 +52,6 @@ def _read_corners_df(cam_dir: Path) -> pd.DataFrame | None:
     except Exception as exc:
         logger.warning("Failed to load corners from %s: %s", csv_path, exc)
         return None
-    if _LEGACY_KEY in df.columns:
-        df = _migrate_legacy_corners(cam_dir)
-    return df
-
-
-def _migrate_legacy_corners(cam_dir: Path) -> pd.DataFrame:
-    """Merge corners.csv and corners_{take}.csv into the new single file.
-
-    The old files hold the same detections in different subsets, so rows are
-    de-duplicated on (take, frame, corner_id). `detected` is each file's
-    modification time. The per-take files are left where they are.
-    """
-    frames = []
-    for path in [corners_path(cam_dir), *sorted(cam_dir.glob("corners_*.csv"))]:
-        try:
-            old = pd.read_csv(path, dtype={_LEGACY_KEY: str})
-        except Exception:
-            continue
-        if _LEGACY_KEY not in old.columns or old.empty:
-            continue
-        parts = old[_LEGACY_KEY].str.rsplit(":", n=1, expand=True)
-        if parts.shape[1] != 2:
-            continue
-        ok = parts[1].str.isdigit().fillna(False)
-        old, parts = old[ok], parts[ok]
-        detected = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
-        frames.append(pd.DataFrame({
-            "take": parts[0].to_numpy(),
-            "frame": parts[1].astype(int).to_numpy(),
-            "corner_id": old["corner_id"].astype(int).to_numpy(),
-            "x": old["x"].to_numpy(),
-            "y": old["y"].to_numpy(),
-            "detected": detected,
-        }))
-    if frames:
-        df = pd.concat(frames, ignore_index=True)
-        df = df.drop_duplicates(["take", "frame", "corner_id"], keep="first")
-    else:
-        df = pd.DataFrame(columns=CORNER_COLUMNS)
-    df.to_csv(corners_path(cam_dir), index=False)
-    logger.info("Converted %s to the single-file corners layout", cam_dir)
     return df
 
 

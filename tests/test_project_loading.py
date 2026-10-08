@@ -10,7 +10,6 @@ import pandas as pd
 import pytest
 import toml
 
-from label3d.calibration_registry import import_legacy
 from label3d import project as project_module
 from label3d.project import LoadCancelled, Project
 from tests.conftest import TEST_PROJECT, requires_test_project
@@ -87,8 +86,7 @@ class TestMissingOptionalFiles:
 
     def test_no_active_calibration_flagged(self, tmp_path):
         """No calibration pointer → has_calibration=False, no error."""
-        _copy_project_without(TEST_PROJECT, tmp_path,
-                               exclude={"experiments/exp1/calibration.toml"})
+        _copy_project_without(TEST_PROJECT, tmp_path, exclude=set())
         shutil.rmtree(tmp_path / "experiments/exp1/calibrations", ignore_errors=True)
         config = toml.load(tmp_path / "project.toml")
         config.get("calibration", {}).pop("active", None)
@@ -176,25 +174,6 @@ def _copy_project_without(src: Path, dst: Path, exclude: set[str]) -> None:
         target = dst / rel
         if target.exists():
             target.unlink()
-
-
-class TestInterruptedLegacyImport:
-    def test_registry_without_pointer_gets_one(self, tmp_path):
-        """A load killed after the registry was written but before project.toml."""
-        _copy_project_without(TEST_PROJECT, tmp_path, exclude=set())
-        exp_dir = tmp_path / "experiments/exp1"
-        shutil.rmtree(exp_dir / "calibrations")
-        shutil.copy(next((TEST_PROJECT / "experiments/exp1/calibrations").glob("*.toml")),
-                    exp_dir / "calibration.toml")
-        import_legacy(exp_dir)   # registry written, pointer never saved
-        config = toml.load(tmp_path / "project.toml")
-        config["calibration"]["active"].pop("exp1")
-        config["calibration"]["triangulated_with"].pop("exp1")
-        (tmp_path / "project.toml").write_text(toml.dumps(config))
-
-        proj = Project.load(tmp_path)
-        assert proj.active_calibration("exp1").metadata["source_path"] == "calibration.toml"
-        assert proj.triangulation_is_stale("exp1")
 
 
 class TestVideoCheck:

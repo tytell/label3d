@@ -16,7 +16,6 @@ from label3d.calibration_registry import (
     entry_summary,
     entry_tree,
     find_calibration,
-    import_legacy,
     list_calibrations,
     load_calibration,
     registry_dir,
@@ -128,44 +127,6 @@ class TestRegistry:
         assert a.metadata == {}
         assert b.metadata == {}
 
-
-class TestImportLegacy:
-    def _write_legacy(self, exp_dir):
-        exp_dir.mkdir(parents=True, exist_ok=True)
-        make_cgroup().dump(str(exp_dir / "calibration.toml"))
-        takes = exp_dir / "calibration_takes"
-        takes.mkdir()
-        make_cgroup(1.0).dump(str(takes / "PreCal.toml"))
-        make_cgroup(2.0).dump(str(takes / "PostCal.toml"))
-
-    def test_imports_and_leaves_originals(self, tmp_path):
-        self._write_legacy(tmp_path)
-        before = (tmp_path / "calibration.toml").read_text()
-
-        entries = import_legacy(tmp_path)
-        assert len(entries) == 3
-        assert entries[0].metadata["source_path"] == "calibration.toml"
-        assert {e.method for e in entries} == {"imported"}
-        assert {e.label for e in entries[1:]} == {"imported-PreCal", "imported-PostCal"}
-        assert (tmp_path / "calibration.toml").read_text() == before
-        assert (tmp_path / "calibration_takes" / "PreCal.toml").exists()
-
-    def test_created_is_file_mtime(self, tmp_path):
-        self._write_legacy(tmp_path)
-        mtime = datetime.fromtimestamp(
-            (tmp_path / "calibration.toml").stat().st_mtime
-        ).replace(microsecond=0)
-        assert import_legacy(tmp_path)[0].created == mtime
-
-    def test_runs_once(self, tmp_path):
-        self._write_legacy(tmp_path)
-        assert len(import_legacy(tmp_path)) == 3
-        assert import_legacy(tmp_path) == []
-        assert len(list_calibrations(tmp_path)) == 3
-
-    def test_nothing_to_import(self, tmp_path):
-        assert import_legacy(tmp_path) == []
-        assert not registry_dir(tmp_path).exists()
 
 
 class TestAlignment:

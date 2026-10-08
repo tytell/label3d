@@ -17,11 +17,9 @@ logger = logging.getLogger(__name__)
 
 from label3d.adapters.sleap_adapter import SleapAdapter
 from label3d.calibration_registry import (
-    LEGACY_CALIBRATION,
     CalibrationEntry,
     camera_dir,
     find_calibration,
-    import_legacy,
     list_calibrations,
 )
 from label3d.points import PointsStore
@@ -50,10 +48,6 @@ class VideoCheck:
     missing: list[str] = field(default_factory=list)    # external references not found
     mismatched: list[str] = field(default_factory=list) # videos modified since recorded
 
-
-# triangulated_with value for experiments whose 3D points predate the
-# registry: never equal to a real id, so the re-triangulate warning shows.
-LEGACY_TRIANGULATION = "legacy"
 
 SYNC_HISTORY_COLUMNS = [
     "id", "timestamp", "kind", "experiment", "trial",
@@ -175,10 +169,8 @@ class Project:
             experiment_names = ["default"]
 
         experiments: dict[str, ExperimentInfo] = {}
-        config_changed = False
         for exp_name in experiment_names:
             exp_dir = root / "experiments" / exp_name
-            config_changed |= _import_legacy_calibrations(config, exp_name, exp_dir)
 
             if "experiment" in trials_df.columns:
                 exp_rows = trials_df[trials_df["experiment"] == exp_name]
@@ -209,9 +201,6 @@ class Project:
                 calibration_takes=exp_takes,
                 video_root=video_root,
             )
-
-        if config_changed:
-            _write_config(root, config)
 
         active_experiment = experiment_names[0]
         active = experiments[active_experiment]
@@ -641,30 +630,6 @@ def _active_calibration_path(config: dict, experiment: str, exp_dir: Path) -> Pa
         return None
     entry = find_calibration(exp_dir, entry_id)
     return entry.path if entry else None
-
-
-def _import_legacy_calibrations(config: dict, experiment: str, exp_dir: Path) -> bool:
-    """Move an experiment's pre-registry calibration files into the registry.
-
-    The entry from calibration.toml becomes active. triangulated_with is set to
-    a placeholder, so the Label tab asks for one re-triangulation. Returns True
-    when config was changed (the caller writes it).
-    """
-    entries = import_legacy(exp_dir)
-    if not entries and _pointer(config, "active", experiment) is None:
-        # An import interrupted before project.toml was written leaves the
-        # registry without a pointer; finish it.
-        entries = list_calibrations(exp_dir)
-    active = next(
-        (e for e in entries if e.metadata.get("source_path") == LEGACY_CALIBRATION), None
-    )
-    if active is None:
-        return False
-    calibration = config.setdefault("calibration", {})
-    calibration.setdefault("active", {})[experiment] = active.id
-    calibration.setdefault("triangulated_with", {})[experiment] = LEGACY_TRIANGULATION
-    logger.info("Imported %d legacy calibration(s) for %s", len(entries), experiment)
-    return True
 
 
 def _read_camera_info(calib_path: Path | None) -> tuple[bool, dict[str, CameraInfo]]:
