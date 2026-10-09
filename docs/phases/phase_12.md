@@ -2,7 +2,7 @@
 
 **Goal**: Refine a calibration using the bodypart points labelled or predicted in several cameras. A refinement starts from a charuco calibration computed by aniposelib's `calibrate_rows` on the user's chosen takes, or from an imported calibration. aniposelib's `bundle_adjust_iter` then adjusts it with the digitised points. Every result is saved to the registry (Phase 11) with a full record of its inputs, enough to rebuild it. The charuco solution it started from is kept too, so the user can switch between the original and any refinement of it, or between refinements that used different points.
 
-**Status**: Not started. Depends on Phase 10 (scores, sources) and Phase 11 (registry), both complete.
+**Status**: Implemented on branch `refine_calib`; awaiting UI testing. See *As implemented* at the end.
 
 **Scope**: one experiment at a time. Calibrations are per experiment, so a refinement uses only that experiment's charuco takes and that experiment's points. The dialog works on the active experiment.
 
@@ -147,3 +147,16 @@ Uses the synthetic generator: a known rig, charuco takes and a moving animal.
 2. 12.1 + 12.3 `refine()` pipeline (no Qt) + recovery test
 3. 12.4 worker and dialog
 4. 12.6 reference docs
+
+## As implemented
+
+Differences from the plan above, and details it left open:
+
+- **`calibration_solve.py`.** The Stage 1 helpers moved into this new module, which has no Qt: `CalibrationTake`, `TakeCalibration`, `JOINT_TAKE`, `build_board`, `calibrate_rows`, `calibrate_repeated`, `rows_for_take`, `rows_in_range`, `take_range`, `build_takes`, `take_camera_sizes`, `take_ranges`, `take_detections` and `charuco_metadata`. The Calibration tab and `MultiTakeCalibrationWorker` call them too.
+- **Charuco error.** The charuco corners of the starting entry's takes are triangulated across cameras and reprojected, the same measure as for the animal points. The per-camera board-pose error from `compute_frame_errors` would not change when only extrinsics move.
+- **Run is never disabled.** A refinement runs with any number of points; the pair table is for judging the result.
+- **Camera order.** Points are gathered in the project's camera order and reordered to the starting calibration's (`get_names()`). An imported entry may list the cameras differently. A calibration with different cameras is an error.
+- **Metadata.** `[metadata.points]` also records `min_cameras`. `[metadata.options]` also records `n_repeats`, `n_samp_full` and `n_samp_iter`. `[metadata.errors]` also has `points_before`. Non-finite errors (no held-out frames, no charuco takes) are left out. `calibration_registry.update_metadata()` adds `points_file` once the id is known.
+- **Seed.** Drawn at random per run unless `RefineOptions.seed` is set. It seeds the hold-out split, and repeat `r` calls `np.random.seed(seed + r)`. `run_stage2()` reruns one repeat.
+- **Dialog.** A matching charuco entry is offered as a **Reuse …** checkbox under the take list, checked by default. **Existing calibration** lists `charuco` and `imported` entries, with the active one selected. The dialog can't be closed while a run is in progress, since bundle adjustment can't be interrupted. If saving fails after the Stage 1 entry was written, that entry stays in the registry.
+- **Tests.** `tests/test_calibration_refine.py` (24 tests) covers point selection, the hold-out split, the points record, recovery of a perturbed camera on the synthetic rig, alignment with three and two cameras, charuco errors, saving and exact reproduction from the record, Stage 1 corner loading and entry matching, `RefineWorker`, and the dialog on a copy of the synthetic test project.

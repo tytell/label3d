@@ -133,6 +133,44 @@ spread_baseline_pct = 0.1
 [metadata.alignment]                  # align only (Phase 14); see the schema below
 ```
 
+A `refine` entry (Phase 12) has `parent` set to the entry it started from and `charuco_takes` copied from it, plus:
+
+```toml
+[metadata.points]
+sources = ["label3d", "sleap_user"]
+score_min = 0.8                       # for sleap_pred only
+min_cameras = 2
+n_points = 1840
+points_file = "refine_20261005-142210_points.csv"
+
+[metadata.points.frames]              # trial -> frames that had points
+t1 = [10, 55, 90]
+
+[metadata.options]
+only_extrinsics = true
+holdout = 0.2                         # fraction of frames held out
+n_repeats = 3
+seed = 138368576                      # hold-out split; repeat r used seed + r
+kept_repeat = 1
+n_samp_full = 1000
+n_samp_iter = 200
+
+[metadata.errors]                     # px unless noted; *_before = the parent on the same points
+holdout = 1.9
+holdout_p90 = 4.2
+holdout_before = 2.6
+holdout_p90_before = 5.8
+points = 1.7
+points_before = 2.5
+charuco = 0.45                        # charuco corners of the parent's takes, triangulated
+charuco_before = 0.41
+scale_correction = 1.002              # ratio
+spread_rotation_deg = 0.01
+spread_baseline_pct = 0.05
+```
+
+**`{id}_points.csv` columns:** `trial, frame, instance, bodypart, camera, x, y, source, score, holdout`. One row is one camera observation that went into the refinement, in raw pixels, copied so the file still describes the fit after `points.csv` changes. `holdout` is True for observations in held-out frames. With the parent entry and the stored seed, this is enough to rerun the refinement exactly.
+
 **`corners.csv` columns:** `take, frame, corner_id, x, y, detected`. One row is one detected corner. Cross-camera correspondence is by take name and absolute video frame. `detected` is the time of the detection run that produced that take's rows. Re-detecting a take replaces only its rows, so a charuco entry whose `metadata.charuco.detected` no longer matches was solved from older corners. `load_corners(cam_dir, takes=…)` filters by take.
 
 **Old projects.** Projects made before Phase 11 kept solutions in `calibration.toml` and `calibration_takes/`, and calibration media in `calibration/{cam}/`. None of these are read any more; set such projects up again.

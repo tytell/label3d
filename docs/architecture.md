@@ -20,6 +20,8 @@ label3d/
 ├── skeleton.py                  # ✓ Skeleton: nodes, edges, symmetry pairs
 ├── geometry.py                  # ✓ CameraParams, fundamental matrix, epipolar lines, triangulation
 ├── calibration_registry.py      # ✓ Calibration registry: save/list/load/rename/delete solutions (Phase 11)
+├── calibration_solve.py         # ✓ Charuco solves without Qt: takes, ranges, repeated calibrate_rows, metadata
+├── calibration_refine.py        # ✓ Refinement with labelled points: selection, Stage 2, alignment, points record (Phase 12)
 ├── video.py                     # ✓ VideoReader: cv2.VideoCapture wrapper, frame cache
 ├── instance_init.py             # ✓ random / average / reprojected instance init strategies
 ├── widgets/
@@ -35,6 +37,7 @@ label3d/
 │   ├── view_3d.py               # ✓ pyqtgraph GLViewWidget: 3D points, edges, frustums (hidden; SHOW_3D_VIEW in label_view.py)
 │   ├── bodypart_list.py         # ✓ Sidebar: bodypart names, click to select
 │   ├── calibration_view.py      # ✓ Calibration mode: settings panel + camera grid
+│   ├── refine_dialog.py         # ✓ Refine with points dialog (Phase 12)
 │   ├── axis_alignment_widget.py # Phase 14: Axis alignment panel (not yet created)
 │   ├── label_view.py            # ✓ Labeling mode: grid + controls + sidebar
 │   └── export_view.py           # Phase 15: Export mode: form + summary
@@ -44,7 +47,7 @@ label3d/
 │   └── sleap_adapter.py         # ✓ SleapAdapter
 └── workers/
     ├── __init__.py
-    ├── calibration_worker.py    # ✓ DetectionWorker + CalibrationWorker QThreads
+    ├── calibration_worker.py    # ✓ DetectionWorker, MultiTakeCalibrationWorker, RefineWorker QThreads
     └── triangulation_worker.py  # ✓ TriangulationWorker QThread: batch triangulate all frames
 ```
 

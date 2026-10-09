@@ -78,6 +78,34 @@ The **Saved calibrations** list shows every entry (label, date, method, error), 
 
 Making a calibration active here doesn't re-triangulate. The Label tab then shows the stale-3D warning (see *Switching calibrations*).
 
+### Refining with labelled points
+
+**Refine with points…** under the registry list adjusts a calibration of the active experiment using bodypart points labelled or predicted in several cameras. It runs aniposelib's `bundle_adjust_iter` on those points, starting from a charuco solution.
+
+| Control | Default | Meaning |
+|---|---|---|
+| **Calibrate charuco takes** | all takes | calibrate the checked takes jointly first (Stage 1). If a charuco entry already used exactly these takes and the same corners and ranges, **Reuse …** starts from it instead |
+| **Existing calibration** | the active entry | start from a saved `charuco` or `imported` entry |
+| **Sources** | label3d and SLEAP user labels | which points count. label3d reprojection guesses never count |
+| **Prediction score ≥** | 0.8 | for SLEAP predictions only |
+| **Trials** | all | trials whose points are used |
+| **Extrinsics only** | on | keep each camera's intrinsics |
+| **Hold-out fraction** | 0.2 | frames kept out of the fit, to measure the error |
+| **Repeats** | 3 | bundle adjustment subsamples at random; the run with the lowest held-out error is kept |
+| **Label** | `refine` | the new entry's label |
+
+The **Usable points** table shows, for each camera pair, how many selected points both cameras see. **Run** works with any number of points; few points in a pair means that pair's geometry is barely constrained.
+
+**Reading the results.** The dialog shows each error before (the starting calibration) and after (the refinement):
+
+- **Held-out points** is the one to judge by: the median and 90th-percentile reprojection error on frames the fit never saw. It should go down.
+- **Fitted points** always go down, so they say little.
+- **Charuco corners** should not get much worse. A refinement that fits the animal but breaks the board fits the labels' mistakes. These are left out when the starting calibration has no charuco takes, for example an imported one.
+- **Change from the starting calibration** is the per camera-pair rotation and baseline change.
+- **Scale correction.** Points alone have no metric scale, so the result is mapped back onto the starting calibration's scale and axes. A correction far from 1 means the points disagree with the board.
+
+**Save** writes the Stage 1 charuco entry if it is new, then the `refine` entry under it with a record of every point used. **Save and make active** also makes it active; like **Make active**, it doesn't re-triangulate. **Discard** saves nothing.
+
 ### Calibration pipeline
 
 ```python
@@ -90,6 +118,14 @@ cameras = [Camera(name=n) for n in cam_names]
 camera_group = CameraGroup(cameras)
 camera_group.calibrate_rows(all_rows, board, init_intrinsics=True, init_extrinsics=True)
 save_calibration(exp_dir, camera_group, "charuco-all", "charuco", charuco_takes=[...])
+```
+
+The refinement (`calibration_refine.py`) continues from such a group:
+
+```python
+p2ds, index = gather_points(points_df, cam_names, PointSelection(sources={"label3d", "sleap_user"}))
+result = refine(start_cgroup, p2ds, index, RefineOptions(), charuco_p2ds=corners)
+save_refinement(exp_dir, result, parent_entry, "refine", selection, options, points_df)
 ```
 
 ### Axis Alignment (Optional)
