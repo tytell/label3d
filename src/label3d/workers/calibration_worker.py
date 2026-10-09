@@ -1,14 +1,15 @@
 """Background worker for Charuco corner detection and camera calibration.
 
-Two-phase workflow:
-  1. DetectionWorker: scans calibration/{cam}/ folders, detects Charuco corners
-     per camera using images or video, emits per-camera progress.
-  2. CalibrationWorker: given detected rows, runs aniposelib bundle adjustment,
-     computes per-corner reprojection errors, emits results.
+Workflow:
+  1. DetectionWorker: detects Charuco corners in each calibration take's
+     videos (calibrations/{cam}/), emits per-camera progress.
+  2. MultiTakeCalibrationWorker: calibrates each take, then all takes jointly.
+  3. RefineWorker: refines a calibration with labelled points (Phase 12).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -22,6 +23,15 @@ from aniposelib.boards import CharucoBoard, merge_rows
 from aniposelib.cameras import Camera, CameraGroup
 
 from label3d.calibration_io import compute_frame_errors
+from label3d.calibration_refine import (
+    RefineOptions,
+    RefineResult,
+    calibrate_takes,
+    charuco_points,
+    charuco_rows,
+    refine,
+)
+from label3d.calibration_registry import CalibrationEntry, load_calibration
 from label3d.calibration_solve import (
     JOINT_TAKE,
     CalibrationTake,
@@ -30,6 +40,7 @@ from label3d.calibration_solve import (
     build_board,
     calibrate_repeated,
     rows_for_take,
+    take_camera_sizes,
 )
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
@@ -378,3 +389,103 @@ class CalibrationWorker(QThread):
         except Exception as exc:
             self.error_occurred.emit(str(exc))
 
+
+
+@dataclass
+class RefineOutcome:
+    """What RefineWorker produced, ready for the dialog to show and save.
+
+    parent is the registry entry the refinement started from, or None when
+    Stage 1 calibrated the takes afresh; then stage1 holds that new solution,
+    which is saved before the refinement.
+    """
+
+    result: RefineResult
+    parent: CalibrationEntry | None
+    stage1: TakeCalibration | None
+    stage1_takes: list[str]
+
+
+class RefineWorker(QThread):
+    """Runs a calibration refinement (Phase 12) off the UI thread.
+
+    Stage 1 either loads an existing entry or calibrates the chosen takes
+    jointly. Stage 2 adjusts it with the selected points, aligns the result
+    back onto it and measures errors on held-out frames and charuco corners.
+
+    Emits:
+        progress(str)
+        finished(RefineOutcome)
+        error_occurred(str)
+    """
+
+    progress = Signal(str)
+    finished = Signal(object)
+    error_occurred = Signal(str)
+
+    def __init__(
+        self,
+        exp_dir: Path,
+        cam_names: list[str],
+        p2ds: np.ndarray,
+        index,
+        options: RefineOptions,
+        start_entry: CalibrationEntry | None = None,
+        takes: list[CalibrationTake] | None = None,
+        take_names: list[str] | None = None,
+        board_params: dict | None = None,
+        n_stage1_repeats: int = 3,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._exp_dir = exp_dir
+        self._cam_names = cam_names
+        self._p2ds = p2ds
+        self._index = index
+        self._options = options
+        self._start_entry = start_entry
+        self._takes = takes or []
+        self._take_names = take_names or []
+        self._board_params = board_params or {}
+        self._n_stage1_repeats = n_stage1_repeats
+
+    def run(self):
+        try:
+            stage1 = None
+            if self._start_entry is not None:
+                self.progress.emit(f"Stage 1: starting from {self._start_entry.label}")
+                start = load_calibration(self._start_entry)
+                names = self._start_entry.charuco_takes
+            else:
+                names = self._take_names
+                self.progress.emit(f"Stage 1: calibrating {', '.join(names)}")
+                rows = charuco_rows(self._exp_dir, self._cam_names, self._takes, names)
+                sizes = take_camera_sizes(self._takes, self._cam_names)
+                stage1 = calibrate_takes(
+                    rows, self._cam_names, sizes, self._board_params,
+                    self._n_stage1_repeats, self.progress.emit,
+                )
+                start = stage1.cgroup
+
+            # Points follow the order of the calibration's cameras.
+            order = start.get_names()
+            if sorted(order) != sorted(self._cam_names):
+                raise ValueError(
+                    f"the calibration has cameras {order}, the project has {self._cam_names}"
+                )
+            p2ds = self._p2ds[[self._cam_names.index(n) for n in order]]
+
+            charuco = None
+            if names:
+                rows = charuco_rows(self._exp_dir, order, self._takes, names)
+                charuco = charuco_points(rows, order)
+
+            self.progress.emit("Stage 2: bundle adjustment with the selected points")
+            result = refine(
+                start, p2ds, self._index, self._options,
+                charuco_p2ds=charuco, progress=self.progress.emit,
+            )
+            self.finished.emit(RefineOutcome(result, self._start_entry, stage1, list(names)))
+        except Exception as exc:
+            _log.exception("Refinement failed")
+            self.error_occurred.emit(str(exc))

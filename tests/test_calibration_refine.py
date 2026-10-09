@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import time
 from pathlib import Path
 
 import cv2
@@ -44,7 +46,11 @@ from label3d.calibration_registry import (
 )
 from label3d.calibration_solve import CalibrationTake, take_detections, take_ranges
 from label3d.points import INDEX_NAMES, PointsStore
+from label3d.project import Project
+from label3d.widgets.refine_dialog import RefineDialog
+from label3d.workers.calibration_worker import RefineWorker
 from synthetic import build_cameras, load_config
+from tests.conftest import requires_test_project, TEST_PROJECT
 
 CAMS = ["cam1", "cam2", "cam3"]
 
@@ -388,3 +394,65 @@ class TestStage1:
         assert matching_charuco_entry(entries, ["PreCal", "PostCal"], takes, tmp_path, cams) is None
         takes[0].end = 20   # range changed since the solve
         assert matching_charuco_entry(entries, ["PreCal"], takes, tmp_path, cams) is None
+
+
+class TestRefineWorker:
+    def test_points_follow_calibration_camera_order(self, tmp_path, qapp):
+        truth = _true_rig(("cam3", "cam1", "cam2"))   # not the project's order
+        start = _perturbed(truth, cam=0)
+        entry = save_calibration(tmp_path, start, "imported", "imported")
+        p2ds, index = _animal_points(truth, n_frames=60)
+        project_order = ["cam1", "cam2", "cam3"]
+        p2ds_project = p2ds[[1, 2, 0]]
+
+        worker = RefineWorker(
+            tmp_path, project_order, p2ds_project, index,
+            RefineOptions(n_repeats=1, seed=4), start_entry=entry,
+        )
+        out, errors = [], []
+        worker.finished.connect(out.append)
+        worker.error_occurred.connect(errors.append)
+        worker.run()
+
+        assert errors == []
+        outcome = out[0]
+        assert outcome.parent.id == entry.id and outcome.stage1 is None
+        assert outcome.result.cgroup.get_names() == ["cam3", "cam1", "cam2"]
+        assert outcome.result.errors["holdout"] < outcome.result.errors["holdout_before"]
+
+    def test_reports_missing_corners(self, tmp_path, qapp):
+        p2ds, index = _animal_points(_true_rig(), n_frames=10)
+        worker = RefineWorker(
+            tmp_path, ["cam1", "cam2", "cam3"], p2ds, index, RefineOptions(n_repeats=1, seed=1),
+            takes=[CalibrationTake("PreCal")], take_names=["PreCal"], board_params={},
+        )
+        errors = []
+        worker.error_occurred.connect(errors.append)
+        worker.run()
+        assert errors and "corners" in errors[0]
+
+
+@requires_test_project
+class TestRefineDialog:
+    def test_run_and_save_active(self, tmp_path, qapp):
+        root = tmp_path / "project"
+        shutil.copytree(TEST_PROJECT, root)
+        project = Project.load(root)
+        parent_id = project.active_calibration_id()
+        dialog = RefineDialog(project, [], {}, 20, 1)
+        assert dialog._entry_radio.isChecked()   # no takes: start from an entry
+        assert dialog._counts_table.rowCount() == 3
+
+        dialog._repeats_spin.setValue(1)
+        dialog._on_run()
+        while dialog._worker.isRunning():
+            qapp.processEvents()
+            time.sleep(0.02)
+        qapp.processEvents()
+        assert dialog._save_active_btn.isEnabled()
+
+        dialog._on_save(make_active=True)
+        entry = dialog.saved_entry
+        assert entry is not None and entry.parent == parent_id
+        assert project.active_calibration_id() == entry.id
+        assert (entry.path.parent / entry.metadata["points"]["points_file"]).exists()

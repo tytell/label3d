@@ -71,6 +71,7 @@ from label3d.video import VideoReader
 from label3d.widgets.camera_grid import CameraGrid
 from label3d.widgets.charuco_overlay import CharucoOverlay
 from label3d.widgets.frame_slider import FrameSlider
+from label3d.widgets.refine_dialog import RefineDialog
 from label3d.calibration_compare import (
     compare_calibrations,
     drift_thresholds,
@@ -506,6 +507,12 @@ class CalibrationView(QWidget):
         for btn in (self._make_active_btn, self._rename_btn, self._delete_btn):
             registry_buttons.addWidget(btn)
         registry_layout.addLayout(registry_buttons)
+        self._refine_btn = QPushButton("Refine with points…")
+        self._refine_btn.setToolTip(
+            "Adjust a calibration with the bodypart points labelled in several cameras"
+        )
+        self._refine_btn.clicked.connect(self._on_refine)
+        registry_layout.addWidget(self._refine_btn)
         left_layout.addWidget(registry_group)
 
         # Persist board + detection settings a moment after the last edit.
@@ -1262,6 +1269,27 @@ class CalibrationView(QWidget):
         self._project.set_active_calibration(None, entry.id)
         self._log_msg(f"Active calibration: {entry.id}")
         self._show_active_calibration()
+        self.refresh_registry()
+        self.calibrations_changed.emit()
+
+    def _on_refine(self) -> None:
+        """Open the Refine dialog; refresh the registry if it saved anything."""
+        if not self._takes:
+            self._takes = build_takes(self._project)
+        dialog = RefineDialog(
+            self._project, self._takes, self._board_params(), self._skip,
+            self._repeat_spin.value(), parent=self,
+        )
+        dialog.exec()
+        entry = dialog.saved_entry
+        if entry is None:
+            # A new charuco entry may still have been saved before an error.
+            self.refresh_registry()
+            return
+        self._log_msg(f"Saved refinement {entry.id}")
+        if self._project.active_calibration_id() == entry.id:
+            self._log_msg(f"Active calibration: {entry.id}")
+            self._show_active_calibration()
         self.refresh_registry()
         self.calibrations_changed.emit()
 
