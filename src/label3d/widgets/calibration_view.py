@@ -49,7 +49,6 @@ from aniposelib.cameras import CameraGroup
 
 from label3d.calibration_io import (
     compute_frame_errors,
-    corner_detections,
     load_corners,
     save_corners,
 )
@@ -78,16 +77,19 @@ from label3d.calibration_compare import (
     drift_warnings,
     noise_adjusted_thresholds,
 )
-from label3d.workers.calibration_worker import (
-    IMAGE_EXTENSIONS,
+from label3d.calibration_solve import (
     JOINT_TAKE,
-    VIDEO_EXTENSIONS,
     CalibrationTake,
-    DetectionWorker,
-    MultiTakeCalibrationWorker,
-    TakeVideo,
+    build_takes,
+    charuco_metadata,
     rows_for_take,
     rows_in_range,
+)
+from label3d.workers.calibration_worker import (
+    IMAGE_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    DetectionWorker,
+    MultiTakeCalibrationWorker,
     calibration_images_error,
 )
 
@@ -150,18 +152,6 @@ def take_row_indices(rows: list[dict], take: str | None) -> list[int]:
     return [i for i, r in enumerate(rows) if row_take(r) == take]
 
 
-def take_range(config: dict, experiment: str, take: str) -> tuple[int, int | None]:
-    """A take's calibration frame range from project.toml (end None = to the end).
-
-    Stored as [calibration.ranges."<experiment>"."<take>"] with start/end in
-    synchronized frames.
-    """
-    ranges = config.get("calibration", {}).get("ranges", {})
-    entry = ranges.get(experiment, {}).get(take, {})
-    end = entry.get("end")
-    return int(entry.get("start", 0)), (int(end) if end is not None else None)
-
-
 def rekey_frame_errors(
     frame_errors: dict[int, dict],
     rows_by_cam: dict[str, list],
@@ -190,22 +180,6 @@ def charuco_label(result_name: str) -> str:
     if result_name == JOINT_TAKE:
         return "charuco-all"
     return clean_label(f"charuco-{result_name}")
-
-
-def _build_takes(project: Project) -> list[CalibrationTake]:
-    """Build detection takes from the is_calibration rows of trials.csv."""
-    takes: list[CalibrationTake] = []
-    for info in project.calibration_takes:
-        videos: dict[str, TakeVideo] = {}
-        for cam, (filename, start, end) in info.camera_videos.items():
-            if not filename or filename.lower() == "nan":
-                continue
-            videos[cam] = TakeVideo(
-                path=project.video_path(info.name, cam), start=start, end=end
-            )
-        start, end = take_range(project.config, project.active_experiment, info.name)
-        takes.append(CalibrationTake(name=info.name, videos=videos, start=start, end=end))
-    return takes
 
 
 def _scan_take_media(
@@ -739,7 +713,7 @@ class CalibrationView(QWidget):
 
     def _load_take_media(self) -> bool:
         """Rebuild the takes and the browsable frame list. True if usable."""
-        self._takes = _build_takes(self._project)
+        self._takes = build_takes(self._project)
         if not self._takes:
             self._log_msg(self._no_takes_message())
             self._detect_btn.setEnabled(False)
@@ -898,7 +872,7 @@ class CalibrationView(QWidget):
         self._update_frame_nav()
         self._log_msg("=== Corner detection started ===")
 
-        self._takes = _build_takes(self._project)
+        self._takes = build_takes(self._project)
         self._detection_worker = DetectionWorker(
             cam_names=self._project.cameras,
             board_params=self._board_params(),
@@ -1065,34 +1039,12 @@ class CalibrationView(QWidget):
     def _charuco_metadata(self, result) -> dict:
         """[metadata] for a charuco entry: enough to redo the solve."""
         all_takes = [t.name for t in self._takes]
-        takes = all_takes if result.name == JOINT_TAKE else [result.name]
+        names = all_takes if result.name == JOINT_TAKE else [result.name]
         exp_dir = self._project.root / "experiments" / self._project.active_experiment
-        detected: dict[str, str] = {}
-        for cam in self._project.cameras:
-            for take, stamp in corner_detections(camera_dir(exp_dir, cam)).items():
-                if take in takes:
-                    detected[take] = max(stamp, detected.get(take, stamp))
-        ranges = {}
-        for take in self._takes:
-            if take.name in takes:
-                ranges[take.name] = {"start": take.start}
-                if take.end is not None:
-                    ranges[take.name]["end"] = take.end
-        return {
-            "charuco_takes": takes,
-            "charuco": {
-                "board": self._board_params(),
-                "frame_skip": self._skip,
-                "take_ranges": ranges,
-                "detected": detected,
-                "n_rows": result.n_rows,
-            },
-            "errors": {
-                "charuco": float(result.error),
-                "spread_rotation_deg": float(result.spread[0]),
-                "spread_baseline_pct": float(result.spread[1]),
-            },
-        }
+        return charuco_metadata(
+            result, names, self._takes, exp_dir, self._project.cameras,
+            self._board_params(), self._skip,
+        )
 
     def _populate_take_table(self, results: list) -> None:
         """Fill the comparison table and flag takes that drifted.
