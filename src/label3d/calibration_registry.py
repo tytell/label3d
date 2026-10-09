@@ -153,13 +153,18 @@ def save_calibration(
     return _entry_from_file(path)
 
 
-def rename_calibration(entry: CalibrationEntry, label: str) -> CalibrationEntry:
-    """Change an entry's label. The id and file name stay the same."""
+def update_metadata(entry: CalibrationEntry, **fields) -> CalibrationEntry:
+    """Set top-level [metadata] fields of an entry. The id and file name stay the same."""
     data = toml.load(entry.path)
-    data.setdefault("metadata", {})["label"] = clean_label(label)
+    data.setdefault("metadata", {}).update(fields)
     with open(entry.path, "w") as f:
         toml.dump(data, f)
     return _entry_from_file(entry.path)
+
+
+def rename_calibration(entry: CalibrationEntry, label: str) -> CalibrationEntry:
+    """Change an entry's label. The id and file name stay the same."""
+    return update_metadata(entry, label=clean_label(label))
 
 
 def descendants(entries: list[CalibrationEntry], entry_id: str) -> list[CalibrationEntry]:

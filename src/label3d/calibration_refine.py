@@ -12,10 +12,30 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from itertools import combinations
 from pathlib import Path
+from typing import Callable
 
+import cv2
 import numpy as np
 import pandas as pd
+from aniposelib.cameras import CameraGroup
 
+from label3d.calibration_compare import PairDrift, compare_calibrations, run_spread
+from label3d.calibration_io import load_corners
+from label3d.calibration_registry import (
+    CalibrationEntry,
+    camera_dir,
+    save_calibration,
+    update_metadata,
+)
+from label3d.calibration_solve import (
+    CalibrationTake,
+    TakeCalibration,
+    build_board,
+    calibrate_repeated,
+    rows_in_range,
+    take_detections,
+    take_ranges,
+)
 from label3d.points import SOURCE_LABEL3D, SOURCE_SLEAP_PRED, SOURCE_SLEAP_USER
 
 ALL_SOURCES = (SOURCE_LABEL3D, SOURCE_SLEAP_USER, SOURCE_SLEAP_PRED)
@@ -196,3 +216,311 @@ def load_points_record(
             p2ds[c, n] = (rec.x, rec.y)
     index = pd.MultiIndex.from_tuples(keys, names=POINT_INDEX)
     return p2ds, index, holdout
+
+
+# -- Stage 1: the charuco calibration a refinement starts from --------------------
+
+def charuco_rows(
+    exp_dir: Path, cam_names: list[str], takes: list[CalibrationTake], names: list[str]
+) -> dict[str, list]:
+    """Saved corners of the named takes, trimmed to each take's frame range."""
+    rows = {
+        cam: load_corners(camera_dir(exp_dir, cam), takes=names) or []
+        for cam in cam_names
+    }
+    return rows_in_range(rows, takes)
+
+
+def calibrate_takes(
+    rows: dict[str, list],
+    cam_names: list[str],
+    cam_sizes: dict[str, tuple[int, int]],
+    board_params: dict,
+    n_repeats: int,
+    progress: Callable[[str], None] | None = None,
+) -> TakeCalibration:
+    """Stage 1: calibrate the chosen takes jointly, keeping the best of n_repeats runs."""
+    if not any(rows.values()):
+        raise ValueError("no saved charuco corners for the chosen takes")
+    board = build_board(board_params)
+    return calibrate_repeated(
+        cam_names, cam_sizes, rows, board, n_repeats, "the chosen takes", progress
+    )
+
+
+def matching_charuco_entry(
+    entries: list[CalibrationEntry],
+    names: list[str],
+    takes: list[CalibrationTake],
+    exp_dir: Path,
+    cam_names: list[str],
+) -> CalibrationEntry | None:
+    """The newest charuco entry made from exactly these takes and the current corners.
+
+    A match has the same takes, the same detection timestamps and the same
+    take ranges, so recalibrating would solve the same rows again.
+    """
+    detected = take_detections(exp_dir, cam_names, names)
+    ranges = take_ranges(takes, names)
+    for entry in entries:   # newest first
+        if entry.method != "charuco" or sorted(entry.charuco_takes) != sorted(names):
+            continue
+        charuco = entry.metadata.get("charuco", {})
+        if charuco.get("detected") == detected and charuco.get("take_ranges") == ranges:
+            return entry
+    return None
+
+
+def charuco_points(rows: dict[str, list], cam_names: list[str]) -> np.ndarray:
+    """Charuco corners as a C × N × 2 array, one column per (take, frame, corner).
+
+    Only corners seen by at least two cameras are kept, since reprojection
+    error needs a triangulated point.
+    """
+    position: dict[tuple, int] = {}
+    seen: list[dict[int, tuple[float, float]]] = []
+    for c, cam in enumerate(cam_names):
+        for row in rows.get(cam, []):
+            corners, ids = row.get("corners"), row.get("ids")
+            if corners is None or ids is None:
+                continue
+            xy = np.asarray(corners, dtype=float).reshape(-1, 2)
+            for corner_id, (x, y) in zip(np.asarray(ids).ravel(), xy):
+                key = (row.get("framenum"), int(corner_id))
+                if key not in position:
+                    position[key] = len(seen)
+                    seen.append({})
+                seen[position[key]][c] = (x, y)
+    p2ds = np.full((len(cam_names), len(seen), 2), np.nan)
+    for n, obs in enumerate(seen):
+        for c, xy in obs.items():
+            p2ds[c, n] = xy
+    keep = np.sum(~np.isnan(p2ds[:, :, 0]), axis=0) >= 2
+    return p2ds[:, keep]
+
+
+# -- Errors ----------------------------------------------------------------------
+
+def point_errors(cgroup: CameraGroup, p2ds: np.ndarray) -> np.ndarray:
+    """Reprojection error (px) of every observation of a point seen by ≥ 2 cameras."""
+    if p2ds.shape[1] == 0:
+        return np.array([])
+    p3ds = cgroup.triangulate(p2ds)
+    errors = np.linalg.norm(cgroup.reprojection_error(p3ds, p2ds), axis=2)
+    return errors[np.isfinite(errors)]
+
+
+def error_stats(errors: np.ndarray) -> tuple[float, float]:
+    """(median, 90th percentile), NaN when there are no errors."""
+    if len(errors) == 0:
+        return float("nan"), float("nan")
+    return float(np.median(errors)), float(np.percentile(errors, 90))
+
+
+# -- Fixing scale and world frame ------------------------------------------------
+
+def _poses(cgroup: CameraGroup) -> tuple[np.ndarray, np.ndarray]:
+    """(rotations C×3×3, translations C×3) of the cameras."""
+    R = np.array([cv2.Rodrigues(np.asarray(cam.get_rotation(), dtype=float))[0]
+                  for cam in cgroup.cameras])
+    t = np.array([np.asarray(cam.get_translation(), dtype=float).ravel()
+                  for cam in cgroup.cameras])
+    return R, t
+
+
+def _nearest_rotation(M: np.ndarray) -> np.ndarray:
+    U, _, Vt = np.linalg.svd(M)
+    D = np.diag([1.0, 1.0, np.sign(np.linalg.det(U @ Vt))])
+    return U @ D @ Vt
+
+
+def similarity_to(cgroup: CameraGroup, reference: CameraGroup) -> tuple[float, np.ndarray, np.ndarray]:
+    """The similarity (s, R, T) with reference world ≈ s·R·(cgroup world) + T.
+
+    With 3 or more cameras it is fitted to the camera centres (Umeyama). With
+    2, the centres leave the rotation about the baseline free, so the
+    rotation comes from the camera orientations and the scale from the
+    baseline length.
+    """
+    R_a, t_a = _poses(cgroup)
+    R_b, t_b = _poses(reference)
+    c_a = -np.einsum("nji,nj->ni", R_a, t_a)   # centres: -Rᵀt
+    c_b = -np.einsum("nji,nj->ni", R_b, t_b)
+    mu_a, mu_b = c_a.mean(axis=0), c_b.mean(axis=0)
+    d_a, d_b = c_a - mu_a, c_b - mu_b
+
+    if len(c_a) >= 3:
+        cov = d_b.T @ d_a / len(c_a)
+        U, S, Vt = np.linalg.svd(cov)
+        D = np.diag([1.0, 1.0, np.sign(np.linalg.det(U @ Vt))])
+        R = U @ D @ Vt
+        var_a = np.sum(d_a ** 2) / len(c_a)
+        s = float(np.trace(np.diag(S) @ D) / var_a)
+    else:
+        # A camera keeps its orientation when R_a_i·Rᵀ = R_b_i, so R ≈ R_b_iᵀ·R_a_i.
+        R = _nearest_rotation(sum(rb.T @ ra for ra, rb in zip(R_a, R_b)))
+        s = float(np.sum(np.linalg.norm(d_b, axis=1)) / np.sum(np.linalg.norm(d_a, axis=1)))
+    T = mu_b - s * R @ mu_a
+    return s, R, T
+
+
+def apply_similarity(cgroup: CameraGroup, s: float, R: np.ndarray, T: np.ndarray) -> None:
+    """Move cgroup's world frame by X_new = s·R·X + T, keeping every projection."""
+    R_cam, t_cam = _poses(cgroup)
+    for cam, Ri, ti in zip(cgroup.cameras, R_cam, t_cam):
+        R_new = Ri @ R.T
+        cam.set_rotation(cv2.Rodrigues(R_new)[0].ravel())
+        cam.set_translation(s * ti - R_new @ T)
+
+
+def align_to(cgroup: CameraGroup, reference: CameraGroup) -> float:
+    """Map cgroup onto reference's scale (cm) and world axes. Returns the scale."""
+    s, R, T = similarity_to(cgroup, reference)
+    apply_similarity(cgroup, s, R, T)
+    return s
+
+
+# -- Stage 2 ---------------------------------------------------------------------
+
+@dataclass
+class RefineOptions:
+    only_extrinsics: bool = True
+    holdout: float = 0.2
+    n_repeats: int = 3
+    seed: int | None = None       # None: drawn at random, then stored
+    n_samp_full: int = 1000
+    n_samp_iter: int = 200
+
+
+@dataclass
+class RefineResult:
+    cgroup: CameraGroup                # refined and aligned onto the start
+    start: CameraGroup                 # the Stage 1 group it started from
+    p2ds: np.ndarray                   # every selected point, C × N × 2
+    index: pd.MultiIndex
+    holdout: np.ndarray                # bool per point
+    seed: int
+    kept_repeat: int
+    scale: float                       # alignment scale correction
+    spread: tuple[float, float]        # run-to-run (rotation_deg, baseline_pct)
+    errors: dict[str, float]
+    drift: list[PairDrift]
+
+
+def new_seed() -> int:
+    return int(np.random.default_rng().integers(0, 2**31 - 1))
+
+
+def run_stage2(
+    start: CameraGroup, p2ds_fit: np.ndarray, options: RefineOptions, seed: int
+) -> tuple[CameraGroup, float]:
+    """One bundle adjustment of a copy of `start`, aligned back onto it.
+
+    aniposelib subsamples with NumPy's global random state, so seeding it
+    makes the run reproducible. Returns (refined group, scale correction).
+    """
+    np.random.seed(seed)
+    cgroup = start.copy()
+    cgroup.bundle_adjust_iter(
+        p2ds_fit,
+        only_extrinsics=options.only_extrinsics,
+        n_samp_full=options.n_samp_full,
+        n_samp_iter=options.n_samp_iter,
+        verbose=False,
+    )
+    scale = align_to(cgroup, start)
+    return cgroup, scale
+
+
+def refine(
+    start: CameraGroup,
+    p2ds: np.ndarray,
+    index: pd.MultiIndex,
+    options: RefineOptions,
+    charuco_p2ds: np.ndarray | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> RefineResult:
+    """Stage 2: adjust `start` with the selected points; validate on held-out frames.
+
+    p2ds and index come from gather_points, in the order of start.get_names().
+    charuco_p2ds, when given, are the charuco corners of the start's takes,
+    which the refinement should not make much worse.
+    """
+    say = progress or (lambda _msg: None)
+    seed = options.seed if options.seed is not None else new_seed()
+    holdout = holdout_mask(index, holdout_frames(index, options.holdout, seed))
+    fit, held = p2ds[:, ~holdout], p2ds[:, holdout]
+    if fit.shape[1] == 0:
+        raise ValueError("no points to refine with")
+    say(f"Refining with {fit.shape[1]} points; {held.shape[1]} held out (seed {seed})")
+
+    runs = []
+    for r in range(max(1, options.n_repeats)):
+        cgroup, scale = run_stage2(start, fit, options, seed + r)
+        score_points = held if held.shape[1] else fit
+        err = error_stats(point_errors(cgroup, score_points))[0]
+        say(f"  run {r + 1}/{options.n_repeats}: median error {err:.3f} px, scale {scale:.4f}")
+        runs.append((err, r, cgroup, scale))
+    err, kept, cgroup, scale = min(runs, key=lambda run: (np.nan_to_num(run[0], nan=np.inf), run[1]))
+    spread = run_spread([run[2] for run in runs])
+
+    errors: dict[str, float] = {}
+    errors["holdout"], errors["holdout_p90"] = error_stats(point_errors(cgroup, held))
+    errors["holdout_before"], errors["holdout_p90_before"] = error_stats(point_errors(start, held))
+    errors["points"] = error_stats(point_errors(cgroup, fit))[0]
+    errors["points_before"] = error_stats(point_errors(start, fit))[0]
+    if charuco_p2ds is not None and charuco_p2ds.shape[1]:
+        errors["charuco"] = error_stats(point_errors(cgroup, charuco_p2ds))[0]
+        errors["charuco_before"] = error_stats(point_errors(start, charuco_p2ds))[0]
+    errors["scale_correction"] = scale
+    errors["spread_rotation_deg"], errors["spread_baseline_pct"] = spread
+    errors = {k: float(v) for k, v in errors.items() if np.isfinite(v)}
+
+    return RefineResult(
+        cgroup=cgroup, start=start, p2ds=p2ds, index=index, holdout=holdout,
+        seed=seed, kept_repeat=kept, scale=scale, spread=spread, errors=errors,
+        drift=compare_calibrations(start, cgroup),
+    )
+
+
+# -- Saving ----------------------------------------------------------------------
+
+def save_refinement(
+    exp_dir: Path,
+    result: RefineResult,
+    parent: CalibrationEntry,
+    label: str,
+    sel: PointSelection,
+    options: RefineOptions,
+    points_df: pd.DataFrame,
+) -> CalibrationEntry:
+    """Save a refine entry under refined/, with its _points.csv record."""
+    cam_names = result.cgroup.get_names()
+    entry = save_calibration(
+        exp_dir, result.cgroup, label, "refine", parent=parent.id,
+        charuco_takes=parent.charuco_takes,
+        points={
+            "sources": sorted(sel.sources),
+            "score_min": float(sel.score_min),
+            "min_cameras": int(sel.min_cameras),
+            "frames": frames_by_trial(result.index),
+            "n_points": int(result.p2ds.shape[1]),
+        },
+        options={
+            "only_extrinsics": bool(options.only_extrinsics),
+            "holdout": float(options.holdout),
+            "n_repeats": int(options.n_repeats),
+            "seed": int(result.seed),
+            "kept_repeat": int(result.kept_repeat),
+            "n_samp_full": int(options.n_samp_full),
+            "n_samp_iter": int(options.n_samp_iter),
+        },
+        errors=result.errors,
+    )
+    points_file = f"{entry.id}_points.csv"
+    save_points_record(
+        entry.path.parent / points_file, result.p2ds, result.index, cam_names,
+        points_df, result.holdout,
+    )
+    points = dict(entry.metadata["points"], points_file=points_file)
+    return update_metadata(entry, points=points)
