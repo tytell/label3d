@@ -1,8 +1,8 @@
 # Phase 12 — Refining the Calibration with Labelled Points
 
-**Goal**: Refine a calibration using the bodypart points labelled or predicted in several cameras. A refinement always starts from a charuco calibration computed by aniposelib's `calibrate_rows` on the user's chosen takes. aniposelib's `bundle_adjust_iter` then adjusts it with the digitised points. Every result is saved to the registry (Phase 11) with a full record of its inputs, enough to rebuild it. The charuco solution it started from is kept too, so the user can switch between the original and any refinement of it, or between refinements that used different points.
+**Goal**: Refine a calibration using the bodypart points labelled or predicted in several cameras. A refinement starts from a charuco calibration computed by aniposelib's `calibrate_rows` on the user's chosen takes, or from an imported calibration. aniposelib's `bundle_adjust_iter` then adjusts it with the digitised points. Every result is saved to the registry (Phase 11) with a full record of its inputs, enough to rebuild it. The charuco solution it started from is kept too, so the user can switch between the original and any refinement of it, or between refinements that used different points.
 
-**Status**: Not started. Depends on Phase 10 (scores, sources) and Phase 11 (registry).
+**Status**: Not started. Depends on Phase 10 (scores, sources) and Phase 11 (registry), both complete.
 
 **Scope**: one experiment at a time. Calibrations are per experiment, so a refinement uses only that experiment's charuco takes and that experiment's points. The dialog works on the active experiment.
 
@@ -11,21 +11,30 @@
 ## 12.1 Two stages
 
 ```
-Stage 1  charuco corners from takes T  ──calibrate_rows──▶  cgroup_charuco   (saved, method="charuco")
+Stage 1  charuco corners from takes T  ──calibrate_rows──▶  cgroup_charuco   (saved, method="charuco"; or an existing imported entry)
 Stage 2  cgroup_charuco + points P     ──bundle_adjust_iter──▶  cgroup_refined  (saved, method="refine", parent=cgroup_charuco)
 ```
 
 **Storage** (Phase 11.1): the Stage 1 result is an ordinary `charuco` entry in `calibrations/`. The Stage 2 result goes to `calibrations/refined/`, with `metadata.parent` set to the Stage 1 id and a `_points.csv` companion file (12.2). Several refinements can share one parent. Deleting the parent deletes them all (11.3).
 
 **Stage 1**
-- Corners for the chosen takes come from `calibration/{cam}/corners.csv` through `load_corners(cam_dir, takes=...)` (Phase 11.4).
+- Corners for the chosen takes come from `calibrations/{cam}/corners.csv` (`camera_dir(exp_dir, cam)`) through `load_corners(cam_dir, takes=...)` (Phase 11.4). Frame skip is already applied at detection. The rows are trimmed to each take's start/end with `rows_in_range()`, as the Calibration tab does.
+- Camera sizes come from the take videos, as in `_scan_take_media()`.
 - They're calibrated with the existing `calibrate_rows()` path in `workers/calibration_worker.py`, including repeated runs and keeping the best.
-- If the registry already has a `charuco` entry with exactly the same takes, and its `detected` timestamps match the current corners, the dialog offers to start from it instead of recalibrating.
-- A new Stage 1 result is saved as a `charuco` entry with the same `[metadata.charuco]` record as one made in the Calibration tab.
+- **Moved out of Qt classes so the refinement can reuse them:**
+  - the repeat-and-keep-best loop, from `MultiTakeCalibrationWorker._calibrate_repeated` to a module function;
+  - `take_range()` and `_build_takes()`, from `calibration_view.py`;
+  - the `[metadata]` builder, from `CalibrationView._charuco_metadata`.
+- The dialog offers to start from an existing `charuco` entry instead of recalibrating if the entry matches the current corners exactly. A match has:
+  - the same takes;
+  - its `metadata.charuco.detected` table (take → timestamp) equal to `corner_detections()` for those takes;
+  - its `take_ranges` equal to the current ones.
+- **Starting from an imported calibration.** Stage 1 can also be an existing `imported` entry, such as a calibration found during setup from SLP files or the synthetic `ground-truth`. It's used as is, with no recalibration. If it has no `charuco_takes`, the charuco-corner errors (12.3, item 2) are left out of the report and the metadata.
+- A new Stage 1 result is saved as a `charuco` entry with the same `[metadata]` as one made in the Calibration tab: `charuco_takes`, `[metadata.charuco]` (board, frame skip, take ranges, detected, `n_rows`), and `errors.charuco` / `spread_rotation_deg` / `spread_baseline_pct`.
 
 **Stage 2**
-- `cgroup.bundle_adjust_iter(p2ds, extra=None, only_extrinsics=..., n_samp_full=..., n_samp_iter=...)` runs on a copy of the Stage 1 group.
-- `p2ds` is a `C × N × 2` array of **raw pixel** coordinates, in the order of `cgroup.get_names()`. aniposelib projects with distortion, so no undistortion is needed. Missing cameras are NaN.
+- `cgroup.bundle_adjust_iter(p2ds, extra=None, only_extrinsics=..., n_samp_full=..., n_samp_iter=...)` runs on a copy of the Stage 1 group. Defaults are `n_samp_full=1000`, `n_samp_iter=200`. It stops early once the median error is below `error_threshold` (0.3 px by default), which animal points will rarely reach.
+- `p2ds` is a `C × N × 2` array of **raw pixel** coordinates, in the order of `cgroup.get_names()`. aniposelib undistorts when it triangulates and projects with distortion, so no undistortion is needed. Missing cameras are NaN.
 - There's no `extra`. The board constraint applies only to charuco points, and Stage 1 has already used it.
 
 ## 12.2 Point selection (`calibration_refine.py`, no Qt)
@@ -39,8 +48,11 @@ class PointSelection:
     min_cameras: int = 2
 
 def gather_points(points_df, cam_names, sel) -> tuple[np.ndarray, pd.MultiIndex]
+    # points_df: the experiment's rows of points.csv (5-level index, experiment dropped or fixed)
     # -> (p2ds C×N×2, index of the (trial, frame, instance, bodypart) behind each column)
 ```
+
+Source names use the constants in `points.py` (`SOURCE_LABEL3D`, `SOURCE_SLEAP_USER`, `SOURCE_SLEAP_PRED`). SLEAP user labels arrive as `state=set` and predictions as `state=predicted`, with a `score` (`slp_sync.SLEAP_SOURCES`).
 
 **Which observations count:**
 - A camera observation counts if its `state` is `set` or `predicted`, its `source` is in `sel.sources`, its x/y are finite, and for `sleap_pred` its `score` is at least `score_min`.
@@ -65,8 +77,9 @@ def gather_points(points_df, cam_names, sel) -> tuple[np.ndarray, pd.MultiIndex]
 - The split uses a fixed seed stored in the metadata, so a run can be repeated.
 
 **Fixing scale and world frame**
-- Bundle adjustment on animal points alone has no metric scale, and it can shift the whole rig.
-- After Stage 2, apply a similarity transform (Umeyama, on camera centres) that maps the refined rig back onto `cgroup_charuco`. This keeps the charuco scale (cm) and world axes.
+- Bundle adjustment on animal points alone has no metric scale, and it can shift the whole rig. The 3D points and extrinsics are free up to a similarity (7 degrees of freedom).
+- After Stage 2, apply a similarity transform that maps the refined rig back onto `cgroup_charuco`. This keeps the charuco scale (cm) and world axes.
+- With 3 or more cameras, this is Umeyama on camera centres. With 2 cameras, the centres leave the rotation about the baseline free. The rotation then comes from the camera orientations (the mean of `R_charuco_i · R_refined_iᵀ`), the scale from the baseline length, and the translation from the centroids. Tests should cover both cases. `test_project_sync.py` already builds a two-camera rig.
 - The size of the transform's scale correction is reported. A large one is a warning sign.
 
 **Reported errors:**
@@ -74,7 +87,15 @@ def gather_points(points_df, cam_names, sel) -> tuple[np.ndarray, pd.MultiIndex]
 2. **Charuco corners from the chosen takes:** before and after. Stage 2 should not make these much worse.
 3. **Per camera-pair drift from Stage 1:** from `calibration_compare.compare_calibrations()`, as in the take comparison.
 
-**Repeats:** `bundle_adjust_iter` subsamples at random, so Stage 2 runs `n_repeats` times (default 3). The run with the lowest held-out error is kept, and the run-to-run spread is reported, as in the recent charuco change. Each repeat seeds NumPy's random state from the stored seed plus its repeat number, and the kept repeat number goes in `metadata.options`, so the kept run can be reproduced.
+**Repeats:** `bundle_adjust_iter` subsamples at random, so Stage 2 runs `n_repeats` times (default 3). The run with the lowest held-out error is kept. The run-to-run spread is reported as rotation and baseline spread (`calibration_compare.run_spread()`), as for charuco. aniposelib draws from NumPy's global random state (`np.random.random`, `np.random.choice`). Each repeat therefore calls `np.random.seed(seed + repeat)`, and the kept repeat number goes in `metadata.options`, so the kept run can be reproduced.
+
+**Errors in `[metadata.errors]`** for a `refine` entry, all in px unless noted:
+- `holdout`, `holdout_p90`: the refinement on the held-out points. `entry_error()` already shows `holdout` first.
+- `holdout_before`, `holdout_p90_before`: Stage 1 on the same points.
+- `charuco`, `charuco_before`: the charuco corners of the parent's takes.
+- `points`: the frames used for fitting.
+- `scale_correction`: the alignment scale, a ratio.
+- `spread_rotation_deg`, `spread_baseline_pct`: as for charuco.
 
 ## 12.4 Refine dialog (`widgets/refine_dialog.py`) and worker (`workers/calibration_worker.py`)
 
@@ -82,7 +103,7 @@ Opened from the Calibration tab with **Refine with points...**.
 
 | Control | Default |
 |---|---|
-| Charuco takes (checklist), or *Start from existing entry* combo | all takes |
+| Charuco takes (checklist), or *Start from existing entry* combo (charuco or imported entries) | all takes |
 | Sources: label3d user / SLEAP user / SLEAP predictions | first two checked |
 | Prediction score ≥ | 0.8 |
 | Trials (checklist) | all |
@@ -98,8 +119,9 @@ Opened from the Calibration tab with **Refine with points...**.
 **Results view**
 - The before and after error table, the per-pair drift, and the scale correction.
 - **Save** writes the Stage 1 entry if it's new, then the `refine` entry and its `_points.csv`. Both entries use `[metadata]` as in Phase 11.1, with `points.sources`, `score_min`, `frames` and `points_file` filled in, and the hold-out seed in `metadata.options`.
-- **Save and make active** also moves the pointer.
+- **Save and make active** also moves the pointer (`Project.set_active_calibration`). As with **Make active** in the Calibration tab (Phase 11, *As implemented*), it doesn't re-triangulate. The stale-3D warning and its **re-triangulate** link show instead.
 - **Discard** saves nothing.
+- After a save, the Calibration tab emits `calibrations_changed`, so the registry list and the top-bar combo are refilled.
 
 ## 12.5 Tests (`tests/test_calibration_refine.py`)
 
@@ -115,7 +137,9 @@ Uses the synthetic generator: a known rig, charuco takes and a moving animal.
 ## 12.6 Reference docs
 
 - **`docs/workflows.md`:** the Refine dialog, its options, and how to read the before and after errors.
-- **`docs/data_model.md`:** the `_points.csv` columns.
+- **`docs/data_model.md`:** the `_points.csv` columns and the `refine` keys in `[metadata.errors]` and `[metadata.options]`.
+- **`docs/architecture.md`:** `calibration_refine.py` and `widgets/refine_dialog.py`.
+- **`DESIGN.md`** and **CLAUDE.md:** the phase status.
 
 ## Implementation order
 

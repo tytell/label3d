@@ -2,9 +2,9 @@
 
 **Goal**: Keep every calibration solution an experiment has produced, together with how it was made. Point to the one in use, and switch between them in the Label tab, with epipolar lines and triangulated points updating.
 
-**Status**: Implemented on branch `refine_calib`; awaiting UI testing. See *As implemented* at the end.
+**Status**: Complete. See *As implemented* at the end.
 
-**Compatibility**: Pointer only. After this phase nothing reads or writes `experiments/{name}/calibration.toml` or `calibration_takes/*.toml`. A one-time import (11.3) copies the existing files into the registry so existing calibrations aren't lost. There are few legacy projects, so the import is kept simple.
+**Compatibility**: Pointer only. After this phase nothing reads or writes `experiments/{name}/calibration.toml`, `calibration_takes/*.toml` or `corners_{take}.csv`. Projects made before this phase are not migrated; they are set up again.
 
 ---
 
@@ -12,6 +12,7 @@
 
 ```
 experiments/{name}/calibrations/
+    {camera}/                                 # calibration videos and corners.csv
     {label}_{YYYYmmdd-HHMMSS}.toml            # charuco, imported, align
     refined/
         {label}_{YYYYmmdd-HHMMSS}.toml        # refine (Phase 12)
@@ -103,16 +104,10 @@ def load_calibration(entry) -> CameraGroup
 def save_calibration(exp_dir, cgroup, label, method, **metadata) -> CalibrationEntry
 def rename_calibration(entry, label) -> CalibrationEntry
 def delete_calibration(exp_dir, entry) -> list[CalibrationEntry]   # also deletes descendants
-def import_legacy(exp_dir) -> list[CalibrationEntry]
 ```
 
 - `save_calibration` writes `refine` entries to `refined/` and all others to the top folder. It gives the group a new `metadata` dict rather than editing the one it has. `CameraGroup.__init__` has a mutable `metadata={}` default, so editing it in place would leak into other groups.
 - `delete_calibration` removes the entry and every entry descended from it through `parent`, along with their `_points.csv` files. It returns everything it removed, so the caller can confirm first.
-
-**Legacy import:** `import_legacy()` imports `calibration.toml` and `calibration_takes/*.toml` as `method="imported"`.
-- It runs once, when the registry folder is missing, and leaves the old files where they are.
-- `created` is each file's modification time.
-- It sets `[calibration.active]` to the entry imported from `calibration.toml`. It also sets `[calibration.triangulated_with]` to a placeholder (`legacy`), so the Label tab shows the re-triangulate warning (11.5) once.
 
 ## 11.4 Writers
 
@@ -126,13 +121,12 @@ def import_legacy(exp_dir) -> list[CalibrationEntry]
 - Only sets the pointer to the chosen result's entry. It doesn't write a file.
 
 **Corners** (`calibration_io.py`)
-- One `corners.csv` per camera holds every take's detections. It replaces `corners.csv` plus `corners_{take}.csv`.
+- One `corners.csv` per camera, in `calibrations/{camera}/`, holds every take's detections. It replaces `corners.csv` plus `corners_{take}.csv`.
 - **Columns:** `take, frame, corner_id, x, y, detected`. `take` and `frame` replace the `"{take}:{frame}"` `source_key`. `detected` is the timestamp of the detection run.
 - Re-detecting a take replaces that take's rows only.
 - `load_corners(cam_dir, takes=None)` filters by take. This replaces `rows_for_take()` on the file path.
 - Every `charuco` entry records the takes, board, frame skip, take ranges and `detected` timestamp (11.1). Together with the corners file, that's enough to rerun the solve. If a take is re-detected later, a mismatched `detected` timestamp shows that the entry used older corners.
 - On load, the Calibration tab computes reprojection errors from the corners of the active entry's `charuco_takes`. For a `refine` entry, the takes are its parent's.
-- Existing `corners.csv` and `corners_{take}.csv` files are read once and rewritten in the new layout. Nothing else is migrated.
 
 **Project setup** ([setup_project.py:878](../../src/label3d/setup_project.py#L878))
 - When setup from SLP files finds an existing aniposelib calibration (`assignment.calibration_toml`), it currently copies it to `experiments/{exp}/calibration.toml`. Instead it saves an `imported` entry with `metadata.source_path` set to the original path, and sets the pointer.
@@ -160,7 +154,7 @@ def import_legacy(exp_dir) -> list[CalibrationEntry]
 
 **Recording which calibration was used:**
 - `set_triangulated_with()` stores the id per experiment once a full re-triangulation finishes. **Instances > Triangulate all experiments** does the same for each experiment it finishes. Its messages refer to the active calibration instead of `calibration.toml`.
-- If `triangulated_with` differs from the experiment's entry in `[calibration.active]` (an interrupted run, a switch made in the Calibration tab, or a legacy import), the Label tab shows "3D points are from <label>; re-triangulate" in the status bar and offers **Instances > Triangulate all experiments**.
+- If `triangulated_with` differs from the experiment's entry in `[calibration.active]` (an interrupted run or a switch made in the Calibration tab), the Label tab shows "3D points are from <label>; re-triangulate" in the status bar and offers **Instances > Triangulate all experiments**.
 
 **The Calibration tab:** add a read-only registry list (label, date, method, error), with refined entries under their parent. It has three buttons:
 - **Make active.**
@@ -177,11 +171,10 @@ def import_legacy(exp_dir) -> list[CalibrationEntry]
   - Rename keeps the id and file name.
   - Delete removes descendants and their `_points.csv`.
   - Saving one group doesn't change another group's `metadata`.
-- **Import and pointer:**
-  - `import_legacy` on a project with `calibration.toml` and two take files sets the pointer and doesn't touch the originals.
+- **Pointer:**
   - `calibration_path()` returns `None` with no pointer.
   - Writing a pointer keeps `frame_skip` and the drift thresholds.
-- **Corners:** the single-file round trip, filtering by take, re-detecting one take, and reading the old per-take files.
+- **Corners:** the single-file round trip, filtering by take, and re-detecting one take.
 - **Switching:** gives different `xr/yr` for a perturbed calibration. This reuses the two-camera project in `test_project_sync.py`.
 
 ## 11.7 Reference docs
@@ -216,12 +209,12 @@ Differences from the plan above, and details it left open:
 - **Where the combo lives.** The **Calibration** combo is in the top bar, next to Experiment, so it shows in every tab. Choosing an entry there re-triangulates. Make active / Use take in the Calibration tab don't, and show the warning instead.
 - **`metadata.charuco.detected`** is a table, take → timestamp, because takes can be detected at different times. `[metadata.charuco]` also records `n_rows`.
 - **Errors.** `metadata.errors` holds `charuco`, `spread_rotation_deg` and `spread_baseline_pct`. The run-to-run spread is a rotation and baseline spread, not a pixel error.
-- **`source_path`** is relative to the experiment folder for legacy imports, and the original absolute path for setup imports.
-- **Legacy corners.** The old per-take files are left in place after conversion. Image-based rows (no take) are dropped, since image calibration is deprecated.
+- **`source_path`** is the original absolute path for setup imports.
+- **No migration.** The legacy import and the corner-file conversion were built, then removed: old projects are set up again. Calibration videos and corners moved from `calibration/{cam}/` to `calibrations/{cam}/`, next to the solutions; setup rejects `refined` as a camera name.
 - **Calibration tab signal.** `calibration_saved` is renamed `calibrations_changed`. It's emitted on any registry or pointer change.
 - **Display helpers.** `entry_tree`, `entry_error` and `entry_summary` in `calibration_registry.py` give the display order, headline error and tooltip text for the combo and the list.
 - **Tests.**
-  - `tests/test_calibration_registry.py` covers the registry, legacy import, alignment entries and display helpers (16 tests).
+  - `tests/test_calibration_registry.py` covers the registry, alignment entries and display helpers.
   - `test_project_sync.py::TestSwitchCalibration` covers switching, interrupted runs and keeping `[calibration]` settings. `test_project_loading` covers pointers.
   - `test_calibration_takes.py` covers the corners file and the Calibration tab's registry writes.
-  - The UI was smoke-tested offscreen: switching in the combo, the warning after a Calibration-tab switch, and the re-triangulate link.
+  - The UI was smoke-tested offscreen (switching in the combo, the warning after a Calibration-tab switch, the re-triangulate link) and then tested by hand.

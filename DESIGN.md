@@ -23,7 +23,7 @@ A cross-platform desktop app for:
 | [docs/phases/phase_8.md](docs/phases/phase_8.md) | Phase 8 — SLP write-back (completed) |
 | [docs/phases/phase_9.md](docs/phases/phase_9.md) | Phase 9 — Calibration Takes (completed) |
 | [docs/phases/phase_10.md](docs/phases/phase_10.md) | Phase 10 — Point provenance and reviewing new points (completed) |
-| [docs/phases/phase_11.md](docs/phases/phase_11.md) | Phase 11 — Calibration registry and switching calibrations (implemented; awaiting UI testing) |
+| [docs/phases/phase_11.md](docs/phases/phase_11.md) | Phase 11 — Calibration registry and switching calibrations (completed) |
 | [docs/phases/phase_12.md](docs/phases/phase_12.md) | Phase 12 — Refining the calibration with labelled points |
 | [docs/phases/phase_13.md](docs/phases/phase_13.md) | Phase 13 — Batch triangulation and export |
 | [docs/phases/phase_14.md](docs/phases/phase_14.md) | Phase 14 — Axis alignment (deferred; partially implemented) |
@@ -47,7 +47,7 @@ A cross-platform desktop app for:
 | 8 | SLP write-back (File > Sync with Sleap) | ✓ Complete |
 | 9 | Calibration takes | ✓ Complete |
 | 10 | Point provenance and reviewing new points | ✓ Complete |
-| 11 | Calibration registry and switching | Implemented on branch `refine_calib`; awaiting UI testing |
+| 11 | Calibration registry and switching | ✓ Complete |
 | 12 | Calibration refinement with labelled points | Not started |
 | 13 | Batch triangulation and export | Not started |
 | 14 | Axis alignment | Deferred; partial — geometry helpers done, UI widget not created |
