@@ -67,7 +67,7 @@ Source names use the constants in `points.py` (`SOURCE_LABEL3D`, `SOURCE_SLEAP_U
 - `holdout` is True for observations in held-out frames (12.3).
 - The x/y are copied, not referenced, so the file still describes the fit after `points.csv` is edited or re-synced.
 - With this file and the parent entry, Stage 2 can be rerun exactly. `metadata.points` (sources, score threshold, frames, count) is a summary for the tooltip and registry list. `metadata.points.points_file` names the file.
-- `save_points_record(path, p2ds_index, points_df, holdout_frames)` and `load_points_record(path) -> (p2ds, index, holdout)` live in `calibration_refine.py`.
+- `save_points_record(path, p2ds, index, cam_names, points_df, holdout)` and `load_points_record(path, cam_names) -> (p2ds, index, holdout)` live in `calibration_refine.py`. `holdout` is a bool per point; source and score are looked up in `points_df`.
 
 ## 12.3 Holding out frames, fixing scale, validating
 
@@ -113,7 +113,7 @@ Opened from the Calibration tab with **Refine with points...**.
 | Label | `refine` |
 
 **Running a refinement**
-- A live table shows usable points per camera pair. **Run** is disabled while any pair has fewer than about 50 points; the threshold is a constant, revisited once there's real data.
+- A live table shows usable points per camera pair. **Run** is never disabled: a refinement can run with any number of points. The pair counts are there so the user can judge the result.
 - `RefineWorker(QThread)` runs Stage 1 if needed, then Stage 2, the alignment and the validation. It emits progress text and a `RefineResult`.
 
 **Results view**
