@@ -379,10 +379,15 @@ class MainWindow(QMainWindow):
         ])
         zoom_all.triggered.connect(self._camera_grid.fit_targets)
 
-        self._state.selection_changed.connect(self._update_zoom_actions)
-        self._update_zoom_actions(
-            self._state.selected_instance, self._state.selected_bodypart
-        )
+        # Zoom to instance depends on the frame's instances, not just the selection
+        for signal in (
+            self._state.selection_changed,
+            self._state.frame_changed,
+            self._state.trial_changed,
+            self._state.points_changed,
+        ):
+            signal.connect(self._update_zoom_actions)
+        self._update_zoom_actions()
 
         # Instances menu
         inst_menu = menu_bar.addMenu("Instances")
@@ -493,11 +498,13 @@ class MainWindow(QMainWindow):
         if self._connected_store is not None:
             try:
                 self._connected_store.data_changed.disconnect(self._update_slider_marks)
+                self._connected_store.data_changed.disconnect(self._update_zoom_actions)
             except RuntimeError:
                 pass
         self._connected_store = store
         if store is not None:
             store.data_changed.connect(self._update_slider_marks)
+            store.data_changed.connect(self._update_zoom_actions)
 
     def _update_slider_marks(self) -> None:
         store = self._state.points_store
@@ -881,15 +888,33 @@ class MainWindow(QMainWindow):
         """Switch camera from menu — keeps combo box in sync."""
         self._view_combo.setCurrentIndex(index)
 
-    def _update_zoom_actions(self, instance: int, bodypart: str):
-        """Enable the selection-dependent zoom actions only when something is selected."""
-        self._action_zoom_instance.setEnabled(instance >= 0)
-        self._action_zoom_point.setEnabled(instance >= 0 and bool(bodypart))
+    def _update_zoom_actions(self, *_args):
+        """Enable zoom to instance when the frame has an instance, and zoom to
+        point only when a point is selected."""
+        self._action_zoom_instance.setEnabled(self._zoom_instance() >= 0)
+        self._action_zoom_point.setEnabled(
+            self._state.selected_instance >= 0 and bool(self._state.selected_bodypart)
+        )
+
+    def _zoom_instance(self) -> int:
+        """The selected instance, else the current frame's first instance, else -1.
+
+        Frames hold one instance for now, so with nothing selected there is no
+        ambiguity about which instance to zoom to.
+        """
+        if self._state.selected_instance >= 0:
+            return self._state.selected_instance
+        store = self._state.points_store
+        trial = self._state.current_trial
+        if store is None or not trial:
+            return -1
+        instances = store.get_instances(trial, self._state.current_frame)
+        return instances[0] if instances else -1
 
     def _zoom_to_instance(self):
-        instance = self._state.selected_instance
+        instance = self._zoom_instance()
         if instance < 0:
-            self._status_bar.showMessage("No instance selected", 2000)
+            self._status_bar.showMessage("No instance in this frame", 2000)
             return
         self._camera_grid.zoom_to_instance(instance)
 
