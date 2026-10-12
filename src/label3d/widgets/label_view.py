@@ -601,7 +601,6 @@ class LabelView(QWidget):
             coords, used_fallback = init_average(
                 store,
                 store.experiment_name,
-                trial,
                 camera_name,
                 skeleton,
                 center_px,
@@ -630,7 +629,9 @@ class LabelView(QWidget):
         """Add a new instance across every camera using strategy.
 
         Used by Ctrl+I (average), Ctrl+Shift+I (random), and the Instances menu.
-        Each camera's coordinates are computed independently.
+        Each camera's coordinates are computed independently.  In the camera
+        under the mouse the instance is centred on the mouse; elsewhere average
+        uses the first node's mean position and random the frame centre.
         """
         store = self._state.points_store
         skeleton = self._state.skeleton
@@ -644,28 +645,37 @@ class LabelView(QWidget):
         existing = store.get_instances(trial, frame)
         new_instance = existing[0] if existing else store.add_instance(trial, frame, skeleton.nodes)
 
+        mouse_panel = self._camera_grid.panel_under_mouse()
+        mouse_px = None
+        if mouse_panel is not None:
+            scene_pos = mouse_panel.mapToScene(
+                mouse_panel.viewport().mapFromGlobal(QCursor.pos())
+            )
+            mouse_px = (scene_pos.x(), scene_pos.y())
+
         any_fallback = False
         for cam_name in cam_names:
             cam = self._cameras.get(cam_name)
             frame_size = (
                 cam.size if cam is not None and cam.size[0] > 0 else (10000, 10000)
             )
+            under_mouse = mouse_panel is not None and mouse_panel.camera_name == cam_name
+            center_px = mouse_px if under_mouse else None
 
             if strategy == "average":
                 coords, used_fallback = init_average(
                     store,
                     store.experiment_name,
-                    trial,
                     cam_name,
                     skeleton,
-                    None,       # center_px=None → frame centre
+                    center_px,
                     frame_size,
                 )
                 if used_fallback:
                     any_fallback = True
             else:
                 coords = init_random(
-                    skeleton, cam_name, self._cameras, None, frame_size
+                    skeleton, cam_name, self._cameras, center_px, frame_size
                 )
 
             for bp, (x, y) in coords.items():

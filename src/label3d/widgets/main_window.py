@@ -459,14 +459,14 @@ class MainWindow(QMainWindow):
                 for cam in store.cameras
             )
         )
-        # "Average" is available when any labeled point exists in this trial
+        # "Average" is available when any labeled point exists in this experiment
         avg_available = False
         if store is not None and trial and not all_cameras_have_instance:
             try:
-                trial_df = store.df.loc[(store.experiment_name, trial)]
+                exp_df = store.df.loc[store.experiment_name]
                 for cam in store.cameras:
-                    if (cam, "state") in trial_df.columns:
-                        if trial_df[(cam, "state")].isin(["set", "predicted"]).any():
+                    if (cam, "state") in exp_df.columns:
+                        if exp_df[(cam, "state")].isin(["set", "predicted"]).any():
                             avg_available = True
                             break
             except KeyError:
