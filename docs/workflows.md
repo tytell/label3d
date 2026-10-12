@@ -91,7 +91,7 @@ Making a calibration active here doesn't re-triangulate. The Label tab then show
 | **Trials** | all | trials whose points are used |
 | **Extrinsics only** | on | keep each camera's intrinsics |
 | **Hold-out fraction** | 0.2 | frames kept out of the fit, to measure the error |
-| **Repeats** | 3 | bundle adjustment subsamples at random; the run with the lowest held-out error is kept |
+| **Repeats** | 3 | bundle adjustment subsamples at random; the run with the lowest held-out error is kept. Disabled when no camera pair has more than 200 points, since every run would then use all the points and come out the same |
 | **Label** | `refine` | the new entry's label |
 
 The **Usable points** table shows, for each camera pair, how many selected points both cameras see. **Run** works with any number of points; few points in a pair means that pair's geometry is barely constrained.
@@ -102,7 +102,11 @@ The **Usable points** table shows, for each camera pair, how many selected point
 - **Fitted points** always go down, so they say little.
 - **Charuco corners** should not get much worse. A refinement that fits the animal but breaks the board fits the labels' mistakes. These are left out when the starting calibration has no charuco takes, for example an imported one.
 - **Change from the starting calibration** is the per camera-pair rotation and baseline change.
-- **Scale correction.** Points alone have no metric scale, so the result is mapped back onto the starting calibration's scale and axes. A correction far from 1 means the points disagree with the board.
+- **Scale correction.** Points alone have no metric scale, so the result is mapped back onto the starting calibration's scale and axes. The rig can drift in size during the fit at no cost, so a correction away from 1 is not a problem by itself.
+- **Alignment residual** is what that mapping can't explain: the RMS camera-centre distance (cm and % of the mean baseline) and orientation difference. Above 1% or 0.5° the refinement changed the shape of the rig; check that the charuco corner error hasn't grown.
+- **Run-to-run spread** shows how much the repeats differ; it's left out when the refinement ran once.
+
+After **Save and make active**, the Calibration tab redraws the charuco corners with the new calibration's errors, so you can step through the board frames to check it.
 
 **Save** writes the Stage 1 charuco entry if it is new, then the `refine` entry under it with a record of every point used. **Save and make active** also makes it active; like **Make active**, it doesn't re-triangulate. **Discard** saves nothing.
 

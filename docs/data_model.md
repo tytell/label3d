@@ -149,7 +149,7 @@ t1 = [10, 55, 90]
 [metadata.options]
 only_extrinsics = true
 holdout = 0.2                         # fraction of frames held out
-n_repeats = 3
+n_repeats = 3                         # 1 when no camera pair had more than n_samp_iter points
 seed = 138368576                      # hold-out split; repeat r used seed + r
 kept_repeat = 1
 n_samp_full = 1000
@@ -165,7 +165,10 @@ points_before = 2.5
 charuco = 0.45                        # charuco corners of the parent's takes, triangulated
 charuco_before = 0.41
 scale_correction = 1.002              # ratio
-spread_rotation_deg = 0.01
+align_centre_cm = 0.12                # what the alignment leaves: RMS camera-centre distance
+align_centre_pct = 0.25               # the same, % of the mean camera-pair baseline
+align_rotation_deg = 0.04             # RMS camera orientation difference
+spread_rotation_deg = 0.01            # spread_* left out when Stage 2 ran once
 spread_baseline_pct = 0.05
 ```
 

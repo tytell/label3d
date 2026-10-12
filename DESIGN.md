@@ -24,7 +24,7 @@ A cross-platform desktop app for:
 | [docs/phases/phase_9.md](docs/phases/phase_9.md) | Phase 9 — Calibration Takes (completed) |
 | [docs/phases/phase_10.md](docs/phases/phase_10.md) | Phase 10 — Point provenance and reviewing new points (completed) |
 | [docs/phases/phase_11.md](docs/phases/phase_11.md) | Phase 11 — Calibration registry and switching calibrations (completed) |
-| [docs/phases/phase_12.md](docs/phases/phase_12.md) | Phase 12 — Refining the calibration with labelled points (implemented; awaiting UI testing) |
+| [docs/phases/phase_12.md](docs/phases/phase_12.md) | Phase 12 — Refining the calibration with labelled points (complete) |
 | [docs/phases/phase_13.md](docs/phases/phase_13.md) | Phase 13 — Batch triangulation and export |
 | [docs/phases/phase_14.md](docs/phases/phase_14.md) | Phase 14 — Axis alignment (deferred; partially implemented) |
 | [docs/phases/phase_15_16.md](docs/phases/phase_15_16.md) | Phases 15–16: Export view, Polish and robustness (deferred) |
@@ -48,7 +48,7 @@ A cross-platform desktop app for:
 | 9 | Calibration takes | ✓ Complete |
 | 10 | Point provenance and reviewing new points | ✓ Complete |
 | 11 | Calibration registry and switching | ✓ Complete |
-| 12 | Calibration refinement with labelled points | Implemented on branch `refine_calib`; awaiting UI testing |
+| 12 | Calibration refinement with labelled points | ✓ Complete |
 | 13 | Batch triangulation and export | Not started |
 | 14 | Axis alignment | Deferred; partial — geometry helpers done, UI widget not created |
 | 15 | Export view | Deferred |
