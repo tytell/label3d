@@ -373,6 +373,46 @@ def apply_similarity(cgroup: CameraGroup, s: float, R: np.ndarray, T: np.ndarray
         cam.set_translation(s * ti - R_new @ T)
 
 
+def alignment_residuals(cgroup: CameraGroup, reference: CameraGroup) -> tuple[float, float, float]:
+    """What an alignment of cgroup onto reference leaves unexplained.
+
+    Returns (centre_cm, centre_pct, rotation_deg): the RMS distance between
+    matching camera centres, the same as a percentage of reference's mean
+    camera-pair baseline, and the RMS angle between matching camera
+    orientations. With 2 cameras the centres always fit, so only the rotation
+    can show a change in the rig's shape.
+    """
+    R_a, t_a = _poses(cgroup)
+    R_b, t_b = _poses(reference)
+    c_a = -np.einsum("nji,nj->ni", R_a, t_a)
+    c_b = -np.einsum("nji,nj->ni", R_b, t_b)
+    centre_cm = float(np.sqrt(np.mean(np.sum((c_a - c_b) ** 2, axis=1))))
+    baselines = [np.linalg.norm(c_b[i] - c_b[j]) for i, j in combinations(range(len(c_b)), 2)]
+    mean_baseline = float(np.mean(baselines)) if baselines else float("nan")
+    centre_pct = 100.0 * centre_cm / mean_baseline if mean_baseline > 0 else float("nan")
+    angles = [np.linalg.norm(cv2.Rodrigues(ra @ rb.T)[0]) for ra, rb in zip(R_a, R_b)]
+    rotation_deg = float(np.degrees(np.sqrt(np.mean(np.square(angles)))))
+    return centre_cm, centre_pct, rotation_deg
+
+
+def max_pair_points(p2ds: np.ndarray) -> int:
+    """The most points any camera pair shares."""
+    seen = ~np.isnan(p2ds[:, :, 0])
+    return max(
+        (int(np.sum(seen[a] & seen[b])) for a, b in combinations(range(len(seen)), 2)),
+        default=0,
+    )
+
+
+def repeats_differ(p2ds: np.ndarray, n_samp_iter: int) -> bool:
+    """Whether repeated bundle adjustments of p2ds can differ.
+
+    aniposelib subsamples at most n_samp_iter points per camera pair. When no
+    pair has more, every repeat uses all the points and gives the same result.
+    """
+    return max_pair_points(p2ds) > n_samp_iter
+
+
 def align_to(cgroup: CameraGroup, reference: CameraGroup) -> float:
     """Map cgroup onto reference's scale (cm) and world axes. Returns the scale."""
     s, R, T = similarity_to(cgroup, reference)
@@ -401,8 +441,9 @@ class RefineResult:
     holdout: np.ndarray                # bool per point
     seed: int
     kept_repeat: int
+    n_repeats: int                     # repeats actually run (1 when they can't differ)
     scale: float                       # alignment scale correction
-    spread: tuple[float, float]        # run-to-run (rotation_deg, baseline_pct)
+    spread: tuple[float, float] | None # run-to-run (rotation_deg, baseline_pct); None for one run
     errors: dict[str, float]
     drift: list[PairDrift]
 
@@ -454,15 +495,21 @@ def refine(
         raise ValueError("no points to refine with")
     say(f"Refining with {fit.shape[1]} points; {held.shape[1]} held out (seed {seed})")
 
+    n_repeats = max(1, options.n_repeats)
+    if n_repeats > 1 and not repeats_differ(fit, options.n_samp_iter):
+        say(f"  no camera pair has more than {options.n_samp_iter} points, "
+            "so repeats would be identical; running once")
+        n_repeats = 1
+
     runs = []
-    for r in range(max(1, options.n_repeats)):
+    for r in range(n_repeats):
         cgroup, scale = run_stage2(start, fit, options, seed + r)
         score_points = held if held.shape[1] else fit
         err = error_stats(point_errors(cgroup, score_points))[0]
-        say(f"  run {r + 1}/{options.n_repeats}: median error {err:.3f} px, scale {scale:.4f}")
+        say(f"  run {r + 1}/{n_repeats}: median error {err:.3f} px, scale {scale:.4f}")
         runs.append((err, r, cgroup, scale))
     err, kept, cgroup, scale = min(runs, key=lambda run: (np.nan_to_num(run[0], nan=np.inf), run[1]))
-    spread = run_spread([run[2] for run in runs])
+    spread = run_spread([run[2] for run in runs]) if n_repeats > 1 else None
 
     errors: dict[str, float] = {}
     errors["holdout"], errors["holdout_p90"] = error_stats(point_errors(cgroup, held))
@@ -473,12 +520,16 @@ def refine(
         errors["charuco"] = error_stats(point_errors(cgroup, charuco_p2ds))[0]
         errors["charuco_before"] = error_stats(point_errors(start, charuco_p2ds))[0]
     errors["scale_correction"] = scale
-    errors["spread_rotation_deg"], errors["spread_baseline_pct"] = spread
+    (errors["align_centre_cm"], errors["align_centre_pct"],
+     errors["align_rotation_deg"]) = alignment_residuals(cgroup, start)
+    if spread is not None:
+        errors["spread_rotation_deg"], errors["spread_baseline_pct"] = spread
     errors = {k: float(v) for k, v in errors.items() if np.isfinite(v)}
 
     return RefineResult(
         cgroup=cgroup, start=start, p2ds=p2ds, index=index, holdout=holdout,
-        seed=seed, kept_repeat=kept, scale=scale, spread=spread, errors=errors,
+        seed=seed, kept_repeat=kept, n_repeats=n_repeats, scale=scale, spread=spread,
+        errors=errors,
         drift=compare_calibrations(start, cgroup),
     )
 
@@ -509,7 +560,7 @@ def save_refinement(
         options={
             "only_extrinsics": bool(options.only_extrinsics),
             "holdout": float(options.holdout),
-            "n_repeats": int(options.n_repeats),
+            "n_repeats": int(result.n_repeats),
             "seed": int(result.seed),
             "kept_repeat": int(result.kept_repeat),
             "n_samp_full": int(options.n_samp_full),

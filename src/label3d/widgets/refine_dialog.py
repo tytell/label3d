@@ -49,6 +49,11 @@ from label3d.workers.calibration_worker import RefineOutcome, RefineWorker
 # Methods an entry can have to be a refinement's starting point.
 START_METHODS = ("charuco", "imported")
 
+# Alignment residuals above these suggest the refinement changed the rig's
+# shape, not just its scale or placement.
+ALIGN_WARN_CENTRE_PCT = 1.0
+ALIGN_WARN_ROTATION_DEG = 0.5
+
 # (key in RefineResult.errors, row label); the "_before" key is the Stage 1 value.
 ERROR_ROWS = [
     ("holdout", "Held-out points, median"),
@@ -200,7 +205,8 @@ class RefineDialog(QDialog):
         self._repeats_spin = QSpinBox()
         self._repeats_spin.setRange(1, 10)
         self._repeats_spin.setValue(3)
-        options_form.addRow("Repeats:", self._repeats_spin)
+        self._repeats_label = QLabel("Repeats:")
+        options_form.addRow(self._repeats_label, self._repeats_spin)
         self._label_edit = QLineEdit("refine")
         options_form.addRow("Label:", self._label_edit)
         left.addWidget(options_group)
@@ -274,7 +280,7 @@ class RefineDialog(QDialog):
         return RefineOptions(
             only_extrinsics=self._extrinsics_check.isChecked(),
             holdout=self._holdout_spin.value(),
-            n_repeats=self._repeats_spin.value(),
+            n_repeats=self._repeats_spin.value() if self._repeats_spin.isEnabled() else 1,
         )
 
     def _start_entry(self) -> CalibrationEntry | None:
@@ -313,6 +319,24 @@ class RefineDialog(QDialog):
         for row, ((a, b), n) in enumerate(counts.items()):
             self._counts_table.setItem(row, 0, QTableWidgetItem(f"{a} – {b}"))
             self._counts_table.setItem(row, 1, QTableWidgetItem(str(n)))
+        self._update_repeats(max(counts.values(), default=0))
+
+    def _update_repeats(self, max_pair: int) -> None:
+        """Repeats differ only when a camera pair has more points than one
+        bundle-adjustment sample; otherwise they are all the same run."""
+        n_samp = RefineOptions().n_samp_iter
+        enabled = max_pair > n_samp
+        self._repeats_spin.setEnabled(enabled)
+        self._repeats_label.setEnabled(enabled)
+        tip = (
+            "Runs the refinement several times on random subsets of points and keeps "
+            "the one with the lowest held-out error"
+            if enabled else
+            f"Only available when a camera pair has more than {n_samp} points "
+            f"(the most now is {max_pair}); the refinement runs once"
+        )
+        self._repeats_spin.setToolTip(tip)
+        self._repeats_label.setToolTip(tip)
 
     # ── Running ───────────────────────────────────────────────────────────
 
@@ -376,15 +400,26 @@ class RefineDialog(QDialog):
             self._drift_table.setItem(row, 1, QTableWidgetItem(f"{d.rotation_deg:.3f}"))
             self._drift_table.setItem(row, 2, QTableWidgetItem(f"{d.baseline_pct:+.2f}"))
 
-        scale = outcome.result.scale
-        text = f"Scale correction: {scale:.4f}"
-        if abs(scale - 1.0) > 0.02:
-            text += " — large: the points may disagree with the charuco scale"
-        spread = outcome.result.spread
-        text += (
-            f"\nRun-to-run spread: {spread[0]:.3f}° rotation, {spread[1]:.2f}% baseline"
-        )
-        self._scale_label.setText(text)
+        result = outcome.result
+        centre_cm = errors.get("align_centre_cm", float("nan"))
+        centre_pct = errors.get("align_centre_pct", float("nan"))
+        rotation_deg = errors.get("align_rotation_deg", float("nan"))
+        lines = [
+            f"Scale correction: {result.scale:.4f}",
+            f"Alignment residual: {centre_cm:.2f} cm camera centres "
+            f"({centre_pct:.2f}% of baseline), {rotation_deg:.3f}° orientation",
+        ]
+        if centre_pct > ALIGN_WARN_CENTRE_PCT or rotation_deg > ALIGN_WARN_ROTATION_DEG:
+            lines.append(
+                "— large: the refinement changed the shape of the camera rig, "
+                "not just its scale; check the charuco corner error"
+            )
+        if result.spread is not None:
+            lines.append(
+                f"Run-to-run spread ({result.n_repeats} runs): "
+                f"{result.spread[0]:.3f}° rotation, {result.spread[1]:.2f}% baseline"
+            )
+        self._scale_label.setText("\n".join(lines))
 
     # ── Saving ────────────────────────────────────────────────────────────
 

@@ -80,14 +80,15 @@ Source names use the constants in `points.py` (`SOURCE_LABEL3D`, `SOURCE_SLEAP_U
 - Bundle adjustment on animal points alone has no metric scale, and it can shift the whole rig. The 3D points and extrinsics are free up to a similarity (7 degrees of freedom).
 - After Stage 2, apply a similarity transform that maps the refined rig back onto `cgroup_charuco`. This keeps the charuco scale (cm) and world axes.
 - With 3 or more cameras, this is Umeyama on camera centres. With 2 cameras, the centres leave the rotation about the baseline free. The rotation then comes from the camera orientations (the mean of `R_charuco_i · R_refined_iᵀ`), the scale from the baseline length, and the translation from the centroids. Tests should cover both cases. `test_project_sync.py` already builds a two-camera rig.
-- The size of the transform's scale correction is reported. A large one is a warning sign.
+- The size of the transform's scale correction is reported, but it is not a warning sign by itself. The animal points carry no scale, so the rig can drift in size during bundle adjustment at no cost, and the alignment undoes that drift completely.
+- What the alignment can't explain is the warning sign: a change in the shape of the rig. `alignment_residuals()` gives the RMS distance between aligned and charuco camera centres (cm, and % of the mean camera-pair baseline) and the RMS angle between their orientations. With 2 cameras the centres always fit, so only the orientation residual shows a change. The dialog warns above 1% of the baseline or 0.5°.
 
 **Reported errors:**
 1. **Held-out points:** median and 90th-percentile reprojection error, before (Stage 1) and after (Stage 2).
 2. **Charuco corners from the chosen takes:** before and after. Stage 2 should not make these much worse.
 3. **Per camera-pair drift from Stage 1:** from `calibration_compare.compare_calibrations()`, as in the take comparison.
 
-**Repeats:** `bundle_adjust_iter` subsamples at random, so Stage 2 runs `n_repeats` times (default 3). The run with the lowest held-out error is kept. The run-to-run spread is reported as rotation and baseline spread (`calibration_compare.run_spread()`), as for charuco. aniposelib draws from NumPy's global random state (`np.random.random`, `np.random.choice`). Each repeat therefore calls `np.random.seed(seed + repeat)`, and the kept repeat number goes in `metadata.options`, so the kept run can be reproduced.
+**Repeats:** `bundle_adjust_iter` subsamples at random, so Stage 2 runs `n_repeats` times (default 3). The run with the lowest held-out error is kept. The run-to-run spread is reported as rotation and baseline spread (`calibration_compare.run_spread()`), as for charuco. aniposelib draws from NumPy's global random state (`np.random.random`, `np.random.choice`). Each repeat therefore calls `np.random.seed(seed + repeat)`, and the kept repeat number goes in `metadata.options`, so the kept run can be reproduced. aniposelib samples at most `n_samp_iter` (200) points per camera pair; when no pair of the fitted points has more, every repeat would use all the points and give the same result, so Stage 2 runs once (`repeats_differ()`), reports no spread, and records `n_repeats = 1`. The dialog disables Repeats in that case, judged on all selected points, with a tooltip saying why.
 
 **Errors in `[metadata.errors]`** for a `refine` entry, all in px unless noted:
 - `holdout`, `holdout_p90`: the refinement on the held-out points. `entry_error()` already shows `holdout` first.
@@ -95,7 +96,8 @@ Source names use the constants in `points.py` (`SOURCE_LABEL3D`, `SOURCE_SLEAP_U
 - `charuco`, `charuco_before`: the charuco corners of the parent's takes.
 - `points`: the frames used for fitting.
 - `scale_correction`: the alignment scale, a ratio.
-- `spread_rotation_deg`, `spread_baseline_pct`: as for charuco.
+- `align_centre_cm`, `align_centre_pct`, `align_rotation_deg`: the alignment residuals.
+- `spread_rotation_deg`, `spread_baseline_pct`: as for charuco; left out when Stage 2 ran once.
 
 ## 12.4 Refine dialog (`widgets/refine_dialog.py`) and worker (`workers/calibration_worker.py`)
 
@@ -117,7 +119,7 @@ Opened from the Calibration tab with **Refine with points...**.
 - `RefineWorker(QThread)` runs Stage 1 if needed, then Stage 2, the alignment and the validation. It emits progress text and a `RefineResult`.
 
 **Results view**
-- The before and after error table, the per-pair drift, and the scale correction.
+- The before and after error table, the per-pair drift, the scale correction, the alignment residuals, and the run-to-run spread when there were repeats.
 - **Save** writes the Stage 1 entry if it's new, then the `refine` entry and its `_points.csv`. Both entries use `[metadata]` as in Phase 11.1, with `points.sources`, `score_min`, `frames` and `points_file` filled in, and the hold-out seed in `metadata.options`.
 - **Save and make active** also moves the pointer (`Project.set_active_calibration`). As with **Make active** in the Calibration tab (Phase 11, *As implemented*), it doesn't re-triangulate. The stale-3D warning and its **re-triangulate** link show instead.
 - **Discard** saves nothing.

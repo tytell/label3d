@@ -18,6 +18,7 @@ from label3d.calibration_refine import (
     PointSelection,
     RefineOptions,
     align_to,
+    alignment_residuals,
     apply_similarity,
     charuco_points,
     charuco_rows,
@@ -31,6 +32,7 @@ from label3d.calibration_refine import (
     matching_charuco_entry,
     point_errors,
     refine,
+    repeats_differ,
     run_stage2,
     save_points_record,
     save_refinement,
@@ -249,6 +251,8 @@ class TestRecovery:
         assert result.errors["holdout"] < 1.0
         assert result.holdout.any() and not result.holdout.all()
         assert abs(result.scale - 1.0) < 0.05
+        assert result.n_repeats == 2 and result.spread is not None
+        assert "align_rotation_deg" in result.errors
 
     def test_charuco_errors_reported(self):
         truth = _true_rig()
@@ -285,6 +289,22 @@ class TestAlignment:
                 cv2.Rodrigues(np.asarray(b.get_rotation(), dtype=float))[0],
                 cv2.Rodrigues(np.asarray(a.get_rotation(), dtype=float))[0], atol=1e-6)
 
+    @pytest.mark.parametrize("names", [("cam1", "cam2", "cam3"), ("cam1", "cam2")])
+    def test_residuals_vanish_for_a_similarity(self, names):
+        rig = _true_rig(names)
+        moved = self._scaled_moved(rig)
+        align_to(moved, rig)
+        centre_cm, centre_pct, rotation_deg = alignment_residuals(moved, rig)
+        assert centre_cm < 1e-6 and centre_pct < 1e-6 and rotation_deg < 1e-6
+
+    def test_residuals_show_a_change_of_shape(self):
+        rig = _true_rig()
+        changed = _perturbed(rig, rot_deg=1.0, shift_cm=2.0)
+        align_to(changed, rig)
+        centre_cm, centre_pct, rotation_deg = alignment_residuals(changed, rig)
+        assert centre_cm > 0.1 and centre_pct > 0.0
+        assert rotation_deg > 0.1
+
     def test_similarity_keeps_projections(self):
         rig = _true_rig()
         p2ds, _ = _animal_points(rig, n_frames=5, noise_px=0.0)
@@ -298,6 +318,24 @@ class TestAlignment:
         result = refine(start, p2ds, index, RefineOptions(n_repeats=1, seed=9))
         for d in compare_calibrations(start, result.cgroup):
             assert abs(d.baseline_pct) < 3.0
+
+
+class TestRepeats:
+    def test_repeats_differ_only_above_the_sample_size(self):
+        rig = _true_rig()
+        few, _ = _animal_points(rig, n_frames=9, n_parts=4)     # 36 points
+        many, _ = _animal_points(rig, n_frames=60, n_parts=4)   # 240 points
+        assert not repeats_differ(few, 200)
+        assert repeats_differ(many, 200)
+
+    def test_few_points_run_once(self):
+        truth = _true_rig()
+        start = _perturbed(truth)
+        p2ds, index = _animal_points(truth, n_frames=20)
+        result = refine(start, p2ds, index, RefineOptions(n_repeats=3, seed=6))
+        assert result.n_repeats == 1 and result.kept_repeat == 0
+        assert result.spread is None
+        assert "spread_rotation_deg" not in result.errors
 
 
 class TestSaving:
@@ -442,6 +480,11 @@ class TestRefineDialog:
         dialog = RefineDialog(project, [], {}, 20, 1)
         assert dialog._entry_radio.isChecked()   # no takes: start from an entry
         assert dialog._counts_table.rowCount() == 3
+        dialog._update_repeats(36)
+        assert not dialog._repeats_spin.isEnabled()
+        assert dialog._options().n_repeats == 1
+        dialog._update_repeats(500)
+        assert dialog._repeats_spin.isEnabled()
 
         dialog._repeats_spin.setValue(1)
         dialog._on_run()
