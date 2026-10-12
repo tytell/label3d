@@ -499,3 +499,32 @@ class TestRefineDialog:
         assert entry is not None and entry.parent == parent_id
         assert project.active_calibration_id() == entry.id
         assert (entry.path.parent / entry.metadata["points"]["points_file"]).exists()
+
+
+@requires_test_project
+class TestCalibrationViewRestore:
+    """The Calibration tab shows saved corners and the active calibration
+    without detecting or calibrating again."""
+
+    def test_loads_saved_corners_and_active_calibration(self, tmp_path, qapp):
+        from label3d.widgets.calibration_view import CalibrationView
+
+        root = tmp_path / "project"
+        shutil.copytree(TEST_PROJECT, root)
+        project = Project.load(root)
+        exp_dir = root / "experiments" / project.active_experiment
+        TestStage1()._corners(exp_dir, list(project.cameras))
+
+        view = CalibrationView(project)
+        assert set(view._all_rows) == set(project.cameras)
+        assert view._merged_rows
+        assert view._cgroup is not None and view._epipolar_cache is not None
+
+        # Making another entry active reloads it
+        refined = save_calibration(exp_dir, _perturbed(view._cgroup), "refine", "refine",
+                                   parent=project.active_calibration_id())
+        old = view._cgroup
+        project.set_active_calibration(None, refined.id)
+        view.reload_active_calibration()
+        assert view._cgroup is not old
+        view.close()

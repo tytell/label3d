@@ -666,9 +666,9 @@ class CalibrationView(QWidget):
 
         self._setup_shortcuts()
 
-        # Pre-populate frame provider so frames appear before corner detection
-        self._load_take_media()
-        self.refresh_registry()
+        # Take frames, saved corners and the active calibration, so a restart
+        # shows what was detected and solved before
+        self.reload_for_experiment()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1211,6 +1211,10 @@ class CalibrationView(QWidget):
             self._apply_frame_errors(cgroup, self._solved_takes())
         except Exception as exc:
             self._log_msg(f"  Warning: could not load calibration: {exc}")
+            return
+        # Redraw the current frame's corners with the new errors
+        if self._calib_provider.n_frames() > 0:
+            self._show_frame(self._current_frame)
 
     def reload_active_calibration(self) -> None:
         """The active calibration was switched elsewhere (the Label tab)."""
