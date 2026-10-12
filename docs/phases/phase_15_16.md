@@ -6,7 +6,10 @@
 
 **Goal**: Export labeled data back to external formats.
 
-### 15.1 Export view (`widgets/export_view.py`)
+### 15.1 Export to other pose formats (`widgets/export_view.py`)
+
+There is no Export tab any more (removed in Phase 13). This would be a dialog reached from the File menu, like **Export points...**.
+
 - [ ] Format dropdown (populated from adapter registry)
 - [ ] Trial selector (all / specific)
 - [ ] Instance type checkboxes (user / predicted)

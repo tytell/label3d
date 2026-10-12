@@ -39,6 +39,7 @@ Project
 ├── trials.csv               # global: all trials across all experiments (has experiment column)
 ├── slp/                     # optional: imported .slp files (global, not per-experiment)
 ├── sync_history.csv         # one row per trial for each SLEAP read that brought in points
+├── exports/                 # File > Export points... / label3d-export output: points_{timestamp}.csv
 └── experiments/
     ├── PS18/                # one subfolder per experiment
     │   ├── calibrations/    # everything about calibrating this experiment

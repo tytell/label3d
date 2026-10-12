@@ -24,6 +24,8 @@ label3d/
 ├── calibration_refine.py        # ✓ Refinement with labelled points: selection, Stage 2, alignment, points record (Phase 12)
 ├── video.py                     # ✓ VideoReader: cv2.VideoCapture wrapper, frame cache
 ├── instance_init.py             # ✓ random / average / reprojected instance init strategies
+├── export.py                    # ✓ Long-format CSV export and pre-flight checks, no Qt (Phase 13)
+├── export_cli.py                # ✓ label3d-export command line tool (Phase 13)
 ├── widgets/
 │   ├── __init__.py              # ✓
 │   ├── main_window.py           # ✓ QMainWindow, tab bar, menus, top toolbar
@@ -40,7 +42,8 @@ label3d/
 │   ├── refine_dialog.py         # ✓ Refine with points dialog (Phase 12)
 │   ├── axis_alignment_widget.py # Phase 14: Axis alignment panel (not yet created)
 │   ├── label_view.py            # ✓ Labeling mode: grid + controls + sidebar
-│   └── export_view.py           # Phase 15: Export mode: form + summary
+│   ├── export_dialog.py         # ✓ File > Export points... options (Phase 13)
+│   └── export_view.py           # Phase 15: export to other pose formats (not yet created)
 ├── adapters/
 │   ├── __init__.py              # ✓ Registry: discover PoseAdapter subclasses
 │   ├── base.py                  # ✓ PoseAdapter ABC
@@ -48,7 +51,8 @@ label3d/
 └── workers/
     ├── __init__.py
     ├── calibration_worker.py    # ✓ DetectionWorker, MultiTakeCalibrationWorker, RefineWorker QThreads
-    └── triangulation_worker.py  # ✓ TriangulationWorker QThread: batch triangulate all frames
+    ├── export_worker.py         # ✓ ExportWorker QThread: SLP check, CSV export, SLP write
+    └── triangulation_worker.py  # ✓ TriangulationWorker / AllExperimentsTriangulationWorker: one batch per trial
 ```
 
 ---

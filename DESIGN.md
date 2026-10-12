@@ -27,7 +27,7 @@ A cross-platform desktop app for:
 | [docs/phases/phase_12.md](docs/phases/phase_12.md) | Phase 12 — Refining the calibration with labelled points (complete) |
 | [docs/phases/phase_13.md](docs/phases/phase_13.md) | Phase 13 — Batch triangulation and export |
 | [docs/phases/phase_14.md](docs/phases/phase_14.md) | Phase 14 — Axis alignment (deferred; partially implemented) |
-| [docs/phases/phase_15_16.md](docs/phases/phase_15_16.md) | Phases 15–16: Export view, Polish and robustness (deferred) |
+| [docs/phases/phase_15_16.md](docs/phases/phase_15_16.md) | Phases 15–16: Export to other pose formats, Polish and robustness (deferred) |
 | [docs/phases/phase_17.md](docs/phases/phase_17.md) | Phase 17 — Multi-instance support and cross-camera matching (deferred) |
 | [docs/phases/archive/phases_1_7.md](docs/phases/archive/phases_1_7.md) | Phases 1–7 (completed; archived for reference) |
 
@@ -49,8 +49,8 @@ A cross-platform desktop app for:
 | 10 | Point provenance and reviewing new points | ✓ Complete |
 | 11 | Calibration registry and switching | ✓ Complete |
 | 12 | Calibration refinement with labelled points | ✓ Complete |
-| 13 | Batch triangulation and export | Not started |
+| 13 | Batch triangulation and export | In progress — code, tests and docs done; awaiting review in the app |
 | 14 | Axis alignment | Deferred; partial — geometry helpers done, UI widget not created |
-| 15 | Export view | Deferred |
+| 15 | Export to other pose formats | Deferred |
 | 16 | Polish and robustness | Deferred |
 | 17 | Multi-instance support | Deferred |

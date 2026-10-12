@@ -227,8 +227,8 @@ Full list in [workflows.md](workflows.md).
 
 ### Exporting
 
-The Export tab writes one `.slp` per (trial, camera) for SLEAP training. Pick
-which trials and which point states (user / predicted) to include, then
-**Export**. To close the loop: train on the exported `.slp` files in SLEAP, run
-inference, drop the resulting predictions into `slp/`, and re-import (File >
-Import from SLP files) to review and correct them as predicted instances.
+**File > Sync with Sleap** writes your labels into the `.slp` files in `slp/`
+for SLEAP training. To close the loop: train in SLEAP, run inference, and bring
+the predictions back with **Sync** (if saved into `slp/`) or **File > Import
+predictions...**. When you're done, **File > Export points...** writes every
+2D and 3D point to one CSV; see [user_workflow.md](user_workflow.md#7-export).

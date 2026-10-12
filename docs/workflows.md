@@ -2,10 +2,10 @@
 
 ## Application Workflow
 
-The app has three sequential top-level modes, accessible from a persistent toolbar or tab bar:
+The app has two top-level modes in the tab bar. Exporting is **File > Export points...** (see *Export workflow*), not a tab.
 
 ```
-[ 1. Calibrate ]  [ 2. Label ]  [ 3. Export ]
+[ 1. Calibrate ]  [ 2. Label ]
 ```
 
 ---
@@ -202,7 +202,7 @@ Before labeling, user must either:
 
 ```
 +------------------------------------------------------------------+
-| [ Calibrate ] [> Label ] [ Export ]  Calibration: [charuco-all v]  Trial: [trial1 v] |
+| [ Calibrate ] [> Label ]  Calibration: [charuco-all v]  Trial: [trial1 v]            |
 | Instance: [* User  o Predicted]   Bodypart: head (3 of 13)        |
 | Reprojection error: 1.3 px mean            [H] Hide  [3D] Toggle |
 +--------------+--------------+--------------+--------------+------+
@@ -226,7 +226,7 @@ Before labeling, user must either:
   - Import predictions...   read .slp files from anywhere (e.g. sleap-nn track output)
   - Last sync summary...
   - Load skeleton...        merge a skeleton.json into the project (see data_model.md)
-  - Export points...
+  - Export points...       long-format CSV + SLP write; greyed while any experiment's 3D is stale
 
 > Navigate
   - Previous / Next labeled frame   [ / ]
@@ -255,7 +255,7 @@ The **Calibration** combo in the top bar lists the experiment's registry as `lab
 Choosing another entry:
 1. makes it active and redraws the epipolar lines;
 2. re-triangulates the current frame at once;
-3. re-triangulates every labeled frame of the experiment, current trial first, behind a progress dialog. Editing waits until this finishes, because the triangulation writes into the same point store. **Cancel** stops it.
+3. re-triangulates every trial of the experiment, current trial first, behind a progress dialog. Editing waits until this finishes, because the triangulation writes into the same point store. **Cancel** stops it.
 
 When it finishes, `[calibration.triangulated_with]` records the calibration used. If the 3D points come from another calibration than the active one (a cancelled run, a switch made in the Calibration tab, or a project from before the registry), the status bar shows **3D points are from <label>; re-triangulate**. The link re-triangulates the experiment. **Instances > Triangulate all experiments** does every experiment and also clears the warning.
 
@@ -378,7 +378,7 @@ After every SLEAP read that brings in points, a summary dialog lists new SLEAP l
 | Key | Action |
 |---|---|
 | `T` | Triangulate current frame |
-| `Ctrl+Shift+T` | Triangulate all frames in current trial |
+| `Ctrl+Shift+T` | Triangulate the whole current trial |
 
 **Display toggles**
 
@@ -392,30 +392,48 @@ After every SLEAP read that brings in points, a summary dialog lists new SLEAP l
 
 ## Export Workflow (Step 3)
 
-### Export view layout
+The user-facing steps and the column reference are in [user_workflow.md](user_workflow.md#7-export). Code: `export.py` (no Qt), `widgets/export_dialog.py`, `workers/export_worker.py`, `export_cli.py`.
+
+### File > Export points...
+
+**Enabled** when `stale_experiments(project)` is empty, i.e. every experiment with an active calibration has `triangulated_with` equal to it. The state is refreshed when the File menu opens and from `_update_calibration_status`. Experiments with no active calibration don't block it.
+
+**Dialog** (`ExportDialog`): experiment checklist (all checked), **Include predictions** (on), **Only points with 3D** (off), output path (default `exports/points_{YYYYmmdd-HHMMSS}.csv`). There is no score threshold: every point is triangulated and exported whatever its score, with its `score` column.
+
+**On Export:**
+1. `uncalibrated_experiments`: if any checked experiment has no active calibration, a warning lists them. **Export anyway** exports their camera rows only; **Cancel** returns to the dialog.
+2. `ExportWorker` (background): if the SLP mapping is complete (the condition that enables Sync), `pending_slp_changes` reads the mapped files like Sync (`read_slp_for_sync` + `compute_merge`). Any new or changed points, new scores or conflicts → a warning listing them per experiment; nothing is written.
+3. Otherwise `export_points` writes the CSV, then `project.write_slp_files()` (the write half of a Sync; no sync id is recorded).
+4. A summary (`format_summary`): rows written, camera points per experiment by state/source, 2D-only experiments, SLP files written.
+
+### `uv run label3d-export`
 
 ```
-+----------------------------------------------------------+
-| [ Calibrate ] [ Label ] [> Export ]                       |
-|                                                           |
-|  Format:  [SLEAP (.slp) v]                                |
-|  Trial:   [All trials   v]                                |
-|  Include: [x] User  [x] Predicted                         |
-|  Output:  /path/to/project/export/          [Browse]      |
-|                                                           |
-|  Summary: Trials: 3  Cameras: 4  Frames: 1,240            |
-|                                    [  Export  ]           |
-+----------------------------------------------------------+
+uv run label3d-export <project> [-o out.csv] [--experiments a,b] [--no-predictions] [--only-3d] [--no-slp]
 ```
 
-### SLEAP export (SleapAdapter.save)
+Same checks, without asking: stale experiments or pending SLP changes → message on stderr, exit 1, nothing written; experiments without a calibration → warning, 2D only. `--no-slp` skips the SLP check and write. It doesn't triangulate. It loads the project with `Project.load`, so the videos must be reachable.
 
-For each `(trial, camera)` pair → one `.slp` file:
+### CSV format
+
+Long format, one row per (experiment, trial, frame, instance, bodypart, view), columns in the fixed order `EXPORT_COLUMNS`:
+
+`experiment, trial, frame, instance, bodypart, view, video_frame, x, y, z, state, source, score, xr, yr, error, n_cameras, mean_error, calibration`
+
+- `video_frame = {cam}_start + frame`, from `trials.csv`.
+- `error`, `n_cameras`, `mean_error` (`mean_reprojection_errors`) and `calibration` (`triangulated_with`) are computed at export; they are not stored in `points.csv`. `sync` is not exported.
+- `not_set` cells are left out. A `3d` row is written where x/y/z are present; triangulation clears them for points seen by fewer than 2 cameras, so they are never stale.
+
+### SLEAP files (SleapAdapter.save)
+
+Written by **Sync** and by **Export points...**, one file per entry in the `[slp]` mapping:
 - `Skeleton` built from bodypart names and edges
 - `Video` reference set to matching file from `trials.csv`
 - One `LabeledFrame` per labeled frame
 - `Instance` (user) or `PredictedInstance` (predicted) per instance; `NaN` → invisible
 - Saved via `sleap_io.save_file(labels, path)`
+
+Exporting to other pose formats is Phase 15.1.
 
 ### Iterative workflow
 
@@ -442,9 +460,10 @@ The full user-facing guide is [user_workflow.md](user_workflow.md).
 
 ### Triangulation
 - Clicked points undistorted on the fly (`cv2.undistortPoints`) before triangulation — raw pixels stored, undistorted used for geometry
-- `CameraGroup.triangulate(points, undistort=True)` (DLT, ≥2 views with state `set` or `predicted`)
+- DLT on ≥2 views with state `set` or `predicted` (any score). `geometry.triangulate_rows` solves every row at once with a batched SVD, the same DLT as aniposelib's `CameraGroup.triangulate(points, undistort=True)` without its per-point loop
+- A point seen by fewer than 2 cameras has its 3D point and every reprojection cleared
 - **Auto-triangulate** (default on): triangulates current frame after any point edit
-- `Ctrl+Shift+T` triangulates all frames in background thread
+- `Ctrl+Shift+T` triangulates the whole trial in one batch (`triangulate_trial`) in a background thread; **Triangulate all experiments** does one batch per trial
 
 ### 3D view
 

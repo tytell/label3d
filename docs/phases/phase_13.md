@@ -2,7 +2,7 @@
 
 **Goal**: The final step of the workflow. Once the SLEAP model is trained and has run on every frame of every camera, triangulate everything with each experiment's active calibration. Then write one long-format CSV with the 2D and 3D coordinates of all points from all experiments, and bring the mapped SLP files up to date at the same time.
 
-**Status**: In progress; 13.1–13.4 are done (code and tests), docs (13.5, 13.6) next. This replaces the Export tab. Phase 15.1 stays as written for exporting to other pose formats, but it will be reached from the File menu too, not from a tab.
+**Status**: Code, tests and docs done; to be checked in the app before marking complete. This replaces the Export tab. Phase 15.1 stays as written for exporting to other pose formats, but it will be reached from the File menu too, not from a tab.
 
 ---
 
@@ -101,11 +101,12 @@ Both use the same function with no Qt in it, `export.export_points(project, opti
 
 Finish the Phase 10.9 draft:
 - Add calibration switching (Phase 11) and refinement (Phase 12).
-- Add the export step: triangulate all experiments, **Sync**, then **File > Export points...**. Include the column reference from 13.2 and the CLI.
+- Add the export step: **Sync**, triangulate all experiments, then **File > Export points...**. Include the column reference from 13.2 and the CLI.
 - Remove the "Draft" note and the "coming in a later version" line.
 
 ## 13.6 Reference docs
 
+- **Done.** `docs/workflows.md` links to the column table in the user guide rather than repeating it.
 - **`docs/workflows.md`:** replace the *Export Workflow (Step 3)* section, which describes the Export tab, with **File > Export points...**: when it's enabled, the pre-flight checks, the SLP write, the CLI, and the export column reference. Remove the Export tab from the window layout diagrams.
 - **`docs/data_model.md` and `CLAUDE.md`:** add `exports/` to the project layout.
 - **README:** the `label3d-export` entry point.

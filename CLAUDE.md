@@ -8,7 +8,7 @@ A PySide6 desktop app for 3D point labeling across multiple synchronized calibra
 
 1. **Calibrate** — detect Charuco board corners across cameras, run bundle adjustment via aniposelib
 2. **Label** — display synchronized video frames, click to place skeleton keypoints, view epipolar lines and reprojection errors in real time (the 3D view panel is hidden; `SHOW_3D_VIEW` in `label_view.py`)
-3. **Export** — write per-camera `.slp` files for SLEAP training/inference
+3. **Export** — **Sync** writes the mapped `.slp` files for SLEAP training/inference; at the end, **File > Export points...** (or `uv run label3d-export`) writes every point, 2D and 3D, to one long-format CSV
 4. **Re-import** — train a SLEAP model on the exported `.slp` files, run inference, drop the resulting `.slp` predictions back into `project/slp/`, then import again. Repeat from step 2 to review, correct, and add more ground-truth labels
 
 ## Key conventions
@@ -22,7 +22,7 @@ A PySide6 desktop app for 3D point labeling across multiple synchronized calibra
 
 ```
 project/
-├── project.toml, skeleton.json, trials.csv, slp/
+├── project.toml, skeleton.json, trials.csv, slp/, exports/
 └── experiments/{name}/
     ├── calibrations/          # {camera}/ (take videos, corners.csv), registry *.toml, refined/
     ├── videos/
@@ -38,6 +38,7 @@ project/
 - `sync_history.csv` — at project root; one row per (sync, experiment, trial) for each SLEAP read that brought in points
 - `skeleton.json` — `{nodes, edges, symmetries, node_offsets_cm}` (shared at project root)
 - `slp/` — imported `.slp` files (global, at project root)
+- `exports/` — long-format point CSVs from **File > Export points...** / `label3d-export` (`export.py`; columns in [docs/user_workflow.md](docs/user_workflow.md#export-columns))
 
 ## External dependencies cloned locally (not in repo)
 
@@ -56,9 +57,10 @@ uv run python generate_synthetic.py synthetic_config.toml
 
 ```
 uv run label3d          # launches the app
+uv run label3d-export <project>   # long-format CSV export, no GUI
 uv run python <script>  # run any script in the project venv
 ```
 
 ## Implementation phases
 
-Phases 1–12 complete. Phase 13, batch triangulation and export ([phase_13.md](docs/phases/phase_13.md)), is next. Deferred: axis alignment ([phase_14.md](docs/phases/phase_14.md); geometry helpers and CameraPanel pick mode exist, the UI widget does not), export view and polish ([phase_15_16.md](docs/phases/phase_15_16.md)), multi-instance support ([phase_17.md](docs/phases/phase_17.md)). [docs/phases/phase_12.md](docs/phases/phase_12.md) covers the finished calibration refinement with labelled points, [phase_11.md](docs/phases/phase_11.md) the finished calibration registry, [phase_10.md](docs/phases/phase_10.md) the finished point provenance and review work, [phase_9.md](docs/phases/phase_9.md) the finished calibration-take work, [phase_8.md](docs/phases/phase_8.md) the finished SLP sync work.
+Phases 1–12 complete. Phase 13, batch triangulation and export ([phase_13.md](docs/phases/phase_13.md)), is implemented and awaiting a check in the app. Deferred: axis alignment ([phase_14.md](docs/phases/phase_14.md); geometry helpers and CameraPanel pick mode exist, the UI widget does not), export to other pose formats and polish ([phase_15_16.md](docs/phases/phase_15_16.md)), multi-instance support ([phase_17.md](docs/phases/phase_17.md)). [docs/phases/phase_12.md](docs/phases/phase_12.md) covers the finished calibration refinement with labelled points, [phase_11.md](docs/phases/phase_11.md) the finished calibration registry, [phase_10.md](docs/phases/phase_10.md) the finished point provenance and review work, [phase_9.md](docs/phases/phase_9.md) the finished calibration-take work, [phase_8.md](docs/phases/phase_8.md) the finished SLP sync work.
