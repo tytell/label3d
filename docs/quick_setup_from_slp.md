@@ -206,9 +206,10 @@ top.
 - Scroll wheel zooms in/out, clamped so you can't zoom out past the full frame.
 - Drag on empty space (or middle-click drag) to pan while zoomed in.
 - Double-click resets the view to fit the whole frame.
-- `Ctrl+=` to zoom to the instance
-- `Ctrl+-` to zoom to a small area around the selected point.
-- `Ctrl+0` to zoom to the whole frame.
+- `+` / `-` to zoom the camera under the mouse in and out (keypad keys work too).
+- `I` to zoom to the instance, including points estimated by reprojection from the other cameras.
+- `P` to zoom to a small area around the selected point.
+- `=` to zoom to the whole frame.
 
 **Other useful shortcuts:**
 

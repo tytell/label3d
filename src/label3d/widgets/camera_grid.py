@@ -6,6 +6,7 @@ import enum
 import math
 
 from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QApplication, QSplitter, QVBoxLayout, QWidget
 
 from label3d.video import FrameProvider
@@ -268,13 +269,33 @@ class CameraGrid(QWidget):
         for panel in self._zoom_targets():
             panel.fit_view()
 
-    def zoom_to_instance(self, instance: int):
-        """Zoom the target panels to the placed points of one instance.
+    def panel_under_mouse(self) -> CameraPanel | None:
+        """The visible panel whose viewport contains the mouse cursor, if any."""
+        pos = QCursor.pos()
+        for panel in self._panels.values():
+            viewport = panel.viewport()
+            if panel.isVisible() and viewport.rect().contains(viewport.mapFromGlobal(pos)):
+                return panel
+        return None
 
-        A camera where the instance has no placed points shows the whole image.
+    def zoom_in_under_mouse(self):
+        panel = self.panel_under_mouse()
+        if panel is not None:
+            panel.zoom_in()
+
+    def zoom_out_under_mouse(self):
+        panel = self.panel_under_mouse()
+        if panel is not None:
+            panel.zoom_out()
+
+    def zoom_to_instance(self, instance: int):
+        """Zoom the target panels to the points of one instance, including
+        unset points estimated by reprojection from the other cameras.
+
+        A camera where the instance has no such points shows the whole image.
         """
         for panel in self._zoom_targets():
-            points = panel.skeleton_overlay.placed_points(instance)
+            points = panel.skeleton_overlay.instance_points(instance)
             if points:
                 panel.zoom_to_points(points)
             else:

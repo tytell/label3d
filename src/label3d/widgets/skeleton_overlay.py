@@ -220,6 +220,21 @@ class SkeletonOverlay:
         camera (set or predicted); not_visible and not_set points are left out."""
         return [pos for _key, pos in self._placed_items(instance)]
 
+    def instance_points(self, instance: int) -> list[QPointF]:
+        """Scene positions of one instance's placed points plus its unset points
+        that are shown at their reprojection from the other cameras."""
+        return [
+            item.pos()
+            for key, item in self._point_items.items()
+            if key[0] == instance
+            and key in self._active_points
+            and item.isVisible()
+            and (
+                item.state in ("set", "predicted")
+                or (item.state == "not_set" and item.has_reprojection)
+            )
+        ]
+
     def placed_point(self, instance: int, bodypart: str) -> QPointF | None:
         """Scene position of one point if it is placed in this camera, else None."""
         return dict(self._placed_items(instance)).get((instance, bodypart))

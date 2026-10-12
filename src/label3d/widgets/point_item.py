@@ -142,6 +142,10 @@ class PointItem(QGraphicsEllipseItem):
         return self._state
 
     @property
+    def has_reprojection(self) -> bool:
+        return self._xr is not None and self._yr is not None
+
+    @property
     def source(self) -> str:
         return self._source
 

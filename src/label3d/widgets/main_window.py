@@ -350,15 +350,33 @@ class MainWindow(QMainWindow):
         self._layout_actions[LayoutMode.GRID].setChecked(True)
 
         # View > Zoom
+        # Zoom in/out act on the camera under the mouse; the rest on all cameras
         zoom_menu = view_menu.addMenu("Zoom")
-        self._action_zoom_instance = zoom_menu.addAction("Zoom to instance")
-        self._action_zoom_instance.setShortcut(QKeySequence("Ctrl+="))
-        self._action_zoom_instance.triggered.connect(self._zoom_to_instance)
+        zoom_in = zoom_menu.addAction("Zoom in")
+        zoom_in.setShortcuts([
+            QKeySequence("+"),
+            QKeySequence("Shift+="),
+            QKeySequence(Qt.KeyboardModifier.KeypadModifier | Qt.Key.Key_Plus),
+        ])
+        zoom_in.triggered.connect(self._camera_grid.zoom_in_under_mouse)
+        zoom_out = zoom_menu.addAction("Zoom out")
+        zoom_out.setShortcuts([
+            QKeySequence("-"),
+            QKeySequence(Qt.KeyboardModifier.KeypadModifier | Qt.Key.Key_Minus),
+        ])
+        zoom_out.triggered.connect(self._camera_grid.zoom_out_under_mouse)
+        zoom_menu.addSeparator()
         self._action_zoom_point = zoom_menu.addAction("Zoom to point")
-        self._action_zoom_point.setShortcut(QKeySequence("Ctrl+-"))
+        self._action_zoom_point.setShortcut(QKeySequence("P"))
         self._action_zoom_point.triggered.connect(self._zoom_to_point)
+        self._action_zoom_instance = zoom_menu.addAction("Zoom to instance")
+        self._action_zoom_instance.setShortcut(QKeySequence("I"))
+        self._action_zoom_instance.triggered.connect(self._zoom_to_instance)
         zoom_all = zoom_menu.addAction("Zoom to all")
-        zoom_all.setShortcut(QKeySequence("Ctrl+0"))
+        zoom_all.setShortcuts([
+            QKeySequence("="),
+            QKeySequence(Qt.KeyboardModifier.KeypadModifier | Qt.Key.Key_Equal),
+        ])
         zoom_all.triggered.connect(self._camera_grid.fit_targets)
 
         self._state.selection_changed.connect(self._update_zoom_actions)
