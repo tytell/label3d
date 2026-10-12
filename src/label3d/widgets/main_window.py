@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from label3d.workers.export_worker import ExportWorker
 from label3d.workers.slp_sync_worker import (
     PredictionImportWorker,
     SlpReadWorker,
@@ -36,6 +37,7 @@ from label3d.workers.triangulation_worker import (
 )
 
 from label3d.calibration_registry import entry_summary, entry_tree, find_calibration
+from label3d.export import describe_slp_changes, format_summary, stale_experiments
 from label3d.geometry import load_cameras
 from label3d.points import PointsStore
 from label3d.project import Project
@@ -44,6 +46,7 @@ from label3d.state import ProjectState
 from label3d.video import FrameProvider
 from label3d.widgets.calibration_view import CalibrationView
 from label3d.widgets.camera_grid import CameraGrid, LayoutMode
+from label3d.widgets.export_dialog import ExportDialog
 from label3d.widgets.frame_controls import FrameControls
 from label3d.widgets.label_view import LabelView
 from label3d.widgets.point_item import ColorMode
@@ -67,6 +70,7 @@ class MainWindow(QMainWindow):
         self._merge_tri_worker = None
         self._all_tri_worker = None
         self._switch_tri_worker = None
+        self._export_worker = None
         self._offered_slp_setup = False
 
         self.setWindowTitle(f"label3d — {project.root.name}")
@@ -91,7 +95,6 @@ class MainWindow(QMainWindow):
         self._tabs = QTabBar()
         self._tabs.addTab("Calibrate")
         self._tabs.addTab("Label")
-        self._tabs.addTab("Export")
         self._tabs.setCurrentIndex(1)  # Start on Label tab
         top_layout.addWidget(self._tabs)
 
@@ -160,15 +163,10 @@ class MainWindow(QMainWindow):
             self._on_active_calibration_changed
         )
 
-        # Export stub
-        _export_stub = QLabel("Export (coming soon)")
-        _export_stub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # Stacked widget: index matches tab index (0=Calibrate, 1=Label, 2=Export)
+        # Stacked widget: index matches tab index (0=Calibrate, 1=Label)
         self._stack = QStackedWidget()
         self._stack.addWidget(self._calibration_view)  # 0
         self._stack.addWidget(self._label_view)        # 1
-        self._stack.addWidget(_export_stub)            # 2
         self._stack.setCurrentIndex(1)
         main_layout.addWidget(self._stack, stretch=1)
 
@@ -231,6 +229,7 @@ class MainWindow(QMainWindow):
 
         # File menu
         file_menu = menu_bar.addMenu("File")
+        file_menu.setToolTipsVisible(True)
         new_action = file_menu.addAction("New project...")
         new_action.setEnabled(False)
         open_action = file_menu.addAction("Open project...")
@@ -263,8 +262,9 @@ class MainWindow(QMainWindow):
         )
         load_skeleton_action.triggered.connect(self._do_load_skeleton)
         file_menu.addSeparator()
-        export_action = file_menu.addAction("Export points...")
-        export_action.setEnabled(False)
+        self._export_action = file_menu.addAction("Export points...")
+        self._export_action.triggered.connect(self._do_export)
+        file_menu.aboutToShow.connect(self._update_export_action)
 
         # Navigate menu
         nav_menu = menu_bar.addMenu("Navigate")
@@ -784,6 +784,7 @@ class MainWindow(QMainWindow):
     def _update_calibration_status(self) -> None:
         """Warn when the 3D points were computed with another calibration."""
         project = self._project
+        self._update_export_action()
         store = project.points
         if project.triangulation_is_stale() and (store is None or store.df.empty):
             # Nothing to re-triangulate yet: new points use the active one.
@@ -1501,6 +1502,61 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(message)
         self._update_sync_action()
         self._show_sync_summary(self._setup_results)
+
+    # -- Export ----------------------------------------------------------------
+
+    def _update_export_action(self) -> None:
+        """Export needs every experiment's 3D points to come from its active calibration."""
+        stale = stale_experiments(self._project)
+        self._export_action.setEnabled(not stale)
+        if stale:
+            self._export_action.setToolTip(
+                f"3D points are out of date in {', '.join(stale)} — use "
+                "Instances > Triangulate all experiments first"
+            )
+        else:
+            self._export_action.setToolTip(
+                "Write all points to one CSV and update the SLP files"
+            )
+
+    def _do_export(self) -> None:
+        """Ask for options, check the SLP files, then export the CSV and write the SLP files."""
+        if stale_experiments(self._project):
+            self._update_export_action()
+            return
+        if self._project.points is not None:
+            self._project.points.save_if_changed()
+        dialog = ExportDialog(self._project, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        progress = self._busy_dialog("Exporting points…", "Export points")
+        self._export_worker = ExportWorker(self._project, dialog.options(), parent=self)
+        self._export_worker.pending.connect(
+            lambda results: self._on_export_pending(results, progress)
+        )
+        self._export_worker.done.connect(lambda result: self._on_export_done(result, progress))
+        self._export_worker.error.connect(
+            lambda msg: self._on_slp_error("Export failed", msg, progress)
+        )
+        self._export_worker.start()
+
+    def _on_export_pending(self, results, progress: QProgressDialog) -> None:
+        progress.close()
+        self._export_worker = None
+        QMessageBox.warning(
+            self,
+            "New points in the SLP files",
+            "The SLP files have points that label3d doesn't have yet, so nothing "
+            "was exported:\n\n" + describe_slp_changes(results)
+            + "\n\nRun Sync with Sleap, triangulate, then export again.",
+        )
+
+    def _on_export_done(self, result, progress: QProgressDialog) -> None:
+        progress.close()
+        self._export_worker = None
+        self._status_bar.showMessage(f"Exported {result.n_rows} rows to {result.path}")
+        QMessageBox.information(self, "Export finished", format_summary(result))
 
     def _on_slp_error(self, title: str, msg: str, progress: QProgressDialog) -> None:
         progress.close()

@@ -2,7 +2,7 @@
 
 **Goal**: The final step of the workflow. Once the SLEAP model is trained and has run on every frame of every camera, triangulate everything with each experiment's active calibration. Then write one long-format CSV with the 2D and 3D coordinates of all points from all experiments, and bring the mapped SLP files up to date at the same time.
 
-**Status**: In progress; 13.1 is done. This replaces the Export tab. Phase 15.1 stays as written for exporting to other pose formats, but it will be reached from the File menu too, not from a tab.
+**Status**: In progress; 13.1–13.4 are done (code and tests), docs (13.5, 13.6) next. This replaces the Export tab. Phase 15.1 stays as written for exporting to other pose formats, but it will be reached from the File menu too, not from a tab.
 
 ---
 
@@ -78,6 +78,8 @@ One CSV in **long** format, with one row per (experiment, trial, frame, instance
 - `--no-slp` skips the SLP check and the SLP write, for exporting without a mapping set up.
 - It doesn't triangulate.
 - Exit codes: 0 when the export is written, 1 on any of the errors above.
+
+**Done:** `widgets/export_dialog.py`, `workers/export_worker.py` (the SLP check and the export run in the background), `export_cli.py` (`label3d-export`), `tests/test_export_cli.py`. The CLI loads the project with `Project.load`, so like the app it needs the videos to be reachable.
 
 Both use the same function with no Qt in it, `export.export_points(project, options) -> ExportResult` (output path, row counts, 2D-only experiments, SLP files written), in a new `src/label3d/export.py`. The pre-flight checks are separate functions in the same module (`stale_experiments`, `uncalibrated_experiments`, `pending_slp_changes`), so the dialog can ask its questions between them. This lets step 5 of the workflow run after a large inference job without opening the GUI. The CLI is a second entry in `pyproject.toml` `[project.scripts]`.
 

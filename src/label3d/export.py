@@ -250,3 +250,18 @@ def experiment_rows(
     rows = pd.concat(parts, ignore_index=True)
     rows = rows.sort_values(["_order", "_view"], kind="stable")
     return rows[EXPORT_COLUMNS].reset_index(drop=True)
+
+
+def format_summary(result: ExportResult) -> str:
+    """Rows written, per-experiment counts by state and source, 2D-only and SLP notes."""
+    lines = [f"Wrote {result.n_rows} rows to {result.path}"]
+    for name, counts in result.counts.items():
+        parts = [f"{state}/{source} {n}" for (state, source), n in sorted(counts.items())]
+        lines.append(f"  {name}: {', '.join(parts) or 'no points'}")
+    if result.two_d_only:
+        lines.append(f"2D only (no active calibration): {', '.join(result.two_d_only)}")
+    if result.slp_files_written is None:
+        lines.append("SLP files were not written")
+    else:
+        lines.append(f"Wrote {result.slp_files_written} SLP file(s)")
+    return "\n".join(lines)
