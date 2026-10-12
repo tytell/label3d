@@ -49,6 +49,8 @@ One CSV in **long** format, with one row per (experiment, trial, frame, instance
 - `not_set` cells are left out.
 - A `3d` row is written only where all of x/y/z are present. Since triangulation clears the 3D point of anything seen by fewer than 2 cameras (13.1), every `3d` row is current.
 - **An experiment with no active calibration** is exported with its camera rows only: no `3d` rows, and empty `xr, yr, error`.
+- **Include predictions off** drops camera rows with `source = sleap_pred`. `3d` rows stay; `n_cameras` and `mean_error` still describe the triangulation, which used every `set` and `predicted` point.
+- **Done:** `src/label3d/export.py` (`export_points`, `ExportOptions`, `ExportResult`, the pre-flight checks) and `tests/test_export.py`.
 
 ## 13.3 Export dialog (`widgets/export_dialog.py`) and CLI
 
@@ -63,8 +65,8 @@ One CSV in **long** format, with one row per (experiment, trial, frame, instance
 - **Output path:** default `project/exports/points_{YYYYmmdd-HHMMSS}.csv`.
 - **On Export:**
   1. **Experiments without an active calibration:** if any are checked, a warning lists them and says only their 2D points will be exported. **Export anyway** continues; **Cancel** goes back to the dialog.
-  2. **Check the SLP files for new points:** read the mapped SLP files the way Sync does (`read_slp_for_sync` + `compute_merge`). If any would bring in new or changed points (`MergeResult.has_changes`), stop with a warning that says how many points, in which experiments, and to run **Sync** and then triangulate first. Nothing is written.
-  3. **Otherwise** write the CSV, and write the current points into the mapped SLP files (`project.write_slp_files()`), as the write half of a Sync does. No sync id is recorded in `sync_history.csv`, because nothing was read in.
+  2. **Check the SLP files for new points:** read the mapped SLP files the way Sync does (`read_slp_for_sync` + `compute_merge`). If any would bring in new or changed points, new scores or conflicts (`MergeResult.has_changes` or `conflicts`), stop with a warning that says how many points, in which experiments, and to run **Sync** and then triangulate first. Nothing is written.
+  3. **Otherwise** write the CSV, and write the current points into the mapped SLP files (`project.write_slp_files()`), as the write half of a Sync does. The SLP files are written only when the mapping is complete (every video has a file), the condition that enables **Sync**; otherwise the summary says they were not written. No sync id is recorded in `sync_history.csv`, because nothing was read in.
 - Shows progress, then a summary: rows written, per-experiment counts by state and source, which experiments were 2D only, and how many SLP files were written.
 
 **CLI:** `uv run label3d-export <project> [-o out.csv] [--experiments a,b] [--no-predictions] [--only-3d] [--no-slp]`
