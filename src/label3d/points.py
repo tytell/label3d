@@ -30,6 +30,14 @@ SOURCE_SLEAP_USER = "sleap_user"
 SOURCE_SLEAP_PRED = "sleap_pred"
 LABELED_STATES = ("set", "predicted", "not_visible")
 INDEX_NAMES = ["experiment", "trial", "frame", "instance", "bodypart"]
+# Levels the index is kept sorted on.  Bodyparts are left in skeleton order,
+# so the lexsort depth is 4: enough for every partial-key .loc lookup.
+SORT_LEVELS = INDEX_NAMES[:4]
+
+
+def sort_points_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Sort rows by (experiment, trial, frame, instance), keeping bodypart order."""
+    return df.sort_index(level=SORT_LEVELS, sort_remaining=False)
 
 
 class PointData(NamedTuple):
@@ -60,7 +68,7 @@ class PointsStore(QObject):
 
     def __init__(self, df: pd.DataFrame, parent: QObject | None = None):
         super().__init__(parent)
-        self._df = df
+        self._df = sort_points_index(df)
         self._changed = False
         self._save_path: Path | None = None
         self._experiment_name: str = ""
@@ -375,8 +383,9 @@ class PointsStore(QObject):
         """Add a new empty instance.  Returns the new instance index."""
         existing = self.get_instances(trial, frame)
         new_idx = max(existing) + 1 if existing else 0
-        for bp in bodyparts:
-            self._ensure_row((self._experiment_name, trial, frame, new_idx, bp))
+        self._ensure_rows(
+            [(self._experiment_name, trial, frame, new_idx, bp) for bp in bodyparts]
+        )
         self._mark_changed()
         self._invalidate_cache(trial, frame)
         return new_idx
@@ -565,7 +574,16 @@ class PointsStore(QObject):
 
     def _ensure_row(self, idx: tuple) -> None:
         """Create a row with NaN/not_set if it doesn't exist."""
-        if idx in self._df.index:
+        self._ensure_rows([idx])
+
+    def _ensure_rows(self, idxs: list[tuple]) -> None:
+        """Create rows with NaN/not_set for any of idxs that don't exist.
+
+        New rows are appended, then the index is re-sorted if they landed out
+        of order, so partial-key lookups stay fast (no lexsort warning).
+        """
+        idxs = [idx for idx in idxs if idx not in self._df.index]
+        if not idxs:
             return
         row = pd.Series(index=self._df.columns, dtype=object)
         for cam in self.cameras:
@@ -580,10 +598,14 @@ class PointsStore(QObject):
         row[("3d", "x")] = np.nan
         row[("3d", "y")] = np.nan
         row[("3d", "z")] = np.nan
-        row.name = idx
-        new_idx = pd.MultiIndex.from_tuples([idx], names=INDEX_NAMES)
-        new_row = pd.DataFrame([row], index=new_idx, columns=self._df.columns)
-        self._df = pd.concat([self._df, new_row])
+        new_idx = pd.MultiIndex.from_tuples(idxs, names=INDEX_NAMES)
+        new_rows = pd.DataFrame([row] * len(idxs), index=new_idx, columns=self._df.columns)
+        in_order = self._df.empty or (
+            self._df.index[-1][:4] <= min(idx[:4] for idx in idxs)
+        )
+        self._df = pd.concat([self._df, new_rows])
+        if not in_order:
+            self._df = sort_points_index(self._df)
 
     def _set_label3d(self, idx: tuple, camera: str) -> None:
         """Record a label3d edit: source=label3d, no score, no sync id."""
@@ -615,7 +637,7 @@ class PointsStore(QObject):
 
     def replace_df(self, df: pd.DataFrame) -> None:
         """Replace all data (e.g. with a merge result), clear the cache, mark changed."""
-        self._df = df
+        self._df = sort_points_index(df)
         self._cache.clear()
         self._cache_key = None
         self._mark_changed()
