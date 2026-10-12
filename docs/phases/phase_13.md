@@ -2,26 +2,28 @@
 
 **Goal**: The final step of the workflow. Once the SLEAP model is trained and has run on every frame of every camera, triangulate everything with each experiment's active calibration. Then write one long-format CSV with the 2D and 3D coordinates of all points from all experiments, and bring the mapped SLP files up to date at the same time.
 
-**Status**: Not started. This replaces the Export tab. Phase 15.1 stays as written for exporting to other pose formats, but it will be reached from the File menu too, not from a tab.
+**Status**: In progress; 13.1 is done. This replaces the Export tab. Phase 15.1 stays as written for exporting to other pose formats, but it will be reached from the File menu too, not from a tab.
 
 ---
 
 ## 13.1 Fast batch triangulation (`geometry.py`, `workers/triangulation_worker.py`)
 
 - **The problem:** with predictions on every frame, triangulating frame by frame is too slow. The cost is mostly per-point overhead: `get_point` lookups in pandas, building a sub-`CameraGroup` for each bodypart, and writing results back through `.at`.
-- **The fix:** add `triangulate_trial(cameras: dict[str, CameraParams], points_store, trial) -> TrialTriangulation`. It matches the other geometry functions, which take `cameras` and build the group with `build_camera_group` (cameras sorted by name). For each instance, it:
-  1. builds one `C × N × 2` array of raw pixels across all frames and bodyparts, with NaN where a camera's point doesn't count (see *Which points*);
-  2. calls `cgroup.triangulate(..., undistort=True)` once. aniposelib's default mode still runs one SVD per point in Python. If that's too slow, replace it with a batched DLT (`np.linalg.svd` on a stacked `N × 2C × 4` array) in `geometry.py`;
-  3. reprojects every point into every camera in one batch;
-  4. writes `3d` x/y/z and every camera's `xr`/`yr` back into the DataFrame in one vectorised assignment, not through `set_3d` / `set_reprojected`. The trial's frame cache is invalidated once at the end.
+- **The fix (done):** `triangulate_trial(cameras, points_store, trial, frames=None) -> int` in `geometry.py`. It takes `cameras` like the other geometry functions and returns the number of rows with a 3D point. Every row of the trial (each frame, instance and bodypart) is independent, so all rows go in one batch, via `triangulate_rows(cameras, df) -> (p3d, reproj)`:
+  1. each camera's used points are undistorted to normalised coordinates (`cv2.undistortPoints`) and stacked into an `N × 2C × 4` DLT system, with zero rows for cameras that don't count;
+  2. all rows are solved with one batched `np.linalg.svd`. This is the same DLT as aniposelib's `CameraGroup.triangulate`, without its per-point Python loop;
+  3. every point is reprojected into every camera in one call per camera;
+  4. `PointsStore.set_triangulation(index, p3d, reproj)` writes `3d` x/y/z and every camera's `xr`/`yr` in one positional assignment per column, and invalidates the frame cache.
+
+  On `real_OMR/20260721` (67,694 rows) the whole experiment takes 0.4 s. `mean_reprojection_errors(df, reproj)` gives each row's mean error over the cameras used; the export uses it too.
 - **Which points:** a camera's point counts when its state is `set` or `predicted` and x is not NaN. `not_visible` and `not_set` don't count. **The SLEAP score is not used:** every matching point is triangulated, whatever its score. Scores stay with the 2D points and go into the export, so they can be filtered there.
 - **Fewer than 2 cameras:** the `3d` x/y/z and every camera's `xr`/`yr` are set to NaN, even if they held values from an earlier run.
-- **Same rule for `triangulate_frame`:** it currently skips such a bodypart and leaves its old values. Change it to clear them too, so the per-frame and batch results agree, and so stale 3D never reaches the export.
-- **Callers:**
-  - `TriangulationWorker` (`Ctrl+Shift+T`, and `_merge_tri_worker` after a Sync) calls `triangulate_trial` once. It loses its per-frame `frame_done` signal, so `label_view` redraws the current frame when the worker finishes. Progress is reported per instance, or per trial for long runs.
-  - `AllExperimentsTriangulationWorker` calls it once per (experiment, trial). Cancelling stops between trials. It already updates each experiment's `triangulated_with` after a complete run (`_on_triangulate_all_done`); that stays as it is.
-  - The core function has no Qt in it, so the CLI (13.3) can call it directly.
-- **Test:** on the synthetic project, start from a store that has old 3D values in some cells, including bodyparts with fewer than 2 cameras. Run `triangulate_frame` over every frame on one copy and `triangulate_trial` on another. The two must agree to within 1e-6, NaN where the other is NaN, and the cells with fewer than 2 cameras must be NaN.
+- **Same rule for `triangulate_frame` (done):** it now runs the same batch code on one instance's rows, so it clears old values too and agrees with `triangulate_trial`. Stale 3D never reaches the export.
+- **Callers (done):**
+  - `TriangulationWorker` (`Ctrl+Shift+T`, and `_merge_tri_worker` after a Sync) calls `triangulate_trial` once. Its per-frame `frame_done` signal is gone; `label_view` redraws when the worker finishes.
+  - `AllExperimentsTriangulationWorker` calls it once per (experiment, trial), and reports progress and its `finished` count in trials. Cancelling stops between trials. `_on_triangulate_all_done` still updates each experiment's `triangulated_with` after a complete run.
+  - The core functions have no Qt in them, so the CLI (13.3) can call them directly.
+- **Test (done, `tests/test_triangulation.py`):** on the synthetic project, start from a store with old 3D values everywhere and every third row seen by one camera only. `triangulate_trial` and `triangulate_frame` must both match a per-point reference through aniposelib (one sub-`CameraGroup` per point, as `triangulate_frame` worked before) to within 1e-6, and the one-camera rows must be NaN.
 
 ## 13.2 Export format
 
@@ -79,7 +81,7 @@ Both use the same function with no Qt in it, `export.export_points(project, opti
 
 ## 13.4 Tests
 
-- **13.1:** `triangulate_trial` matches `triangulate_frame` as described there. A bodypart that drops to fewer than 2 cameras has NaN `3d` and `xr`/`yr` after either function.
+- **13.1:** done; see there.
 - **`export_points`:**
   - writes the documented columns in order;
   - its rows round-trip to the store values (x, y, state, source, score, xr, yr, 3D);

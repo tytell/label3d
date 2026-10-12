@@ -1,30 +1,25 @@
-"""Background worker for batch triangulation of all frames in a trial."""
+"""Background workers for batch triangulation (one batch per trial)."""
 
 from __future__ import annotations
 
 import logging
 
-import numpy as np
 from PySide6.QtCore import QThread, Signal
 
-from label3d.geometry import CameraParams, triangulate_frame
+from label3d.geometry import CameraParams, triangulate_trial
 from label3d.points import PointsStore
 
 logger = logging.getLogger(__name__)
 
 
 class TriangulationWorker(QThread):
-    """Triangulates every frame in a trial (or a subset) in a background thread.
+    """Triangulates a trial (or some of its frames) in one batch in a background thread.
 
     Emits:
-        progress(int, int)   — (frames_done, total_frames)
-        frame_done(int)      — frame index just triangulated
-        finished()           — all frames complete
+        finished()           — done
         error_occurred(str)  — on fatal error
     """
 
-    progress = Signal(int, int)   # done, total
-    frame_done = Signal(int)
     finished = Signal()
     error_occurred = Signal(str)
 
@@ -40,47 +35,29 @@ class TriangulationWorker(QThread):
         self._cameras = cameras
         self._store = points_store
         self._trial = trial
-        self._frames = frames  # None = all labeled frames
+        self._frames = frames  # None = every frame with data
 
     def run(self):
         try:
-            trial = self._trial
-            frames = self._frames
-
-            if frames is None:
-                # Collect all frames that have any data
-                try:
-                    trial_df = self._store.df.loc[(self._store.experiment_name, trial)]
-                    frames = sorted(
-                        trial_df.index.get_level_values("frame").unique().tolist()
-                    )
-                except KeyError:
-                    frames = []
-
-            total = len(frames)
-            for done, frame in enumerate(frames):
-                instances = self._store.get_instances(trial, frame)
-                for inst in instances:
-                    triangulate_frame(self._cameras, self._store, trial, frame, inst)
-                self.frame_done.emit(frame)
-                self.progress.emit(done + 1, total)
-
+            triangulate_trial(self._cameras, self._store, self._trial, self._frames)
             self.finished.emit()
         except Exception as exc:
+            logger.exception("Triangulating trial %s failed", self._trial)
             self.error_occurred.emit(str(exc))
 
 
 class AllExperimentsTriangulationWorker(QThread):
-    """Triangulates every labeled frame of several experiments in a background thread.
+    """Triangulates every trial of several experiments in a background thread.
 
     Each job is (experiment_name, cameras, points_store).  Stores are created in
     the main thread and only written to here; saving happens in the main thread.
-    Frames of first_trial (if given) go first. requestInterruption() stops the
-    run after the current frame; `completed` is then False.
+    Each trial is one batch (triangulate_trial). The trial first_trial (if
+    given) goes first. requestInterruption() stops the run after the current
+    trial; `completed` is then False.
 
     Emits:
-        progress(int, int)   — (frames_done, total_frames)
-        finished(int)        — frames triangulated
+        progress(int, int)   — (trials_done, total_trials)
+        finished(int)        — trials triangulated
         error_occurred(str)  — on fatal error
     """
 
@@ -101,20 +78,19 @@ class AllExperimentsTriangulationWorker(QThread):
 
     def run(self):
         try:
-            frames = [
-                (store, cameras, trial, frame)
+            trials = [
+                (store, cameras, trial)
                 for _name, cameras, store in self._jobs
-                for trial, frame in _labeled_frames(store)
+                for trial in _labeled_trials(store)
             ]
             if self._first_trial is not None:
-                frames.sort(key=lambda job: job[2] != self._first_trial)
-            total = len(frames)
+                trials.sort(key=lambda job: job[2] != self._first_trial)
+            total = len(trials)
             done = 0
-            for store, cameras, trial, frame in frames:
+            for store, cameras, trial in trials:
                 if self.isInterruptionRequested():
                     break
-                for inst in store.get_instances(trial, frame):
-                    triangulate_frame(cameras, store, trial, frame, inst)
+                triangulate_trial(cameras, store, trial)
                 done += 1
                 self.progress.emit(done, total)
             self.completed = done == total
@@ -124,11 +100,10 @@ class AllExperimentsTriangulationWorker(QThread):
             self.error_occurred.emit(str(exc))
 
 
-def _labeled_frames(store: PointsStore) -> list[tuple[str, int]]:
-    """Every (trial, frame) with data in a store, for its own experiment."""
+def _labeled_trials(store: PointsStore) -> list[str]:
+    """Every trial with data in a store, for its own experiment."""
     try:
         exp_df = store.df.loc[store.experiment_name]
     except KeyError:
         return []
-    pairs = exp_df.index.droplevel(["instance", "bodypart"]).unique()
-    return [(str(trial), int(frame)) for trial, frame in pairs]
+    return [str(t) for t in exp_df.index.get_level_values("trial").unique()]

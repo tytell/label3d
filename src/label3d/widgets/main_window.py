@@ -809,8 +809,8 @@ class MainWindow(QMainWindow):
     def _retriangulate_experiment(self) -> None:
         """Re-triangulate the active experiment with the active calibration.
 
-        The current frame is done at once, then every labeled frame, current
-        trial first, behind a window-modal progress dialog: the worker writes
+        The current frame is done at once, then every trial, current trial
+        first, behind a window-modal progress dialog: the worker writes
         into the live store, so edits wait until it finishes. Cancelling
         leaves the stale-3D warning up.
         """
@@ -842,7 +842,7 @@ class MainWindow(QMainWindow):
         def on_progress(done: int, total: int) -> None:
             progress.setMaximum(total)
             progress.setValue(done)
-            progress.setLabelText(f"Re-triangulating frame {done} of {total}…")
+            progress.setLabelText(f"Re-triangulating trial {done} of {total}…")
 
         worker.progress.connect(on_progress)
         worker.finished.connect(
@@ -854,7 +854,7 @@ class MainWindow(QMainWindow):
         self._switch_tri_worker = worker
         worker.start()
 
-    def _on_retriangulate_done(self, worker, n_frames: int, entry_id: str, progress) -> None:
+    def _on_retriangulate_done(self, worker, n_trials: int, entry_id: str, progress) -> None:
         progress.close()
         self._switch_tri_worker = None
         store = self._project.points
@@ -863,10 +863,10 @@ class MainWindow(QMainWindow):
             store._invalidate_cache(self._state.current_trial, self._state.current_frame)
         if worker.completed and self._project.active_calibration_id() == entry_id:
             self._project.set_triangulated_with(None, entry_id)
-            self._status_bar.showMessage(f"Re-triangulated {n_frames} frame(s)", 5000)
+            self._status_bar.showMessage(f"Re-triangulated {n_trials} trial(s)", 5000)
         else:
             self._status_bar.showMessage(
-                f"Re-triangulation stopped after {n_frames} frame(s)", 5000
+                f"Re-triangulation stopped after {n_trials} trial(s)", 5000
             )
         self._update_calibration_status()
         self._state.frame_changed.emit(self._state.current_frame)
@@ -1230,7 +1230,7 @@ class MainWindow(QMainWindow):
         progress = self._busy_dialog("Triangulating…", "Triangulate all experiments")
         self._all_tri_worker = AllExperimentsTriangulationWorker(jobs, parent=self)
         self._all_tri_worker.progress.connect(
-            lambda done, total: progress.setLabelText(f"Triangulating frame {done} of {total}…")
+            lambda done, total: progress.setLabelText(f"Triangulating trial {done} of {total}…")
         )
         self._all_tri_worker.finished.connect(
             lambda n: self._on_triangulate_all_done(n, jobs, skipped, used, progress)
@@ -1240,7 +1240,7 @@ class MainWindow(QMainWindow):
         )
         self._all_tri_worker.start()
 
-    def _on_triangulate_all_done(self, n_frames: int, jobs, skipped, used, progress) -> None:
+    def _on_triangulate_all_done(self, n_trials: int, jobs, skipped, used, progress) -> None:
         progress.close()
         for _name, _cameras, store in jobs:
             store.save_if_changed()
@@ -1251,7 +1251,7 @@ class MainWindow(QMainWindow):
         self._update_calibration_status()
         self._all_tri_worker = None
         self._offered_slp_setup = False
-        message = f"Triangulated {n_frames} frame(s) in {len(jobs)} experiment(s)"
+        message = f"Triangulated {n_trials} trial(s) in {len(jobs)} experiment(s)"
         if skipped:
             message += f"; skipped {', '.join(sorted(skipped))} (no calibration)"
         self._status_bar.showMessage(message)

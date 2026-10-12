@@ -448,6 +448,48 @@ class PointsStore(QObject):
         self._df.at[idx, ("3d", "z")] = z
         self._mark_changed()
 
+    def trial_rows(self, trial: str, frames: list[int] | None = None) -> pd.DataFrame:
+        """Rows of one trial (optionally only some frames), full index kept."""
+        try:
+            rows = self._df.xs(
+                (self._experiment_name, trial), level=INDEX_NAMES[:2], drop_level=False
+            )
+        except KeyError:
+            return self._df.iloc[:0]
+        if frames is not None:
+            rows = rows[rows.index.get_level_values("frame").isin(frames)]
+        return rows
+
+    def instance_rows(self, trial: str, frame: int, instance: int) -> pd.DataFrame:
+        """Rows of one instance in one frame, full index kept."""
+        try:
+            return self._df.xs(
+                (self._experiment_name, trial, frame, instance),
+                level=INDEX_NAMES[:4], drop_level=False,
+            )
+        except KeyError:
+            return self._df.iloc[:0]
+
+    def set_triangulation(
+        self,
+        index: pd.MultiIndex,
+        p3d: np.ndarray,
+        reproj: dict[str, np.ndarray],
+    ) -> None:
+        """Write 3D points (N, 3) and each camera's reprojections (N, 2) for index rows.
+
+        NaN values are written as well, which clears earlier results.
+        """
+        rows = self._df.index.get_indexer(index)
+        columns = self._df.columns
+        for k, coord in enumerate(THREE_D_COORDS):
+            self._df.iloc[rows, columns.get_loc(("3d", coord))] = p3d[:, k]
+        for cam, xy in reproj.items():
+            self._df.iloc[rows, columns.get_loc((cam, "xr"))] = xy[:, 0]
+            self._df.iloc[rows, columns.get_loc((cam, "yr"))] = xy[:, 1]
+        self._cache_key = None
+        self._mark_changed()
+
     def set_reprojected(
         self,
         trial: str,

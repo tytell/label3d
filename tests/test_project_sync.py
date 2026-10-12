@@ -184,14 +184,14 @@ class TestTriangulateAllExperiments:
         from label3d.geometry import load_cameras
         from label3d.workers.triangulation_worker import (
             AllExperimentsTriangulationWorker,
-            _labeled_frames,
+            _labeled_trials,
         )
 
         calib_path = _activate_calibration(project)
         assert project.calibration_path(EXP) == calib_path
 
         store = project.points
-        assert _labeled_frames(store) == [(t, 0) for t in TRIALS]
+        assert _labeled_trials(store) == list(TRIALS)
         assert store.df[("3d", "x")].isna().all()
 
         worker = AllExperimentsTriangulationWorker([(EXP, load_cameras(calib_path), store)])

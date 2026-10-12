@@ -338,17 +338,8 @@ class LabelView(QWidget):
         self._tri_worker = TriangulationWorker(
             self._cameras, store, self._state.current_trial, parent=self
         )
-        self._tri_worker.frame_done.connect(self._on_batch_frame_done)
         self._tri_worker.finished.connect(self._on_batch_done)
         self._tri_worker.start()
-
-    def _on_batch_frame_done(self, frame: int):
-        if frame == self._state.current_frame:
-            store = self._state.points_store
-            if store is not None:
-                store._invalidate_cache(self._state.current_trial, frame)
-            self._update_all_overlays()
-            self._update_3d_view()
 
     def _on_batch_done(self):
         self._update_all_overlays()
