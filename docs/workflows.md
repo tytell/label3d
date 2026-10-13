@@ -226,7 +226,7 @@ Before labeling, user must either:
   - Import predictions...   read .slp files from anywhere (e.g. sleap-nn track output)
   - Last sync summary...
   - Load skeleton...        merge a skeleton.json into the project (see data_model.md)
-  - Export points...       long-format CSV + SLP write; greyed while any experiment's 3D is stale
+  - Export points...       wide-format CSV + SLP write; greyed while any experiment's 3D is stale
 
 > Navigate
   - Previous / Next labeled frame   [ / ]
@@ -401,7 +401,7 @@ The user-facing steps and the column reference are in [user_workflow.md](user_wo
 **Dialog** (`ExportDialog`): experiment checklist (all checked), **Include predictions** (on), **Only points with 3D** (off), output path (default `exports/points_{YYYYmmdd-HHMMSS}.csv`). There is no score threshold: every point is triangulated and exported whatever its score, with its `score` column.
 
 **On Export:**
-1. `uncalibrated_experiments`: if any checked experiment has no active calibration, a warning lists them. **Export anyway** exports their camera rows only; **Cancel** returns to the dialog.
+1. `uncalibrated_experiments`: if any checked experiment has no active calibration, a warning lists them. **Export anyway** exports only their 2D columns; **Cancel** returns to the dialog.
 2. `ExportWorker` (background): if the SLP mapping is complete (the condition that enables Sync), `pending_slp_changes` reads the mapped files like Sync (`read_slp_for_sync` + `compute_merge`). Any new or changed points, new scores or conflicts → a warning listing them per experiment; nothing is written.
 3. Otherwise `export_points` writes the CSV, then `project.write_slp_files()` (the write half of a Sync; no sync id is recorded).
 4. A summary (`format_summary`): rows written, camera points per experiment by state/source, 2D-only experiments, SLP files written.
@@ -416,13 +416,15 @@ Same checks, without asking: stale experiments or pending SLP changes → messag
 
 ### CSV format
 
-Long format, one row per (experiment, trial, frame, instance, bodypart, view), columns in the fixed order `EXPORT_COLUMNS`:
+Wide format, one row per (experiment, trial, frame, instance, bodypart), as in `points.csv`. Columns in the fixed order `export_columns(project.cameras)`: the five index columns, then for each camera
 
-`experiment, trial, frame, instance, bodypart, view, video_frame, x, y, z, state, source, score, xr, yr, error, n_cameras, mean_error, calibration`
+`{cam}_video_frame, {cam}_x.px, {cam}_y.px, {cam}_state, {cam}_source, {cam}_score, {cam}_xr.px, {cam}_yr.px, {cam}_error.px`
+
+then `x.cm, y.cm, z.cm, n_cameras, mean_error.px, calibration`. Units follow a dot (`UNIT_2D`, `UNIT_3D` in `export.py`); columns without one are unitless.
 
 - `video_frame = {cam}_start + frame`, from `trials.csv`.
 - `error`, `n_cameras`, `mean_error` (`mean_reprojection_errors`) and `calibration` (`triangulated_with`) are computed at export; they are not stored in `points.csv`. `sync` is not exported.
-- `not_set` cells are left out. A `3d` row is written where x/y/z are present; triangulation clears them for points seen by fewer than 2 cameras, so they are never stale.
+- A camera's cells are blank where its state is `not_set` (or it's a prediction and **Include predictions** is off). The 3D columns are blank where x/y/z are missing; triangulation clears them for points seen by fewer than 2 cameras, so they are never stale. A row is left out only when no camera has a point and there is no 3D point.
 
 ### SLEAP files (SleapAdapter.save)
 

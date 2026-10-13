@@ -8,7 +8,7 @@ A PySide6 desktop app for 3D point labeling across multiple synchronized calibra
 
 1. **Calibrate** — detect Charuco board corners across cameras, run bundle adjustment via aniposelib
 2. **Label** — display synchronized video frames, click to place skeleton keypoints, view epipolar lines and reprojection errors in real time (the 3D view panel is hidden; `SHOW_3D_VIEW` in `label_view.py`)
-3. **Export** — **Sync** writes the mapped `.slp` files for SLEAP training/inference; at the end, **File > Export points...** (or `uv run label3d-export`) writes every point, 2D and 3D, to one long-format CSV
+3. **Export** — **Sync** writes the mapped `.slp` files for SLEAP training/inference; at the end, **File > Export points...** (or `uv run label3d-export`) writes every point, 2D and 3D, to one wide-format CSV
 4. **Re-import** — train a SLEAP model on the exported `.slp` files, run inference, drop the resulting `.slp` predictions back into `project/slp/`, then import again. Repeat from step 2 to review, correct, and add more ground-truth labels
 
 ## Key conventions
@@ -38,7 +38,7 @@ project/
 - `sync_history.csv` — at project root; one row per (sync, experiment, trial) for each SLEAP read that brought in points
 - `skeleton.json` — `{nodes, edges, symmetries, node_offsets_cm}` (shared at project root)
 - `slp/` — imported `.slp` files (global, at project root)
-- `exports/` — long-format point CSVs from **File > Export points...** / `label3d-export` (`export.py`; columns in [docs/user_workflow.md](docs/user_workflow.md#export-columns))
+- `exports/` — wide-format point CSVs from **File > Export points...** / `label3d-export` (`export.py`; columns in [docs/user_workflow.md](docs/user_workflow.md#export-columns))
 
 ## External dependencies cloned locally (not in repo)
 
@@ -57,7 +57,7 @@ uv run python generate_synthetic.py synthetic_config.toml
 
 ```
 uv run label3d          # launches the app
-uv run label3d-export <project>   # long-format CSV export, no GUI
+uv run label3d-export <project>   # wide-format CSV export, no GUI
 uv run python <script>  # run any script in the project venv
 ```
 

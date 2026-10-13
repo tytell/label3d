@@ -148,24 +148,23 @@ It runs the same checks. It stops with an error (exit code 1) if an experiment's
 
 ### Export columns
 
-One row per point and view: each camera that has the point, plus a `3d` row where it was triangulated. The columns are always in this order.
+One row per point: experiment, trial, frame, instance and bodypart, as in `points.csv`. Each camera has its own set of columns, named with the camera as a prefix (for example `LateralOrtho_x.px`), followed by the 3D point. Units follow a dot: `.px` for pixels, `.cm` for the 3D coordinates. The columns are always in this order.
 
 | Column | Meaning |
 |---|---|
 | `experiment`, `trial`, `frame`, `instance`, `bodypart` | which point; `frame` is the frame within the trial |
-| `view` | camera name, or `3d` |
-| `video_frame` | cameras: the frame in that camera's video (the trial frame plus the camera's start offset); empty for `3d` |
-| `x`, `y` | pixels for cameras; cm for `3d` |
-| `z` | cm, `3d` rows only |
-| `state` | cameras: `set`, `predicted` or `not_visible` |
-| `source` | cameras: `label3d`, `sleap_user` (labelled in SLEAP) or `sleap_pred` (predicted by SLEAP) |
-| `score` | SLEAP's score, where there is one |
-| `xr`, `yr`, `error` | cameras: where the 3D point reprojects, and its distance from (`x`, `y`) in pixels; empty without a 3D point |
-| `n_cameras` | `3d` rows: the number of cameras used (points `set` or `predicted`) |
-| `mean_error` | `3d` rows: the mean `error` over those cameras |
-| `calibration` | `3d` rows: the id of the calibration used |
+| `{cam}_video_frame` | the frame in that camera's video (the trial frame plus the camera's start offset) |
+| `{cam}_x.px`, `{cam}_y.px` | the point in that camera, in pixels |
+| `{cam}_state` | `set`, `predicted` or `not_visible` |
+| `{cam}_source` | `label3d`, `sleap_user` (labelled in SLEAP) or `sleap_pred` (predicted by SLEAP) |
+| `{cam}_score` | SLEAP's score, where there is one |
+| `{cam}_xr.px`, `{cam}_yr.px`, `{cam}_error.px` | where the 3D point reprojects in that camera, and its distance from (`x`, `y`); empty without a 3D point |
+| `x.cm`, `y.cm`, `z.cm` | the triangulated 3D point |
+| `n_cameras` | the number of cameras used to triangulate (points `set` or `predicted`) |
+| `mean_error.px` | the mean reprojection error over those cameras |
+| `calibration` | the id of the calibration used |
 
-Points never placed are left out. A point seen by fewer than two cameras has no `3d` row. **Include predictions** off drops prediction rows but keeps the `3d` rows, which may have used predictions; `n_cameras` and `mean_error` always describe the triangulation.
+A camera's columns are empty where it has no point. The 3D columns are empty for a point seen by fewer than two cameras, or in an experiment without a calibration. Points never placed in any camera are left out. **Include predictions** off empties the prediction cells but keeps the 3D point, which may have used them; `n_cameras` and `mean_error.px` always describe the triangulation.
 
 ## Keyboard reference for review
 

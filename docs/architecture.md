@@ -24,7 +24,7 @@ label3d/
 ├── calibration_refine.py        # ✓ Refinement with labelled points: selection, Stage 2, alignment, points record (Phase 12)
 ├── video.py                     # ✓ VideoReader: cv2.VideoCapture wrapper, frame cache
 ├── instance_init.py             # ✓ random / average / reprojected instance init strategies
-├── export.py                    # ✓ Long-format CSV export and pre-flight checks, no Qt (Phase 13)
+├── export.py                    # ✓ Wide-format CSV export and pre-flight checks, no Qt (Phase 13)
 ├── export_cli.py                # ✓ label3d-export command line tool (Phase 13)
 ├── widgets/
 │   ├── __init__.py              # ✓

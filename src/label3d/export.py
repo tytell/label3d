@@ -1,8 +1,10 @@
-"""Export all points to one long-format CSV (Phase 13.2), without Qt.
+"""Export all points to one wide-format CSV (Phase 13.2), without Qt.
 
-One row per (experiment, trial, frame, instance, bodypart, view), where view
-is a camera name or "3d". Used by File > Export points... and by the
-label3d-export command line tool.
+One row per (experiment, trial, frame, instance, bodypart), as in points.csv.
+Each camera has its own block of columns, prefixed with the camera name
+(LateralOrtho_x.px, ...), followed by the 3D point (x.cm, y.cm, z.cm). Units
+follow a dot. Used by File > Export points... and by the label3d-export
+command line tool.
 
 The pre-flight checks (stale_experiments, uncalibrated_experiments,
 pending_slp_changes) are separate, so the dialog can ask about each one;
@@ -26,14 +28,27 @@ from label3d.slp_sync import MergeResult, video_cells
 if TYPE_CHECKING:
     from label3d.project import Project
 
-# Fixed column order; scripts rely on it.
-EXPORT_COLUMNS = [
-    *INDEX_NAMES, "view", "video_frame",
-    "x", "y", "z", "state", "source", "score",
-    "xr", "yr", "error",
-    "n_cameras", "mean_error", "calibration",
-]
 VIEW_3D = "3d"
+UNIT_2D = "px"
+UNIT_3D = "cm"
+# Per-camera columns, each written as {camera}_{field}; fixed order, scripts rely on it.
+CAMERA_FIELDS = [
+    "video_frame", f"x.{UNIT_2D}", f"y.{UNIT_2D}", "state", "source", "score",
+    f"xr.{UNIT_2D}", f"yr.{UNIT_2D}", f"error.{UNIT_2D}",
+]
+POINT_3D_COLUMNS = [
+    f"x.{UNIT_3D}", f"y.{UNIT_3D}", f"z.{UNIT_3D}",
+    "n_cameras", f"mean_error.{UNIT_2D}", "calibration",
+]
+
+
+def export_columns(cameras: list[str]) -> list[str]:
+    """The CSV's columns, in order, for these cameras."""
+    return [
+        *INDEX_NAMES,
+        *(f"{cam}_{name}" for cam in cameras for name in CAMERA_FIELDS),
+        *POINT_3D_COLUMNS,
+    ]
 
 
 @dataclass
@@ -128,7 +143,7 @@ def default_output_path(project: Project) -> Path:
 
 
 def export_points(project: Project, options: ExportOptions | None = None) -> ExportResult:
-    """Write the long-format CSV and, if asked and possible, the mapped SLP files.
+    """Write the wide-format CSV and, if asked and possible, the mapped SLP files.
 
     Raises ValueError if a selected experiment's 3D points are stale. The SLP
     files are written only when options.write_slp is set and the mapping is
@@ -145,6 +160,7 @@ def export_points(project: Project, options: ExportOptions | None = None) -> Exp
 
     starts = {cell: start for cell, (_video, start) in
               video_cells(project.trials_df, project.cameras).items()}
+    cameras = project.cameras
     frames = []
     result = ExportResult(path=Path(), n_rows=0)
     for name in names:
@@ -155,15 +171,12 @@ def export_points(project: Project, options: ExportOptions | None = None) -> Exp
         if project.active_calibration_id(name) is None:
             result.two_d_only.append(name)
             calibration = None
-        rows = experiment_rows(df, starts, calibration, options)
-        cams = rows[rows["view"] != VIEW_3D]
-        result.counts[name] = {
-            (str(state), str(source)): int(n)
-            for (state, source), n in cams.groupby(["state", "source"]).size().items()
-        }
+        rows = experiment_rows(df, cameras, starts, calibration, options)
+        result.counts[name] = state_source_counts(rows, cameras)
         frames.append(rows)
 
-    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=EXPORT_COLUMNS)
+    columns = export_columns(cameras)
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
     path = Path(options.output) if options.output else default_output_path(project)
     path.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(path, index=False)
@@ -175,31 +188,46 @@ def export_points(project: Project, options: ExportOptions | None = None) -> Exp
     return result
 
 
+def state_source_counts(rows: pd.DataFrame, cameras: list[str]) -> dict[tuple[str, str], int]:
+    """Exported camera points by (state, source)."""
+    pairs = pd.concat([
+        rows[[f"{cam}_state", f"{cam}_source"]].set_axis(["state", "source"], axis=1)
+        for cam in cameras
+    ])
+    return {
+        (str(state), str(source)): int(n)
+        for (state, source), n in pairs.groupby(["state", "source"]).size().items()
+    }
+
+
 def experiment_rows(
     df: pd.DataFrame,
+    cameras: list[str],
     starts: dict[tuple[str, str, str], int],
     calibration: str | None,
     options: ExportOptions,
 ) -> pd.DataFrame:
-    """Long-format rows for one experiment's points DataFrame.
+    """Wide-format rows for one experiment's points DataFrame.
 
-    calibration is the id of the calibration the 3D points came from, or None
-    for an experiment without one: then only camera rows are written, with no
-    reprojections.
+    cameras gives the column order. calibration is the id of the calibration
+    the 3D points came from, or None for an experiment without one: then the
+    3D and reprojection columns are blank. A camera's cells are blank where it
+    has no point (or a prediction, without include_predictions); a row is
+    dropped when no camera has a point and there is no 3D point.
     """
-    cameras = [c for c in df.columns.get_level_values(0).unique() if c != VIEW_3D]
+    exp_cameras = [c for c in df.columns.get_level_values(0).unique() if c != VIEW_3D]
     keys = df.index.to_frame(index=False)
     keys["frame"] = keys["frame"].astype(int)
     keys["instance"] = keys["instance"].astype(int)
     n = len(df)
-    order = np.arange(n)
     with_3d = calibration is not None
     p3d = df[[(VIEW_3D, c) for c in "xyz"]].to_numpy(dtype=np.float64)
     has_3d = with_3d & ~np.isnan(p3d).any(axis=1)
 
-    parts = []
+    columns = {}
     reproj = {}
-    for v, cam in enumerate(cameras):
+    any_camera = np.zeros(n, dtype=bool)
+    for cam in exp_cameras:
         x = df[(cam, "x")].to_numpy(dtype=np.float64)
         y = df[(cam, "y")].to_numpy(dtype=np.float64)
         xr = df[(cam, "xr")].to_numpy(dtype=np.float64)
@@ -213,43 +241,41 @@ def experiment_rows(
         keep = state.isin(LABELED_STATES).to_numpy().copy()
         if not options.include_predictions:
             keep &= (source != SOURCE_SLEAP_PRED).to_numpy()
-        if options.only_3d:
-            keep &= has_3d
+        any_camera |= keep
         start = np.array(
             [starts.get((e, t, cam), np.nan) for e, t in zip(keys["experiment"], keys["trial"])],
             dtype=np.float64,
         )
-        part = keys[keep].assign(
-            view=cam,
-            video_frame=pd.array(start[keep] + keys["frame"].to_numpy()[keep], dtype="Int64"),
-            x=x[keep], y=y[keep], z=np.nan,
-            state=state.to_numpy()[keep], source=source.to_numpy()[keep],
-            score=df[(cam, "score")].to_numpy(dtype=np.float64)[keep],
-            xr=xr[keep], yr=yr[keep], error=np.hypot(x - xr, y - yr)[keep],
-            n_cameras=pd.array([pd.NA] * int(keep.sum()), dtype="Int64"),
-            mean_error=np.nan, calibration=None,
-            _order=order[keep], _view=v,
-        )
-        parts.append(part)
+        values = {
+            "video_frame": start + keys["frame"].to_numpy(),
+            f"x.{UNIT_2D}": x, f"y.{UNIT_2D}": y,
+            "state": state.to_numpy(), "source": source.to_numpy(),
+            "score": df[(cam, "score")].to_numpy(dtype=np.float64),
+            f"xr.{UNIT_2D}": xr, f"yr.{UNIT_2D}": yr,
+            f"error.{UNIT_2D}": np.hypot(x - xr, y - yr),
+        }
+        for name, value in values.items():
+            blank = None if value.dtype == object else np.nan
+            columns[f"{cam}_{name}"] = np.where(keep, value, blank)
+        columns[f"{cam}_video_frame"] = pd.array(columns[f"{cam}_video_frame"], dtype="Int64")
 
     if with_3d:
-        n_cameras = sum(triangulation_mask(df, cam).astype(int) for cam in cameras)
+        n_cameras = np.asarray(sum(triangulation_mask(df, cam).astype(int) for cam in exp_cameras))
         mean_error = mean_reprojection_errors(df, reproj)
-        part = keys[has_3d].assign(
-            view=VIEW_3D,
-            video_frame=pd.array([pd.NA] * int(has_3d.sum()), dtype="Int64"),
-            x=p3d[has_3d, 0], y=p3d[has_3d, 1], z=p3d[has_3d, 2],
-            state=None, source=None, score=np.nan,
-            xr=np.nan, yr=np.nan, error=np.nan,
-            n_cameras=pd.array(np.asarray(n_cameras)[has_3d], dtype="Int64"),
-            mean_error=mean_error[has_3d], calibration=calibration,
-            _order=order[has_3d], _view=len(cameras),
-        )
-        parts.append(part)
+    else:
+        n_cameras = np.zeros(n, dtype=int)
+        mean_error = np.full(n, np.nan)
+    for i, axis in enumerate("xyz"):
+        columns[f"{axis}.{UNIT_3D}"] = np.where(has_3d, p3d[:, i], np.nan)
+    columns["n_cameras"] = pd.array(np.where(has_3d, n_cameras, np.nan), dtype="Int64")
+    columns[f"mean_error.{UNIT_2D}"] = np.where(has_3d, mean_error, np.nan)
+    columns["calibration"] = np.where(has_3d, calibration, None)
 
-    rows = pd.concat(parts, ignore_index=True)
-    rows = rows.sort_values(["_order", "_view"], kind="stable")
-    return rows[EXPORT_COLUMNS].reset_index(drop=True)
+    keep_row = any_camera | has_3d
+    if options.only_3d:
+        keep_row &= has_3d
+    rows = keys.assign(**columns)[keep_row]
+    return rows.reindex(columns=export_columns(cameras)).reset_index(drop=True)
 
 
 def format_summary(result: ExportResult) -> str:

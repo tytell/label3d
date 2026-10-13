@@ -31,7 +31,7 @@ from label3d.project import Project
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="label3d-export",
-        description="Export every point of a label3d project to one long-format CSV "
+        description="Export every point of a label3d project to one wide-format CSV "
         "and write the mapped SLP files.",
     )
     parser.add_argument("project", type=Path, help="project folder")

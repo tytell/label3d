@@ -25,7 +25,7 @@ from label3d.project import Project
 
 
 class ExportDialog(QDialog):
-    """Experiments, filters and output path for the long-format export.
+    """Experiments, filters and output path for the wide-format export.
 
     On Export, experiments without an active calibration are listed in a
     warning; Cancel there returns to this dialog.

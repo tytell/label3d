@@ -8,7 +8,6 @@ import pandas as pd
 import pytest
 import toml
 
-from label3d.export import EXPORT_COLUMNS
 from label3d.export_cli import main
 from tests.conftest import TEST_PROJECT, requires_test_project
 
@@ -26,7 +25,9 @@ class TestCli:
         out = project_copy / "out.csv"
         assert main([str(project_copy), "-o", str(out)]) == 0
         df = pd.read_csv(out)
-        assert list(df.columns) == EXPORT_COLUMNS
+        assert list(df.columns[:5]) == ["experiment", "trial", "frame", "instance", "bodypart"]
+        assert {"x.cm", "y.cm", "z.cm"} <= set(df.columns)
+        assert not df.duplicated(["experiment", "trial", "frame", "instance", "bodypart"]).any()
         assert set(df["experiment"]) == {"exp1", "exp2"}
         assert "Wrote" in capsys.readouterr().out
 
