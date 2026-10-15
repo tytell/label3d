@@ -176,6 +176,7 @@ def _copy_project_without(src: Path, dst: Path, exclude: set[str]) -> None:
             target.unlink()
 
 
+@requires_test_project
 class TestVideoCheck:
     """Blank end frames and video mtimes are filled in once and written back."""
 

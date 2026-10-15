@@ -660,19 +660,16 @@ class PointsStore(QObject):
         self.data_changed.emit()
 
     def _auto_save(self) -> None:
-        if self._changed and self._save_path is not None:
-            # Backup before overwriting
-            bak = self._save_path.with_suffix(".csv.bak")
-            if self._save_path.exists():
-                self._save_path.rename(bak)
-            self.to_csv(self._save_path)
+        self.save_if_changed()
 
     def save_if_changed(self) -> None:
         """Save immediately if there are unsaved changes."""
         if self._changed and self._save_path is not None:
+            # Backup before overwriting; replace() (unlike rename()) overwrites
+            # an existing .bak on Windows too
             bak = self._save_path.with_suffix(".csv.bak")
             if self._save_path.exists():
-                self._save_path.rename(bak)
+                self._save_path.replace(bak)
             self.to_csv(self._save_path)
 
     # -- Merge -----------------------------------------------------------------
