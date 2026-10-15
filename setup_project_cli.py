@@ -546,7 +546,17 @@ def slp_config_from_args(args) -> SetupConfig:
 
 def run_from_config(config_path: Path, copy_files: bool = False, dry_run: bool = False) -> None:
     """Run the setup utility from a TOML config file."""
-    raw = toml.load(config_path)
+    try:
+        raw = toml.load(config_path)
+    except toml.TomlDecodeError as e:
+        hint = ""
+        if "escape" in str(e):
+            hint = (
+                "\nBackslashes in double-quoted TOML strings are escape sequences. "
+                "Put Windows paths in single quotes ('D:\\data\\videos') "
+                "or use forward slashes (\"D:/data/videos\")."
+            )
+        sys.exit(f"Could not read {config_path}: {e}{hint}")
     setup = raw.get("setup", {})
 
     slp_files = [Path(p).expanduser().resolve() for p in setup.get("slp_files", [])]
@@ -600,6 +610,19 @@ def run_from_config(config_path: Path, copy_files: bool = False, dry_run: bool =
     if slp_files:
         run_slp_setup(config, dry_run=dry_run, do_import=setup.get("import_labels", True))
         return
+
+    slp_only = [
+        k for k in ("video_search_dirs", "video_mode", "import_labels", "allow_missing_videos")
+        if k in setup
+    ]
+    if slp_only:
+        print(
+            f"Warning: {', '.join(slp_only)} only apply to SLP-first setup, which needs "
+            "slp_files; they are ignored here. .slp files in source_dir are matched to "
+            "videos in source_dir by file name only. To resolve the videos the .slp "
+            f"files record, add: slp_files = ['{source_dir}']",
+            file=sys.stderr,
+        )
 
     print("Scanning files...")
     assignment = classify_files(config)
@@ -702,7 +725,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.DEBUG if args.debug else logging.WARNING)
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.WARNING,
+        format="%(name)s: %(message)s",
+    )
+    for noisy in ("h5py", "matplotlib", "PIL", "numexpr"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     if args.from_slp:
         run_slp_setup(

@@ -58,6 +58,9 @@ projects/OMR_flat/
 
 `OMR_setup.toml`:
 
+On Windows, put paths in single quotes (`'D:\data\videos'`) or use forward slashes. In a
+double-quoted TOML string a backslash starts an escape sequence, so `"D:\data"` fails to parse.
+
 ```toml
 [setup]
 slp_files = ["projects/OMR_flat"]          # .slp files or folders holding them
