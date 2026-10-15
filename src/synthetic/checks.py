@@ -70,7 +70,7 @@ def run_sanity_checks(
     all_pts_3d: list[np.ndarray],
     all_projected: dict[str, list[np.ndarray]],
     node_names: list[str],
-    experiment_dir: Path,
+    calibration_path: Path,
 ):
     cam_list = list(cameras.values())
     cam_names = list(cameras.keys())
@@ -131,7 +131,7 @@ def run_sanity_checks(
     try:
         from aniposelib.cameras import CameraGroup  # noqa: PLC0415
         print("\nAniposelib round-trip check...")
-        cgroup = CameraGroup.load(str(experiment_dir / "calibration.toml"))
+        cgroup = CameraGroup.load(str(calibration_path))
         for i, (cam_name, cam) in enumerate(cameras.items()):
             loaded_K = cgroup.cameras[i].get_camera_matrix()
             err_K = float(np.max(np.abs(loaded_K - cam["K"])))

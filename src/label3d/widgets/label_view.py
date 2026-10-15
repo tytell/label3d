@@ -38,6 +38,7 @@ from label3d.instance_init import (
     init_reprojected,
 )
 from label3d.project import Project
+from label3d.skeleton import Skeleton
 from label3d.state import ProjectState
 from label3d.widgets.bodypart_list import BodypartList
 from label3d.widgets.camera_grid import CameraGrid
@@ -80,7 +81,7 @@ class LabelView(QWidget):
 
         # Load calibration for epipolar geometry and triangulation
         calib_path = project.calibration_path()
-        if calib_path.exists():
+        if calib_path is not None:
             self._cameras = load_cameras(calib_path)
             self._epipolar_cache = EpipolarCache(self._cameras)
 
@@ -162,7 +163,7 @@ class LabelView(QWidget):
     def reload_for_experiment(self) -> None:
         """Reload calibration data for the new active experiment."""
         calib_path = self._project.calibration_path()
-        if calib_path.exists():
+        if calib_path is not None:
             self._cameras = load_cameras(calib_path)
             self._epipolar_cache = EpipolarCache(self._cameras)
         else:
@@ -172,8 +173,18 @@ class LabelView(QWidget):
             self._view_3d.set_cameras(self._cameras)
 
     def reload_calibration(self) -> None:
-        """Pick up a calibration.toml written during this session and redraw."""
+        """Pick up a change of active calibration and redraw."""
         self.reload_for_experiment()
+        self._update_all_overlays()
+        self._update_3d_view()
+
+    def set_skeleton(self, skeleton: Skeleton | None) -> None:
+        """Show a new skeleton: bodypart list, selection and overlays."""
+        self._bodypart_list.set_skeleton(skeleton)
+        state = self._state
+        bodypart = state.selected_bodypart
+        if skeleton is not None and bodypart and bodypart not in skeleton.nodes:
+            state.select(state.selected_instance, skeleton.nodes[0])
         self._update_all_overlays()
         self._update_3d_view()
 
@@ -327,17 +338,8 @@ class LabelView(QWidget):
         self._tri_worker = TriangulationWorker(
             self._cameras, store, self._state.current_trial, parent=self
         )
-        self._tri_worker.frame_done.connect(self._on_batch_frame_done)
         self._tri_worker.finished.connect(self._on_batch_done)
         self._tri_worker.start()
-
-    def _on_batch_frame_done(self, frame: int):
-        if frame == self._state.current_frame:
-            store = self._state.points_store
-            if store is not None:
-                store._invalidate_cache(self._state.current_trial, frame)
-            self._update_all_overlays()
-            self._update_3d_view()
 
     def _on_batch_done(self):
         self._update_all_overlays()
@@ -590,7 +592,6 @@ class LabelView(QWidget):
             coords, used_fallback = init_average(
                 store,
                 store.experiment_name,
-                trial,
                 camera_name,
                 skeleton,
                 center_px,
@@ -619,7 +620,9 @@ class LabelView(QWidget):
         """Add a new instance across every camera using strategy.
 
         Used by Ctrl+I (average), Ctrl+Shift+I (random), and the Instances menu.
-        Each camera's coordinates are computed independently.
+        Each camera's coordinates are computed independently.  In the camera
+        under the mouse the instance is centred on the mouse; elsewhere average
+        uses the first node's mean position and random the frame centre.
         """
         store = self._state.points_store
         skeleton = self._state.skeleton
@@ -633,28 +636,37 @@ class LabelView(QWidget):
         existing = store.get_instances(trial, frame)
         new_instance = existing[0] if existing else store.add_instance(trial, frame, skeleton.nodes)
 
+        mouse_panel = self._camera_grid.panel_under_mouse()
+        mouse_px = None
+        if mouse_panel is not None:
+            scene_pos = mouse_panel.mapToScene(
+                mouse_panel.viewport().mapFromGlobal(QCursor.pos())
+            )
+            mouse_px = (scene_pos.x(), scene_pos.y())
+
         any_fallback = False
         for cam_name in cam_names:
             cam = self._cameras.get(cam_name)
             frame_size = (
                 cam.size if cam is not None and cam.size[0] > 0 else (10000, 10000)
             )
+            under_mouse = mouse_panel is not None and mouse_panel.camera_name == cam_name
+            center_px = mouse_px if under_mouse else None
 
             if strategy == "average":
                 coords, used_fallback = init_average(
                     store,
                     store.experiment_name,
-                    trial,
                     cam_name,
                     skeleton,
-                    None,       # center_px=None → frame centre
+                    center_px,
                     frame_size,
                 )
                 if used_fallback:
                     any_fallback = True
             else:
                 coords = init_random(
-                    skeleton, cam_name, self._cameras, None, frame_size
+                    skeleton, cam_name, self._cameras, center_px, frame_size
                 )
 
             for bp, (x, y) in coords.items():

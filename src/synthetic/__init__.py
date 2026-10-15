@@ -7,7 +7,7 @@ from synthetic.motion import compute_body_poses, compute_world_points
 from synthetic.projection import project_all_frames, project_points
 from synthetic.rendering import write_videos
 from synthetic.writers import (
-    write_calibration_toml,
+    write_calibration,
     write_flat_folder,
     write_points_csv,
     write_project_toml,
@@ -26,7 +26,7 @@ __all__ = [
     "project_all_frames",
     "project_points",
     "run_sanity_checks",
-    "write_calibration_toml",
+    "write_calibration",
     "write_flat_folder",
     "write_points_csv",
     "write_project_toml",

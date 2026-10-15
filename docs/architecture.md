@@ -19,8 +19,13 @@ label3d/
 ├── points.py                    # ✓ PointsStore: DataFrame wrapper, CRUD, save/load
 ├── skeleton.py                  # ✓ Skeleton: nodes, edges, symmetry pairs
 ├── geometry.py                  # ✓ CameraParams, fundamental matrix, epipolar lines, triangulation
+├── calibration_registry.py      # ✓ Calibration registry: save/list/load/rename/delete solutions (Phase 11)
+├── calibration_solve.py         # ✓ Charuco solves without Qt: takes, ranges, repeated calibrate_rows, metadata
+├── calibration_refine.py        # ✓ Refinement with labelled points: selection, Stage 2, alignment, points record (Phase 12)
 ├── video.py                     # ✓ VideoReader: cv2.VideoCapture wrapper, frame cache
 ├── instance_init.py             # ✓ random / average / reprojected instance init strategies
+├── export.py                    # ✓ Wide-format CSV export and pre-flight checks, no Qt (Phase 13)
+├── export_cli.py                # ✓ label3d-export command line tool (Phase 13)
 ├── widgets/
 │   ├── __init__.py              # ✓
 │   ├── main_window.py           # ✓ QMainWindow, tab bar, menus, top toolbar
@@ -34,17 +39,20 @@ label3d/
 │   ├── view_3d.py               # ✓ pyqtgraph GLViewWidget: 3D points, edges, frustums (hidden; SHOW_3D_VIEW in label_view.py)
 │   ├── bodypart_list.py         # ✓ Sidebar: bodypart names, click to select
 │   ├── calibration_view.py      # ✓ Calibration mode: settings panel + camera grid
+│   ├── refine_dialog.py         # ✓ Refine with points dialog (Phase 12)
 │   ├── axis_alignment_widget.py # Phase 14: Axis alignment panel (not yet created)
 │   ├── label_view.py            # ✓ Labeling mode: grid + controls + sidebar
-│   └── export_view.py           # Phase 15: Export mode: form + summary
+│   ├── export_dialog.py         # ✓ File > Export points... options (Phase 13)
+│   └── export_view.py           # Phase 15: export to other pose formats (not yet created)
 ├── adapters/
 │   ├── __init__.py              # ✓ Registry: discover PoseAdapter subclasses
 │   ├── base.py                  # ✓ PoseAdapter ABC
 │   └── sleap_adapter.py         # ✓ SleapAdapter
 └── workers/
     ├── __init__.py
-    ├── calibration_worker.py    # ✓ DetectionWorker + CalibrationWorker QThreads
-    └── triangulation_worker.py  # ✓ TriangulationWorker QThread: batch triangulate all frames
+    ├── calibration_worker.py    # ✓ DetectionWorker, MultiTakeCalibrationWorker, RefineWorker QThreads
+    ├── export_worker.py         # ✓ ExportWorker QThread: SLP check, CSV export, SLP write
+    └── triangulation_worker.py  # ✓ TriangulationWorker / AllExperimentsTriangulationWorker: one batch per trial
 ```
 
 ---
@@ -143,7 +151,7 @@ label3d/
 
 5. **Point storage**: Raw pixel coordinates stored in `points.csv`. Undistortion applied on the fly for geometry — never stored. Preserves fidelity and allows recalculation if calibration is updated.
 
-6. **Always hierarchical layout**: All projects use `experiments/{name}/` subfolders. A single-experiment project has exactly one subfolder (`experiments/default/`). Each experiment has exactly one `calibration.toml`. `.slp` files are global at project root. `points.csv` is per-experiment with 5-level row index.
+6. **Always hierarchical layout**: All projects use `experiments/{name}/` subfolders. A single-experiment project has exactly one subfolder (`experiments/default/`). Each experiment has a calibration registry (`calibrations/`) with exactly one active entry. `.slp` files are global at project root. `points.csv` is per-experiment with 5-level row index.
 
 7. **Trial names are local to each experiment**: The global `trials.csv` `experiment` column disambiguates — `Trial1` in `PS18` is distinct from `Trial1` in `PS19`.
 

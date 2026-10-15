@@ -1,4 +1,4 @@
-"""Output writers: calibration.toml, trials.csv, points.csv, skeleton.json, .slp files."""
+"""Output writers: calibration registry entry, trials.csv, points.csv, skeleton.json, .slp files."""
 
 import json
 import shutil
@@ -7,24 +7,25 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import toml
+from aniposelib.cameras import Camera, CameraGroup
+
+from label3d.calibration_registry import CalibrationEntry, registry_dir, save_calibration
 
 
-def write_calibration_toml(cameras: dict, output_path: Path):
-    """Write aniposelib-compatible calibration.toml."""
-    d = {}
-    for i, (cam_name, cam) in enumerate(cameras.items()):
-        d[f"cam_{i}"] = {
-            "name": cam_name,
-            "size": list(cam["resolution"]),
-            "matrix": cam["K"].tolist(),
-            "distortions": cam["dist"].tolist(),
-            "rotation": cam["rvec"].tolist(),
-            "translation": cam["t"].tolist(),
-        }
-    d["metadata"] = {"adjusted": False}
-
-    with open(output_path, "w") as f:
-        toml.dump(d, f)
+def write_calibration(cameras: dict, experiment_dir: Path) -> CalibrationEntry:
+    """Save the ground-truth rig as an "imported" calibration registry entry."""
+    cams = [
+        Camera(
+            name=cam_name,
+            size=tuple(cam["resolution"]),
+            matrix=cam["K"],
+            dist=cam["dist"],
+            rvec=cam["rvec"],
+            tvec=cam["t"],
+        )
+        for cam_name, cam in cameras.items()
+    ]
+    return save_calibration(experiment_dir, CameraGroup(cams), "ground-truth", "imported")
 
 
 def write_trials_csv(trial_rows: list[dict], output_path: Path):
@@ -88,11 +89,25 @@ def write_points_csv(
     df.to_csv(output_path)
 
 
-def write_project_toml(output_path: Path, project_name: str, charuco: dict | None = None):
-    """Write project.toml at the project root."""
+def write_project_toml(
+    output_path: Path,
+    project_name: str,
+    charuco: dict | None = None,
+    calibrations: dict[str, str] | None = None,
+):
+    """Write project.toml at the project root.
+
+    calibrations (experiment -> registry id) is both the active calibration
+    and the one the true 3D points in points.csv correspond to.
+    """
     data: dict = {"project": {"name": project_name}}
     if charuco:
         data["charuco"] = charuco
+    if calibrations:
+        data["calibration"] = {
+            "active": dict(calibrations),
+            "triangulated_with": dict(calibrations),
+        }
     with open(output_path, "w") as f:
         toml.dump(data, f)
     print(f"  {output_path}")
@@ -287,7 +302,7 @@ def write_flat_folder(
     # Files are already named to carry the experiment, take and camera, so copy as-is.
     for exp in experiments:
         exp_name = exp["name"]
-        calib_dir = project_dir / "experiments" / exp_name / "calibration"
+        calib_dir = registry_dir(project_dir / "experiments" / exp_name)
         if calib_dir.exists():
             for cam_name in cam_names:
                 cam_calib = calib_dir / cam_name

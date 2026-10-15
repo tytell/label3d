@@ -2,8 +2,6 @@
 
 This guide walks through a label3d project from start to finish. You label points in several synchronized camera views, train a SLEAP model on those labels, review what the model predicts, and repeat until the model is good enough to run on everything.
 
-> **Draft.** This covers setup, calibration, labelling and the review loop. The final steps (refining the calibration, comparing calibrations, and exporting 3D points) will be added when they're built.
-
 ## Overview
 
 1. Set up a project.
@@ -29,6 +27,24 @@ The first time you open it, assign videos to SLEAP files with **File > Set up Sl
 ## 2. Calibrate
 
 In the **Calibrate** tab, detect the charuco board in each calibration take and run the calibration. If an experiment has a take before and after the trials, label3d compares them and warns you if a camera seems to have moved in between.
+
+Every calibration you run is kept. Each run saves one solution per take and one for all takes together, and the joint one becomes active. To use a single take instead, pick it and click **Use selected take**. The **Saved calibrations** list shows them all; you can rename or delete them there.
+
+### Switching calibrations
+
+To try a different calibration while labelling, choose it from the **Calibration** box at the top of the window. label3d re-triangulates the experiment's points with it, so you can compare reprojection errors.
+
+Making a calibration active in the **Calibrate** tab doesn't re-triangulate. The status bar then says **3D points are from <label>; re-triangulate**; click the link, or use **Instances > Triangulate all experiments...** to do every experiment.
+
+### Refining with labelled points
+
+Once you have points labelled in several cameras, they can improve the calibration. In the **Calibrate** tab, click **Refine with points…**. It starts from a charuco calibration and adjusts the cameras to fit your points.
+
+- By default it uses your own labels (from label3d and SLEAP), not predictions, and keeps each camera's intrinsics.
+- Judge the result by the **held-out points** error: it's measured on frames the fit never saw, and it should go down. The **charuco corner** error should not get much worse.
+- **Save and make active** keeps it. As with any calibration made active in the Calibrate tab, re-triangulate afterwards.
+
+The details of every option are in [workflows.md](workflows.md#refining-with-labelled-points).
 
 ## 3. Label
 
@@ -97,7 +113,58 @@ Once the model is good enough:
 
 1. Run `sleap-nn track` on every video and bring the results in with **File > Import predictions...**.
 2. Check the reprojection errors in the Label tab. Points with large errors (red when colouring by error) point to tracking or calibration problems.
-3. Batch-triangulate and export: *coming in a later version*, together with calibration refinement and switching between calibrations.
+3. Choose **File > Sync with Sleap**, so that the SLP files and label3d agree.
+4. Choose **Instances > Triangulate all experiments...**. This triangulates every point of every experiment with its active calibration, including points brought into experiments you weren't viewing.
+5. Choose **File > Export points...** (below).
+
+## 7. Export
+
+**File > Export points...** writes every point, from all experiments, to one CSV. It also writes the current points into the SLP files, as **Sync** does.
+
+It is greyed out while any experiment's 3D points come from a calibration other than its active one. Hover over it to see which; then use **Instances > Triangulate all experiments...**.
+
+The dialog has:
+
+- **Experiments:** all are checked by default.
+- **Include predictions:** on by default. Off leaves out SLEAP predictions. Every prediction is exported whatever its score; use the `score` column to filter them afterwards.
+- **Only points with 3D:** off by default.
+- **Output file:** by default `exports/points_{date-time}.csv` in the project folder.
+
+When you click **Export**:
+
+- **Experiments without an active calibration:** label3d warns you and, if you choose **Export anyway**, exports only their 2D points.
+- **New points in the SLP files:** if the SLP files have points that label3d doesn't have yet (for example, predictions saved from the SLEAP GUI), label3d says so and exports nothing. Run **Sync with Sleap**, triangulate, then export again.
+- Otherwise it writes the CSV and the SLP files, then shows how many rows it wrote and the points per experiment by state and source.
+
+### From the command line
+
+After a large inference job you can export without opening the app:
+
+```
+uv run label3d-export <project folder> [-o out.csv] [--experiments a,b] [--no-predictions] [--only-3d] [--no-slp]
+```
+
+It runs the same checks. It stops with an error (exit code 1) if an experiment's 3D points are out of date or the SLP files have new points. It doesn't triangulate, so run **Triangulate all experiments** in label3d first. `--no-slp` skips the SLP files entirely.
+
+### Export columns
+
+One row per point: experiment, trial, frame, instance and bodypart, as in `points.csv`. Each camera has its own set of columns, named with the camera as a prefix (for example `LateralOrtho_x.px`), followed by the 3D point. Units follow a dot: `.px` for pixels, `.cm` for the 3D coordinates. The columns are always in this order.
+
+| Column | Meaning |
+|---|---|
+| `experiment`, `trial`, `frame`, `instance`, `bodypart` | which point; `frame` is the frame within the trial |
+| `{cam}_video_frame` | the frame in that camera's video (the trial frame plus the camera's start offset) |
+| `{cam}_x.px`, `{cam}_y.px` | the point in that camera, in pixels |
+| `{cam}_state` | `set`, `predicted` or `not_visible` |
+| `{cam}_source` | `label3d`, `sleap_user` (labelled in SLEAP) or `sleap_pred` (predicted by SLEAP) |
+| `{cam}_score` | SLEAP's score, where there is one |
+| `{cam}_xr.px`, `{cam}_yr.px`, `{cam}_error.px` | where the 3D point reprojects in that camera, and its distance from (`x`, `y`); empty without a 3D point |
+| `x.cm`, `y.cm`, `z.cm` | the triangulated 3D point |
+| `n_cameras` | the number of cameras used to triangulate (points `set` or `predicted`) |
+| `mean_error.px` | the mean reprojection error over those cameras |
+| `calibration` | the id of the calibration used |
+
+A camera's columns are empty where it has no point. The 3D columns are empty for a point seen by fewer than two cameras, or in an experiment without a calibration. Points never placed in any camera are left out. **Include predictions** off empties the prediction cells but keeps the 3D point, which may have used them; `n_cameras` and `mean_error.px` always describe the triangulation.
 
 ## Keyboard reference for review
 

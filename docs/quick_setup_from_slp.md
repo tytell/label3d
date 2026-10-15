@@ -115,7 +115,8 @@ Field by field:
   search directory.
 - **`calibration_dir`** — where to look for calibration videos (here, the same
   flat folder). Could instead be `calibration_toml` pointing straight at an
-  existing aniposelib `calibration.toml`, if you already have one.
+  existing aniposelib `calibration.toml`, if you already have one. It's imported
+  into the project's calibration registry and made active.
 - **`allow_missing_videos = true`** — proceed even if some trial videos can't be
   located; the affected camera is left blank in `trials.csv` rather than
   aborting setup.
@@ -123,6 +124,12 @@ Field by field:
   labels straight into `points.csv`, so the project opens already labeled.
 - **`[charuco]`** — your calibration board's parameters (squares, marker size in
   cm, ArUco dictionary), used when you calibrate in the app.
+- **`[skeleton]`** — optional. Either `file = "path/to/skeleton.json"` (relative
+  to the working directory) or `nodes`, `edges`, `symmetries` and
+  `node_offsets_cm` inline. It must match the `.slp` files' skeleton (same
+  nodes, edges and symmetries) or setup stops with an error; a matching one wins,
+  so its node order and offsets are kept. Needed for a flat folder with no
+  `.slp` files, or add one later with **File > Load skeleton...**.
 
 ## 4. Run it
 
@@ -151,8 +158,8 @@ The app has three tabs, used in order: **Calibrate → Label → Export**.
 ### Calibrating
 
 If the setup TOML already found a `calibration.toml` (as in `OMR`, via
-`calibration_dir`), a take's calibration is done and you can skip straight to
-Label. To calibrate a take from scratch:
+`calibration_dir`), it was imported as the active calibration and you can skip
+straight to Label. To calibrate a take from scratch:
 
 1. Open the Calibrate tab; pick the experiment/take to calibrate.
 2. The app steps through the calibration video for each camera, detecting
@@ -163,9 +170,12 @@ Label. To calibrate a take from scratch:
    (`aniposelib`). The panel reports per-camera and overall reprojection error;
    red crosses are the reprojected corners overlaid on the detections — tight
    overlap means a good calibration.
-4. **Save** writes `calibration.toml` into the experiment folder. Repeating
-   calibration a few times and keeping the best run is worthwhile if error is
-   high.
+4. Every run is saved to the experiment's calibration registry
+   (`experiments/{exp}/calibrations/`), one solution per take plus the joint
+   one, and the joint solution becomes active. **Use selected take** switches to
+   a single take's solution; the **Saved calibrations** list holds them all.
+   Set **Repeat calibration** above 1 to keep the best of several runs if the
+   error is high.
 5. (Optional) **Axis alignment** — a separate step, run after calibration, to
    re-orient the arbitrary board-defined axes to something physically
    meaningful (e.g. tank walls). Pick an origin plus two axis points in the
@@ -196,9 +206,10 @@ top.
 - Scroll wheel zooms in/out, clamped so you can't zoom out past the full frame.
 - Drag on empty space (or middle-click drag) to pan while zoomed in.
 - Double-click resets the view to fit the whole frame.
-- `Ctrl+=` to zoom to the instance
-- `Ctrl+-` to zoom to a small area around the selected point.
-- `Ctrl+0` to zoom to the whole frame.
+- `+` / `-` to zoom the camera under the mouse in and out (keypad keys work too).
+- `I` to zoom to the instance, including points estimated by reprojection from the other cameras.
+- `P` to zoom to a small area around the selected point.
+- `=` to zoom to the whole frame.
 
 **Other useful shortcuts:**
 
@@ -216,8 +227,8 @@ Full list in [workflows.md](workflows.md).
 
 ### Exporting
 
-The Export tab writes one `.slp` per (trial, camera) for SLEAP training. Pick
-which trials and which point states (user / predicted) to include, then
-**Export**. To close the loop: train on the exported `.slp` files in SLEAP, run
-inference, drop the resulting predictions into `slp/`, and re-import (File >
-Import from SLP files) to review and correct them as predicted instances.
+**File > Sync with Sleap** writes your labels into the `.slp` files in `slp/`
+for SLEAP training. To close the loop: train in SLEAP, run inference, and bring
+the predictions back with **Sync** (if saved into `slp/`) or **File > Import
+predictions...**. When you're done, **File > Export points...** writes every
+2D and 3D point to one CSV; see [user_workflow.md](user_workflow.md#7-export).

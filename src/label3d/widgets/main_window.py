@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from label3d.workers.export_worker import ExportWorker
 from label3d.workers.slp_sync_worker import (
     PredictionImportWorker,
     SlpReadWorker,
@@ -35,13 +36,17 @@ from label3d.workers.triangulation_worker import (
     TriangulationWorker,
 )
 
+from label3d.calibration_registry import entry_summary, entry_tree, find_calibration
+from label3d.export import describe_slp_changes, format_summary, stale_experiments
 from label3d.geometry import load_cameras
 from label3d.points import PointsStore
 from label3d.project import Project
+from label3d.skeleton import Skeleton
 from label3d.state import ProjectState
 from label3d.video import FrameProvider
 from label3d.widgets.calibration_view import CalibrationView
 from label3d.widgets.camera_grid import CameraGrid, LayoutMode
+from label3d.widgets.export_dialog import ExportDialog
 from label3d.widgets.frame_controls import FrameControls
 from label3d.widgets.label_view import LabelView
 from label3d.widgets.point_item import ColorMode
@@ -64,6 +69,8 @@ class MainWindow(QMainWindow):
         self._tri_queue: list[tuple[str, list[int]]] = []
         self._merge_tri_worker = None
         self._all_tri_worker = None
+        self._switch_tri_worker = None
+        self._export_worker = None
         self._offered_slp_setup = False
 
         self.setWindowTitle(f"label3d — {project.root.name}")
@@ -88,7 +95,6 @@ class MainWindow(QMainWindow):
         self._tabs = QTabBar()
         self._tabs.addTab("Calibrate")
         self._tabs.addTab("Label")
-        self._tabs.addTab("Export")
         self._tabs.setCurrentIndex(1)  # Start on Label tab
         top_layout.addWidget(self._tabs)
 
@@ -106,6 +112,15 @@ class MainWindow(QMainWindow):
         self._exp_combo.currentTextChanged.connect(self._on_experiment_combo_changed)
         top_layout.addWidget(self._exp_label)
         top_layout.addWidget(self._exp_combo)
+
+        top_layout.addSpacing(12)
+
+        # Calibration selector: the experiment's registry, active one selected
+        top_layout.addWidget(QLabel("Calibration:"))
+        self._calib_combo = QComboBox()
+        self._calib_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self._calib_combo.activated.connect(self._on_calibration_combo_activated)
+        top_layout.addWidget(self._calib_combo)
 
         top_layout.addSpacing(12)
 
@@ -144,19 +159,14 @@ class MainWindow(QMainWindow):
 
         # Calibration view
         self._calibration_view = CalibrationView(project)
-        self._calibration_view.calibration_saved.connect(
-            self._label_view.reload_calibration
+        self._calibration_view.calibrations_changed.connect(
+            self._on_active_calibration_changed
         )
 
-        # Export stub
-        _export_stub = QLabel("Export (coming soon)")
-        _export_stub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # Stacked widget: index matches tab index (0=Calibrate, 1=Label, 2=Export)
+        # Stacked widget: index matches tab index (0=Calibrate, 1=Label)
         self._stack = QStackedWidget()
         self._stack.addWidget(self._calibration_view)  # 0
         self._stack.addWidget(self._label_view)        # 1
-        self._stack.addWidget(_export_stub)            # 2
         self._stack.setCurrentIndex(1)
         main_layout.addWidget(self._stack, stretch=1)
 
@@ -167,7 +177,7 @@ class MainWindow(QMainWindow):
 
         # Connect tab switching
         self._tabs.currentChanged.connect(self._on_tab_changed)
-        # An experiment with no calibration.toml needs calibrating before labeling
+        # An experiment with no active calibration needs calibrating before labeling
         if not project.has_calibration:
             self._tabs.setCurrentIndex(0)
 
@@ -175,9 +185,17 @@ class MainWindow(QMainWindow):
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("Ready")
+        # Shown while the 3D points come from another calibration than the active one
+        self._calib_status = QLabel()
+        self._calib_status.setStyleSheet("color: #b45309;")
+        self._calib_status.linkActivated.connect(lambda _link: self._retriangulate_experiment())
+        self._calib_status.setVisible(False)
+        self._status_bar.addPermanentWidget(self._calib_status)
 
         # Menus
         self._setup_menus()
+        self._refresh_calibration_combo()
+        self._update_calibration_status()
 
         # Track the currently-connected PointsStore for marks updates
         self._connected_store = None
@@ -211,6 +229,7 @@ class MainWindow(QMainWindow):
 
         # File menu
         file_menu = menu_bar.addMenu("File")
+        file_menu.setToolTipsVisible(True)
         new_action = file_menu.addAction("New project...")
         new_action.setEnabled(False)
         open_action = file_menu.addAction("Open project...")
@@ -236,8 +255,16 @@ class MainWindow(QMainWindow):
         )
         self._update_sync_action()
         file_menu.addSeparator()
-        export_action = file_menu.addAction("Export points...")
-        export_action.setEnabled(False)
+        load_skeleton_action = file_menu.addAction("Load skeleton...")
+        load_skeleton_action.setToolTip(
+            "Replace the skeleton from a skeleton.json; points of nodes with the "
+            "same name are kept"
+        )
+        load_skeleton_action.triggered.connect(self._do_load_skeleton)
+        file_menu.addSeparator()
+        self._export_action = file_menu.addAction("Export points...")
+        self._export_action.triggered.connect(self._do_export)
+        file_menu.aboutToShow.connect(self._update_export_action)
 
         # Navigate menu
         nav_menu = menu_bar.addMenu("Navigate")
@@ -323,21 +350,44 @@ class MainWindow(QMainWindow):
         self._layout_actions[LayoutMode.GRID].setChecked(True)
 
         # View > Zoom
+        # Zoom in/out act on the camera under the mouse; the rest on all cameras
         zoom_menu = view_menu.addMenu("Zoom")
-        self._action_zoom_instance = zoom_menu.addAction("Zoom to instance")
-        self._action_zoom_instance.setShortcut(QKeySequence("Ctrl+="))
-        self._action_zoom_instance.triggered.connect(self._zoom_to_instance)
+        zoom_in = zoom_menu.addAction("Zoom in")
+        zoom_in.setShortcuts([
+            QKeySequence("+"),
+            QKeySequence("Shift+="),
+            QKeySequence(Qt.KeyboardModifier.KeypadModifier | Qt.Key.Key_Plus),
+        ])
+        zoom_in.triggered.connect(self._camera_grid.zoom_in_under_mouse)
+        zoom_out = zoom_menu.addAction("Zoom out")
+        zoom_out.setShortcuts([
+            QKeySequence("-"),
+            QKeySequence(Qt.KeyboardModifier.KeypadModifier | Qt.Key.Key_Minus),
+        ])
+        zoom_out.triggered.connect(self._camera_grid.zoom_out_under_mouse)
+        zoom_menu.addSeparator()
         self._action_zoom_point = zoom_menu.addAction("Zoom to point")
-        self._action_zoom_point.setShortcut(QKeySequence("Ctrl+-"))
+        self._action_zoom_point.setShortcut(QKeySequence("P"))
         self._action_zoom_point.triggered.connect(self._zoom_to_point)
+        self._action_zoom_instance = zoom_menu.addAction("Zoom to instance")
+        self._action_zoom_instance.setShortcut(QKeySequence("I"))
+        self._action_zoom_instance.triggered.connect(self._zoom_to_instance)
         zoom_all = zoom_menu.addAction("Zoom to all")
-        zoom_all.setShortcut(QKeySequence("Ctrl+0"))
+        zoom_all.setShortcuts([
+            QKeySequence("="),
+            QKeySequence(Qt.KeyboardModifier.KeypadModifier | Qt.Key.Key_Equal),
+        ])
         zoom_all.triggered.connect(self._camera_grid.fit_targets)
 
-        self._state.selection_changed.connect(self._update_zoom_actions)
-        self._update_zoom_actions(
-            self._state.selected_instance, self._state.selected_bodypart
-        )
+        # Zoom to instance depends on the frame's instances, not just the selection
+        for signal in (
+            self._state.selection_changed,
+            self._state.frame_changed,
+            self._state.trial_changed,
+            self._state.points_changed,
+        ):
+            signal.connect(self._update_zoom_actions)
+        self._update_zoom_actions()
 
         # Instances menu
         inst_menu = menu_bar.addMenu("Instances")
@@ -409,14 +459,14 @@ class MainWindow(QMainWindow):
                 for cam in store.cameras
             )
         )
-        # "Average" is available when any labeled point exists in this trial
+        # "Average" is available when any labeled point exists in this experiment
         avg_available = False
         if store is not None and trial and not all_cameras_have_instance:
             try:
-                trial_df = store.df.loc[(store.experiment_name, trial)]
+                exp_df = store.df.loc[store.experiment_name]
                 for cam in store.cameras:
-                    if (cam, "state") in trial_df.columns:
-                        if trial_df[(cam, "state")].isin(["set", "predicted"]).any():
+                    if (cam, "state") in exp_df.columns:
+                        if exp_df[(cam, "state")].isin(["set", "predicted"]).any():
                             avg_available = True
                             break
             except KeyError:
@@ -448,11 +498,13 @@ class MainWindow(QMainWindow):
         if self._connected_store is not None:
             try:
                 self._connected_store.data_changed.disconnect(self._update_slider_marks)
+                self._connected_store.data_changed.disconnect(self._update_zoom_actions)
             except RuntimeError:
                 pass
         self._connected_store = store
         if store is not None:
             store.data_changed.connect(self._update_slider_marks)
+            store.data_changed.connect(self._update_zoom_actions)
 
     def _update_slider_marks(self) -> None:
         store = self._state.points_store
@@ -591,6 +643,55 @@ class MainWindow(QMainWindow):
         self._retriangulate(results, overwrite)
         self._show_sync_summary(results, unmatched)
 
+    # -- Skeleton --------------------------------------------------------------
+
+    def _do_load_skeleton(self) -> None:
+        """Merge a skeleton.json into the project, asking before deleting points."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load skeleton", str(self._project.root), "Skeleton files (*.json)"
+        )
+        if not path:
+            return
+        try:
+            skeleton = Skeleton.from_json(Path(path))
+        except (OSError, ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "Load skeleton", f"Could not read {path}:\n{exc}")
+            return
+
+        removals = self._project.skeleton_removals(skeleton)
+        if removals:
+            lines = "\n".join(
+                f"  {node}: {n} point(s)" for node, n in sorted(removals.items())
+            )
+            reply = QMessageBox.warning(
+                self,
+                "Delete points?",
+                "These nodes have labelled points but are not in the new skeleton:\n\n"
+                f"{lines}\n\n"
+                "Loading it deletes those points in every experiment. "
+                "Delete them and load the skeleton?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self._status_bar.showMessage("Load skeleton cancelled — nothing changed")
+                return
+
+        old_nodes = set(self._project.skeleton.nodes) if self._project.skeleton else set()
+        self._project.set_skeleton(skeleton)
+        self._state.skeleton = skeleton
+        self._label_view.set_skeleton(skeleton)
+        self._refresh_after_merge()
+
+        added = [n for n in skeleton.nodes if n not in old_nodes]
+        removed = sorted(old_nodes - set(skeleton.nodes))
+        parts = [f"Loaded skeleton with {len(skeleton.nodes)} node(s)"]
+        if added:
+            parts.append(f"added {', '.join(added)}")
+        if removed:
+            parts.append(f"removed {', '.join(removed)}")
+        self._status_bar.showMessage("; ".join(parts))
+
     # -- Experiment switching ------------------------------------------------
 
     def _on_experiment_combo_changed(self, name: str):
@@ -635,8 +736,146 @@ class MainWindow(QMainWindow):
                 self._load_trial(trial_names[0])
                 self._trial_combo.setCurrentIndex(0)
 
+        self._refresh_calibration_combo()
+        self._update_calibration_status()
         self._update_sync_action()
         self._read_slp_on_open()
+
+    # -- Calibration switching -------------------------------------------------
+
+    def _refresh_calibration_combo(self) -> None:
+        """Refill the calibration combo from the active experiment's registry."""
+        combo = self._calib_combo
+        active = self._project.active_calibration_id()
+        combo.blockSignals(True)
+        combo.clear()
+        for entry, depth in entry_tree(self._project.calibrations()):
+            indent = "    " * depth + ("↳ " if depth else "")
+            combo.addItem(f"{indent}{entry.label} · {entry.created:%Y-%m-%d %H:%M}", entry.id)
+            combo.setItemData(combo.count() - 1, entry_summary(entry), Qt.ItemDataRole.ToolTipRole)
+        index = combo.findData(active) if active else -1
+        if index < 0 and combo.count():
+            combo.insertItem(0, "(none active)", None)
+            index = 0
+        combo.setCurrentIndex(index)
+        combo.setEnabled(combo.count() > 0)
+        combo.setToolTip(combo.itemData(index, Qt.ItemDataRole.ToolTipRole) or "")
+        combo.blockSignals(False)
+
+    def _on_calibration_combo_activated(self, index: int) -> None:
+        entry_id = self._calib_combo.itemData(index)
+        if not entry_id or entry_id == self._project.active_calibration_id():
+            return
+        if self._switch_tri_worker is not None or self._all_tri_worker is not None:
+            self._status_bar.showMessage("Wait for the current triangulation to finish", 3000)
+            self._refresh_calibration_combo()
+            return
+        self._project.set_active_calibration(None, entry_id)
+        self._on_active_calibration_changed()
+        self._calibration_view.reload_active_calibration()
+        self._retriangulate_experiment()
+
+    def _on_active_calibration_changed(self) -> None:
+        """The active calibration or the registry changed: reload and redraw."""
+        self._label_view.reload_calibration()
+        self._refresh_calibration_combo()
+        self._update_calibration_status()
+
+    def _update_calibration_status(self) -> None:
+        """Warn when the 3D points were computed with another calibration."""
+        project = self._project
+        self._update_export_action()
+        store = project.points
+        if project.triangulation_is_stale() and (store is None or store.df.empty):
+            # Nothing to re-triangulate yet: new points use the active one.
+            project.set_triangulated_with(None, project.active_calibration_id())
+        if not project.triangulation_is_stale():
+            self._calib_status.setVisible(False)
+            return
+        used = project.triangulated_with()
+        if used is None:
+            source = "an earlier calibration"
+        else:
+            entry = find_calibration(project.experiments[project.active_experiment].root, used)
+            source = f"'{entry.label}'" if entry else "a deleted calibration"
+        self._calib_status.setText(
+            f"3D points are from {source}; <a href='retriangulate'>re-triangulate</a>"
+        )
+        self._calib_status.setToolTip(
+            "Re-triangulate this experiment with the active calibration. "
+            "Instances > Triangulate all experiments does every experiment."
+        )
+        self._calib_status.setVisible(True)
+
+    def _retriangulate_experiment(self) -> None:
+        """Re-triangulate the active experiment with the active calibration.
+
+        The current frame is done at once, then every trial, current trial
+        first, behind a window-modal progress dialog: the worker writes
+        into the live store, so edits wait until it finishes. Cancelling
+        leaves the stale-3D warning up.
+        """
+        store = self._project.points
+        cameras = self._label_view._cameras
+        entry_id = self._project.active_calibration_id()
+        if store is None or not cameras or entry_id is None:
+            return
+        if self._switch_tri_worker is not None or self._all_tri_worker is not None:
+            return
+        if self._state.current_trial:
+            self._label_view._triangulate_current_frame()
+
+        progress = QProgressDialog("Re-triangulating…", "Cancel", 0, 0, self)
+        progress.setWindowTitle("Switching calibration")
+        progress.setMinimumDuration(0)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+
+        worker = AllExperimentsTriangulationWorker(
+            [(self._project.active_experiment, cameras, store)],
+            first_trial=self._state.current_trial or None,
+            parent=self,
+        )
+        progress.canceled.connect(worker.requestInterruption)
+
+        def on_progress(done: int, total: int) -> None:
+            progress.setMaximum(total)
+            progress.setValue(done)
+            progress.setLabelText(f"Re-triangulating trial {done} of {total}…")
+
+        worker.progress.connect(on_progress)
+        worker.finished.connect(
+            lambda n: self._on_retriangulate_done(worker, n, entry_id, progress)
+        )
+        worker.error_occurred.connect(
+            lambda msg: self._on_retriangulate_error(msg, progress)
+        )
+        self._switch_tri_worker = worker
+        worker.start()
+
+    def _on_retriangulate_done(self, worker, n_trials: int, entry_id: str, progress) -> None:
+        progress.close()
+        self._switch_tri_worker = None
+        store = self._project.points
+        if store is not None:
+            store.save_if_changed()
+            store._invalidate_cache(self._state.current_trial, self._state.current_frame)
+        if worker.completed and self._project.active_calibration_id() == entry_id:
+            self._project.set_triangulated_with(None, entry_id)
+            self._status_bar.showMessage(f"Re-triangulated {n_trials} trial(s)", 5000)
+        else:
+            self._status_bar.showMessage(
+                f"Re-triangulation stopped after {n_trials} trial(s)", 5000
+            )
+        self._update_calibration_status()
+        self._state.frame_changed.emit(self._state.current_frame)
+
+    def _on_retriangulate_error(self, msg: str, progress) -> None:
+        self._switch_tri_worker = None
+        self._on_slp_error("Triangulation failed", msg, progress)
+        self._update_calibration_status()
 
     # -- Tab switching -------------------------------------------------------
 
@@ -650,15 +889,33 @@ class MainWindow(QMainWindow):
         """Switch camera from menu — keeps combo box in sync."""
         self._view_combo.setCurrentIndex(index)
 
-    def _update_zoom_actions(self, instance: int, bodypart: str):
-        """Enable the selection-dependent zoom actions only when something is selected."""
-        self._action_zoom_instance.setEnabled(instance >= 0)
-        self._action_zoom_point.setEnabled(instance >= 0 and bool(bodypart))
+    def _update_zoom_actions(self, *_args):
+        """Enable zoom to instance when the frame has an instance, and zoom to
+        point only when a point is selected."""
+        self._action_zoom_instance.setEnabled(self._zoom_instance() >= 0)
+        self._action_zoom_point.setEnabled(
+            self._state.selected_instance >= 0 and bool(self._state.selected_bodypart)
+        )
+
+    def _zoom_instance(self) -> int:
+        """The selected instance, else the current frame's first instance, else -1.
+
+        Frames hold one instance for now, so with nothing selected there is no
+        ambiguity about which instance to zoom to.
+        """
+        if self._state.selected_instance >= 0:
+            return self._state.selected_instance
+        store = self._state.points_store
+        trial = self._state.current_trial
+        if store is None or not trial:
+            return -1
+        instances = store.get_instances(trial, self._state.current_frame)
+        return instances[0] if instances else -1
 
     def _zoom_to_instance(self):
-        instance = self._state.selected_instance
+        instance = self._zoom_instance()
         if instance < 0:
-            self._status_bar.showMessage("No instance selected", 2000)
+            self._status_bar.showMessage("No instance in this frame", 2000)
             return
         self._camera_grid.zoom_to_instance(instance)
 
@@ -930,7 +1187,7 @@ class MainWindow(QMainWindow):
             "Triangulate all experiments?",
             "Re-triangulate every labeled frame in every experiment and write the "
             "results to each experiment's points.csv?\n\n"
-            "Experiments without a calibration.toml are skipped.",
+            "Experiments without an active calibration are skipped.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -942,6 +1199,7 @@ class MainWindow(QMainWindow):
         # Stores and calibrations are built here, in the main thread.
         jobs = []
         skipped = []
+        used: dict[str, str | None] = {}
         for name, exp in self._project.experiments.items():
             calib_path = self._project.calibration_path(name)
             csv_path = exp.root / "points.csv"
@@ -951,7 +1209,7 @@ class MainWindow(QMainWindow):
                 store = PointsStore.from_csv(csv_path)
             else:
                 continue
-            if not calib_path.exists():
+            if calib_path is None:
                 skipped.append(name)
                 continue
             try:
@@ -961,34 +1219,40 @@ class MainWindow(QMainWindow):
                 skipped.append(name)
                 continue
             jobs.append((name, cameras, store))
+            used[name] = self._project.active_calibration_id(name)
 
         if not jobs:
             QMessageBox.information(
                 self, "Nothing to triangulate",
-                "No experiment has both a calibration.toml and labeled points.",
+                "No experiment has both an active calibration and labeled points.",
             )
             return
 
         progress = self._busy_dialog("Triangulating…", "Triangulate all experiments")
         self._all_tri_worker = AllExperimentsTriangulationWorker(jobs, parent=self)
         self._all_tri_worker.progress.connect(
-            lambda done, total: progress.setLabelText(f"Triangulating frame {done} of {total}…")
+            lambda done, total: progress.setLabelText(f"Triangulating trial {done} of {total}…")
         )
         self._all_tri_worker.finished.connect(
-            lambda n: self._on_triangulate_all_done(n, jobs, skipped, progress)
+            lambda n: self._on_triangulate_all_done(n, jobs, skipped, used, progress)
         )
         self._all_tri_worker.error_occurred.connect(
             lambda msg: self._on_slp_error("Triangulation failed", msg, progress)
         )
         self._all_tri_worker.start()
 
-    def _on_triangulate_all_done(self, n_frames: int, jobs, skipped, progress) -> None:
+    def _on_triangulate_all_done(self, n_trials: int, jobs, skipped, used, progress) -> None:
         progress.close()
         for _name, _cameras, store in jobs:
             store.save_if_changed()
+        if self._all_tri_worker is not None and self._all_tri_worker.completed:
+            for name, entry_id in used.items():
+                if entry_id is not None:
+                    self._project.set_triangulated_with(name, entry_id)
+        self._update_calibration_status()
         self._all_tri_worker = None
         self._offered_slp_setup = False
-        message = f"Triangulated {n_frames} frame(s) in {len(jobs)} experiment(s)"
+        message = f"Triangulated {n_trials} trial(s) in {len(jobs)} experiment(s)"
         if skipped:
             message += f"; skipped {', '.join(sorted(skipped))} (no calibration)"
         self._status_bar.showMessage(message)
@@ -1239,6 +1503,61 @@ class MainWindow(QMainWindow):
         self._update_sync_action()
         self._show_sync_summary(self._setup_results)
 
+    # -- Export ----------------------------------------------------------------
+
+    def _update_export_action(self) -> None:
+        """Export needs every experiment's 3D points to come from its active calibration."""
+        stale = stale_experiments(self._project)
+        self._export_action.setEnabled(not stale)
+        if stale:
+            self._export_action.setToolTip(
+                f"3D points are out of date in {', '.join(stale)} — use "
+                "Instances > Triangulate all experiments first"
+            )
+        else:
+            self._export_action.setToolTip(
+                "Write all points to one CSV and update the SLP files"
+            )
+
+    def _do_export(self) -> None:
+        """Ask for options, check the SLP files, then export the CSV and write the SLP files."""
+        if stale_experiments(self._project):
+            self._update_export_action()
+            return
+        if self._project.points is not None:
+            self._project.points.save_if_changed()
+        dialog = ExportDialog(self._project, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        progress = self._busy_dialog("Exporting points…", "Export points")
+        self._export_worker = ExportWorker(self._project, dialog.options(), parent=self)
+        self._export_worker.pending.connect(
+            lambda results: self._on_export_pending(results, progress)
+        )
+        self._export_worker.done.connect(lambda result: self._on_export_done(result, progress))
+        self._export_worker.error.connect(
+            lambda msg: self._on_slp_error("Export failed", msg, progress)
+        )
+        self._export_worker.start()
+
+    def _on_export_pending(self, results, progress: QProgressDialog) -> None:
+        progress.close()
+        self._export_worker = None
+        QMessageBox.warning(
+            self,
+            "New points in the SLP files",
+            "The SLP files have points that label3d doesn't have yet, so nothing "
+            "was exported:\n\n" + describe_slp_changes(results)
+            + "\n\nRun Sync with Sleap, triangulate, then export again.",
+        )
+
+    def _on_export_done(self, result, progress: QProgressDialog) -> None:
+        progress.close()
+        self._export_worker = None
+        self._status_bar.showMessage(f"Exported {result.n_rows} rows to {result.path}")
+        QMessageBox.information(self, "Export finished", format_summary(result))
+
     def _on_slp_error(self, title: str, msg: str, progress: QProgressDialog) -> None:
         progress.close()
         QMessageBox.critical(self, title, msg)
@@ -1290,7 +1609,27 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, self._apply_deferred_session)
             if self._startup_read_pending:
                 self._startup_read_pending = False
-                QTimer.singleShot(0, self._read_slp_on_open)
+                QTimer.singleShot(0, self._after_startup)
+
+    def _after_startup(self) -> None:
+        """Startup dialogs, one after another: a timer firing inside one
+        dialog's event loop would stack the next one under it."""
+        if self._project.video_warnings:
+            self._warn_changed_videos()
+        self._read_slp_on_open()
+
+    def _warn_changed_videos(self) -> None:
+        """Videos modified since their frame range was recorded in trials.csv."""
+        warnings = self._project.video_warnings
+        shown = warnings[:20]
+        more = f"\n…and {len(warnings) - len(shown)} more" if len(warnings) > len(shown) else ""
+        QMessageBox.warning(
+            self,
+            "Videos have changed",
+            f"{len(warnings)} video(s) were modified after trials.csv recorded them. "
+            "Their frame ranges and labels may no longer line up.\n\n"
+            + "\n".join(shown) + more,
+        )
 
     def _sync_on_close(self) -> bool:
         """Read, merge and write the SLP files on the main thread.  False = cancelled."""

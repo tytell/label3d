@@ -15,6 +15,7 @@ from label3d.setup_project import (
     classify_files,
     execute_setup,
     preview_assignment,
+    skeleton_from_setup,
     split_project_groups,
     write_project_toml,
     _identify_camera,
@@ -23,6 +24,7 @@ from label3d.setup_project import (
     _extract_calib_prefix,
     _extract_trial_prefix,
 )
+from label3d.skeleton import Skeleton
 
 
 # --- Helpers ---
@@ -404,9 +406,17 @@ class TestExecuteSetup:
         assert result.is_dir()
         assert (result / "experiments" / "default" / "videos").is_dir()
         assert (result / "trials.csv").is_file()
-        assert (result / "experiments" / "default" / "calibration" / "left").is_dir()
-        assert (result / "experiments" / "default" / "calibration" / "right").is_dir()
+        assert (result / "experiments" / "default" / "calibrations" / "left").is_dir()
+        assert (result / "experiments" / "default" / "calibrations" / "right").is_dir()
         assert (result / "project.toml").is_file()
+
+    def test_refined_is_not_a_camera_name(self, source_dir, tmp_path):
+        with pytest.raises(ValueError, match="refined"):
+            SetupConfig(
+                source_dir=source_dir, output_dir=tmp_path / "project",
+                camera_names=["left", "refined"], calib_keyword="calib",
+                match_strategy="number",
+            )
 
     def test_trials_csv_content(self, basic_config):
         assignment = classify_files(basic_config)
@@ -453,7 +463,7 @@ class TestExecuteSetup:
         project = Project.load(basic_config.output_dir)
         path = project.video_path("calib", "left")
         assert path.parent.name == "left"
-        assert path.parent.parent.name == "calibration"
+        assert path.parent.parent.name == "calibrations"
         assert path.is_file()
 
     def test_files_moved(self, basic_config, source_dir):
@@ -476,7 +486,7 @@ class TestExecuteSetup:
         execute_setup(basic_config, assignment)
 
         calib_left = list(
-            (basic_config.output_dir / "experiments" / "default" / "calibration" / "left").iterdir()
+            (basic_config.output_dir / "experiments" / "default" / "calibrations" / "left").iterdir()
         )
         assert len(calib_left) == 1
         assert calib_left[0].name == "calib_left.mp4"
@@ -527,6 +537,40 @@ class TestExecuteSetup:
         assignment = classify_files(config)
         execute_setup(config, assignment)
         assert not (tmp_path / "out" / "skeleton.json").exists()
+
+    def test_setup_skeleton_written_without_slp(self, tmp_path):
+        """A skeleton from the setup file is written when there are no SLP files."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "left_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "right_001.mp4").write_bytes(b"\x00" * 100)
+        config = SetupConfig(
+            source_dir=src, output_dir=tmp_path / "out",
+            camera_names=["left", "right"], calib_keyword="calib",
+            match_strategy="number",
+            skeleton=Skeleton(["head", "tail"], edges=[("head", "tail")]),
+        )
+        assignment = classify_files(config)
+        execute_setup(config, assignment)
+        loaded = Skeleton.from_json(tmp_path / "out" / "skeleton.json")
+        assert loaded.nodes == ["head", "tail"]
+        assert loaded.edges == [("head", "tail")]
+
+    def test_setup_skeleton_matching_slp_is_used(self, basic_config):
+        """A matching setup skeleton wins, so its offsets are kept."""
+        basic_config.skeleton = Skeleton(
+            ["tail", "nose"], node_offsets_cm={"nose": [1.0, 0.0, 0.0]},
+        )
+        assignment = classify_files(basic_config)
+        execute_setup(basic_config, assignment)
+        loaded = Skeleton.from_json(basic_config.output_dir / "skeleton.json")
+        assert loaded.nodes == ["tail", "nose"]
+        assert loaded.node_offsets_cm == {"nose": [1.0, 0.0, 0.0]}
+
+    def test_setup_skeleton_mismatching_slp_raises(self, basic_config):
+        basic_config.skeleton = Skeleton(["nose", "tail", "fin"])
+        with pytest.raises(ValueError, match="does not match"):
+            classify_files(basic_config)
 
     def test_output_exists_error(self, basic_config):
         basic_config.output_dir.mkdir(parents=True)
@@ -919,3 +963,26 @@ class TestSlpMatching:
         )
         assignment = classify_files(config)
         assert any("corrupt.slp" in w for w in assignment.warnings)
+
+
+class TestSkeletonFromSetup:
+    def test_file(self, tmp_path):
+        Skeleton(["a", "b"], edges=[("a", "b")]).to_json(tmp_path / "sk.json")
+        sk = skeleton_from_setup({"file": "sk.json"}, base_dir=tmp_path)
+        assert sk.nodes == ["a", "b"]
+
+    def test_inline(self):
+        sk = skeleton_from_setup({
+            "nodes": ["a", "b"], "symmetries": [["a", "b"]],
+            "node_offsets_cm": {"a": [1, 0, 0]},
+        })
+        assert sk.symmetries == [("a", "b")]
+        assert sk.node_offsets_cm == {"a": [1.0, 0.0, 0.0]}
+
+    def test_file_and_inline_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="either"):
+            skeleton_from_setup({"file": "sk.json", "nodes": ["a"]}, base_dir=tmp_path)
+
+    def test_missing_file(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            skeleton_from_setup({"file": "nope.json"}, base_dir=tmp_path)

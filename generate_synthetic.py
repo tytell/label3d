@@ -18,10 +18,10 @@ Generates:
     │   └── cam3.slp
     └── experiments/
         └── <experiment_name>/
-            ├── calibration/         (if [charuco] section present)
-            │   ├── cam1/board_000.png
-            │   └── ...
-            ├── calibration.toml
+            ├── calibrations/        (cam folders if [charuco] section present)
+            │   ├── cam1/<exp>_PreCal_cam1.mp4
+            │   ├── ...
+            │   └── ground-truth_{timestamp}.toml
             ├── points.csv
             └── videos/
                 ├── cam1_<exp>_trial1.mp4
@@ -54,7 +54,7 @@ from synthetic import (
     load_config,
     project_all_frames,
     run_sanity_checks,
-    write_calibration_toml,
+    write_calibration,
     write_flat_folder,
     write_points_csv,
     write_project_toml,
@@ -132,6 +132,7 @@ def main():
         cn: [] for cn in cam_names
     }
     experiment_infos: list[dict] = []  # for flat folder generation
+    calibrations: dict[str, str] = {}  # experiment -> ground-truth registry id
 
     # ── Per-experiment loop ──────────────────────────────────────────────
     for exp_name, exp_cfg in config["experiments"].items():
@@ -175,9 +176,10 @@ def main():
             experiment_name=exp_name,
         )
 
-        print("  Writing calibration.toml...")
-        write_calibration_toml(cameras, experiment_dir / "calibration.toml")
-        print(f"    {experiment_dir / 'calibration.toml'}")
+        print("  Writing calibration...")
+        calib_entry = write_calibration(cameras, experiment_dir)
+        calibrations[exp_name] = calib_entry.id
+        print(f"    {calib_entry.path}")
 
         print("  Writing points.csv...")
         points_csv_path = experiment_dir / "points.csv"
@@ -198,7 +200,7 @@ def main():
             )
 
         # Sanity checks
-        run_sanity_checks(cameras, all_pts_3d, all_projected, node_names, experiment_dir)
+        run_sanity_checks(cameras, all_pts_3d, all_projected, node_names, calib_entry.path)
 
         # Accumulate trial row for global trials.csv
         trial_row: dict = {"experiment": exp_name, "trial": trial_name}
@@ -247,7 +249,10 @@ def main():
          if k in charuco_cfg}
         if charuco_cfg else None
     )
-    write_project_toml(output_dir / "project.toml", project_cfg.get("name", output_dir.name), charuco_board)
+    write_project_toml(
+        output_dir / "project.toml", project_cfg.get("name", output_dir.name), charuco_board,
+        calibrations=calibrations,
+    )
 
     print("Writing .slp files...")
     write_slp_files(cam_trial_data, node_names, edges, output_dir / "slp")

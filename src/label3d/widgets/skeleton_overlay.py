@@ -215,12 +215,38 @@ class SkeletonOverlay:
         for item in self._label_items.values():
             item.setVisible(False)
 
-    def visible_points(self, instance: int) -> list[QPointF]:
-        """Scene positions of the currently visible points for one instance."""
+    def placed_points(self, instance: int) -> list[QPointF]:
+        """Scene positions of one instance's points that are placed in this
+        camera (set or predicted); not_visible and not_set points are left out."""
+        return [pos for _key, pos in self._placed_items(instance)]
+
+    def instance_points(self, instance: int) -> list[QPointF]:
+        """Scene positions of one instance's placed points plus its unset points
+        that are shown at their reprojection from the other cameras."""
         return [
             item.pos()
-            for (inst, _bp), item in self._point_items.items()
-            if inst == instance and (inst, _bp) in self._active_points and item.isVisible()
+            for key, item in self._point_items.items()
+            if key[0] == instance
+            and key in self._active_points
+            and item.isVisible()
+            and (
+                item.state in ("set", "predicted")
+                or (item.state == "not_set" and item.has_reprojection)
+            )
+        ]
+
+    def placed_point(self, instance: int, bodypart: str) -> QPointF | None:
+        """Scene position of one point if it is placed in this camera, else None."""
+        return dict(self._placed_items(instance)).get((instance, bodypart))
+
+    def _placed_items(self, instance: int) -> list[tuple[tuple[int, str], QPointF]]:
+        return [
+            (key, item.pos())
+            for key, item in self._point_items.items()
+            if key[0] == instance
+            and key in self._active_points
+            and item.isVisible()
+            and item.state in ("set", "predicted")
         ]
 
     def get_point_item(self, instance: int, bodypart: str) -> PointItem | None:

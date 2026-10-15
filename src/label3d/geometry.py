@@ -14,7 +14,11 @@ import cv2
 import numpy as np
 import toml
 
+from label3d.calibration_registry import CalibrationEntry, save_calibration
+
 if TYPE_CHECKING:
+    import pandas as pd
+
     from label3d.points import PointsStore
 
 logger = logging.getLogger(__name__)
@@ -419,38 +423,22 @@ def apply_alignment_to_cameras(
 
 def save_aligned_calibration(
     cameras: dict[str, "CameraParams"],
-    path: "Path",
+    exp_dir: "Path",
     R_align: np.ndarray,
     origin: np.ndarray,
-) -> None:
-    """Write calibration.toml with aligned camera extrinsics.
+    parent: str,
+    label: str = "align",
+) -> CalibrationEntry:
+    """Save aligned camera extrinsics as an "align" registry entry.
 
-    The file follows the aniposelib CameraGroup.dump() format so that
-    CameraGroup.load() can read it directly.  An extra [alignment] section
-    records the rotation matrix and origin used, purely for reference.
+    parent is the id of the calibration that was aligned. The rotation matrix
+    and origin go under [metadata.alignment]: CameraGroup.load() would read a
+    top-level [alignment] table as a camera.
     """
-    import toml as _toml
-
-    data: dict = {}
-    for i, name in enumerate(sorted(cameras.keys())):
-        cp = cameras[name]
-        section = f"cam_{i}"
-        data[section] = {
-            "name": cp.name,
-            "size": list(cp.size),
-            "matrix": cp.matrix.tolist(),
-            "distortions": cp.dist.tolist(),
-            "rotation": cp.rvec.ravel().tolist(),
-            "translation": cp.tvec.ravel().tolist(),
-        }
-
-    data["alignment"] = {
-        "origin": origin.tolist(),
-        "R_align": R_align.tolist(),
-    }
-
-    with open(path, "w") as fh:
-        _toml.dump(data, fh)
+    return save_calibration(
+        exp_dir, build_camera_group(cameras), label, "align", parent=parent,
+        alignment={"origin": np.asarray(origin).tolist(), "R_align": np.asarray(R_align).tolist()},
+    )
 
 
 # -- Triangulation (frame-level, for labeling) ---------------------------------
@@ -477,6 +465,111 @@ def build_camera_group(cameras: dict[str, "CameraParams"]):
     return CameraGroup(ani_cams)
 
 
+# A camera's point is used for triangulation in these states (not not_visible).
+TRIANGULATED_STATES = ("set", "predicted")
+
+
+def triangulation_mask(df: "pd.DataFrame", cam: str) -> np.ndarray:
+    """Rows where cam's point counts for triangulation: set/predicted, x/y present."""
+    return (
+        df[(cam, "state")].isin(TRIANGULATED_STATES).to_numpy()
+        & df[(cam, "x")].notna().to_numpy()
+        & df[(cam, "y")].notna().to_numpy()
+    )
+
+
+def triangulate_rows(
+    cameras: dict[str, "CameraParams"],
+    df: "pd.DataFrame",
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Triangulate every row of a points DataFrame in one batch.
+
+    Each row is one (frame, instance, bodypart). Cameras whose point is set or
+    predicted are undistorted to normalised coordinates and stacked into one
+    DLT system per row; all rows are solved with a single batched SVD. This is
+    the same DLT as aniposelib's CameraGroup.triangulate, without its per-point
+    Python loop.
+
+    Returns:
+        p3d: (N, 3) world points, NaN for rows seen by fewer than 2 cameras.
+        reproj: {camera: (N, 2)} reprojected pixels, NaN where p3d is NaN.
+    """
+    cams = [c for c in sorted(cameras) if (c, "x") in df.columns]
+    n = len(df)
+    p3d = np.full((n, 3), np.nan)
+    reproj = {cam: np.full((n, 2), np.nan) for cam in cams}
+    if n == 0:
+        return p3d, reproj
+
+    A = np.zeros((n, 2 * len(cams), 4))
+    n_views = np.zeros(n, dtype=int)
+    for i, cam in enumerate(cams):
+        good = triangulation_mask(df, cam)
+        if not good.any():
+            continue
+        cp = cameras[cam]
+        xy = df.loc[good, [(cam, "x"), (cam, "y")]].to_numpy(dtype=np.float64)
+        norm = cv2.undistortPoints(xy.reshape(-1, 1, 2), cp.matrix, cp.dist).reshape(-1, 2)
+        M = np.hstack([cp.R, cp.tvec.reshape(3, 1)])
+        A[good, 2 * i] = norm[:, :1] * M[2] - M[0]
+        A[good, 2 * i + 1] = norm[:, 1:] * M[2] - M[1]
+        n_views += good
+
+    ok = n_views >= 2
+    if ok.any():
+        _, _, vh = np.linalg.svd(A[ok])
+        X = vh[:, -1, :]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            p3d[ok] = X[:, :3] / X[:, 3:]
+        p3d[~np.isfinite(p3d).all(axis=1)] = np.nan
+        ok = ~np.isnan(p3d[:, 0])
+        for cam in cams:
+            reproj[cam][ok] = cameras[cam].project(p3d[ok])
+    return p3d, reproj
+
+
+def mean_reprojection_errors(
+    df: "pd.DataFrame", reproj: dict[str, np.ndarray]
+) -> np.ndarray:
+    """(N,) mean distance (px) between each row's used points and their reprojections.
+
+    Only cameras whose point is set or predicted count; NaN where none do or
+    there is no reprojection.
+    """
+    total = np.zeros(len(df))
+    count = np.zeros(len(df))
+    for cam, xy_r in reproj.items():
+        err = np.hypot(
+            df[(cam, "x")].to_numpy(dtype=np.float64) - xy_r[:, 0],
+            df[(cam, "y")].to_numpy(dtype=np.float64) - xy_r[:, 1],
+        )
+        use = triangulation_mask(df, cam) & ~np.isnan(err)
+        total[use] += err[use]
+        count[use] += 1
+    with np.errstate(invalid="ignore"):
+        return np.where(count > 0, total / np.maximum(count, 1), np.nan)
+
+
+def triangulate_trial(
+    cameras: dict[str, "CameraParams"],
+    points_store: "PointsStore",
+    trial: str,
+    frames: list[int] | None = None,
+) -> int:
+    """Triangulate every row of a trial (or of some of its frames) and store the results.
+
+    3D points and every camera's xr/yr are written in one batch. Rows seen by
+    fewer than 2 cameras are cleared, even if they held an earlier result.
+    Returns the number of rows with a 3D point.
+    """
+    rows = points_store.trial_rows(trial, frames)
+    if rows.empty:
+        return 0
+    p3d, reproj = triangulate_rows(cameras, rows)
+    points_store.set_triangulation(rows.index, p3d, reproj)
+    return int((~np.isnan(p3d[:, 0])).sum())
+
+
 def triangulate_frame(
     cameras: dict[str, "CameraParams"],
     points_store: "PointsStore",
@@ -486,78 +579,21 @@ def triangulate_frame(
 ) -> dict[str, float]:
     """Triangulate all bodyparts for one instance in one frame.
 
-    Collects 2D points from cameras with state 'set' or 'predicted',
-    triangulates via aniposelib DLT, reprojects to fill xr/yr, and stores
-    results in points_store.
+    Same rules as triangulate_trial: points with state 'set' or 'predicted'
+    are used, and bodyparts seen by fewer than 2 cameras have their 3D point
+    and reprojections cleared.
 
     Returns dict mapping bodypart name → mean reprojection error (px).
     Bodyparts with fewer than 2 views return NaN error.
     """
-    cam_names_sorted = sorted(cameras.keys())
-
-    # Collect bodyparts for this instance
-    try:
-        inst_df = points_store.df.loc[(points_store.experiment_name, trial, frame, instance)]
-        bodyparts = inst_df.index.tolist()
-    except KeyError:
+    rows = points_store.instance_rows(trial, frame, instance)
+    if rows.empty:
         return {}
-
-    errors: dict[str, float] = {}
-
-    for bp in bodyparts:
-        # Collect observations from cameras that have a valid point
-        valid_cams: list[str] = []
-        valid_pts: list[list[float]] = []
-        for cam in cam_names_sorted:
-            pt = points_store.get_point(trial, frame, instance, bp, cam)
-            if pt.state in ("set", "predicted") and not np.isnan(pt.x):
-                valid_cams.append(cam)
-                valid_pts.append([pt.x, pt.y])
-
-        if len(valid_cams) < 2:
-            errors[bp] = np.nan
-            continue
-
-        logger.debug(
-            "triangulate %s/%s inst=%s bp=%s: cams=%s pts=%s",
-            trial, frame, instance, bp, valid_cams, valid_pts,
-        )
-
-        # Build a sub-cgroup with only the cameras that have observations.
-        # Pass raw pixel coordinates and let aniposelib undistort internally
-        # (undistort=True). aniposelib's DLT uses [R|t] extrinsics and expects
-        # normalized (K-divided) coords, which its own undistort produces.
-        sub_cgroup = build_camera_group({c: cameras[c] for c in valid_cams})
-        tri_input = np.array(valid_pts, dtype=np.float64)[:, np.newaxis, :]  # (n, 1, 2)
-        xyz = sub_cgroup.triangulate(tri_input, undistort=True)  # (1, 3)
-        x3, y3, z3 = float(xyz[0, 0]), float(xyz[0, 1]), float(xyz[0, 2])
-
-        logger.debug("  → 3D = (%.4f, %.4f, %.4f)", x3, y3, z3)
-
-        if np.any(np.isnan([x3, y3, z3])):
-            errors[bp] = np.nan
-            continue
-
-        points_store.set_3d(trial, frame, instance, bp, x3, y3, z3)
-
-        # Reproject into every camera and store xr/yr
-        pt3d = np.array([[x3, y3, z3]])
-        reproj_errors = []
-        for cam in cam_names_sorted:
-            proj = cameras[cam].project(pt3d)  # (1, 2)
-            xr, yr = float(proj[0, 0]), float(proj[0, 1])
-            points_store.set_reprojected(trial, frame, instance, bp, cam, xr, yr)
-
-            pt = points_store.get_point(trial, frame, instance, bp, cam)
-            if pt.state in ("set", "predicted") and not np.isnan(pt.x):
-                err = float(np.hypot(pt.x - xr, pt.y - yr))
-                logger.debug("  reproj %s: obs=(%.1f,%.1f) proj=(%.1f,%.1f) err=%.2f px",
-                             cam, pt.x, pt.y, xr, yr, err)
-                reproj_errors.append(err)
-
-        errors[bp] = float(np.mean(reproj_errors)) if reproj_errors else np.nan
-
-    return errors
+    p3d, reproj = triangulate_rows(cameras, rows)
+    points_store.set_triangulation(rows.index, p3d, reproj)
+    errors = mean_reprojection_errors(rows, reproj)
+    bodyparts = rows.index.get_level_values("bodypart")
+    return {str(bp): float(e) for bp, e in zip(bodyparts, errors)}
 
 
 def triangulate_all_instances(

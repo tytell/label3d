@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import sleap_io as sio
 import toml
@@ -164,6 +165,15 @@ class TestExecute:
         text = (out / "trials.csv").read_text()
         assert "cam1_Trial1.mp4" in text
 
+    def test_trials_csv_records_end_frames_and_mtimes(self, source):
+        """Setup measures the referenced videos, so the first open needn't."""
+        config = _config(source)
+        out = execute_setup(config, classify_slp_files(config))
+        df = pd.read_csv(out / "trials.csv")
+        assert (df["cam1_end"] == 4).all()      # _make_video writes 5 frames
+        assert df["cam1_mtime"].str.endswith("Z").all()
+        assert not (out / "trials.csv.bak").exists()
+
     def test_project_toml_records_video_root(self, source):
         config = _config(source)
         out = execute_setup(config, classify_slp_files(config))
@@ -232,7 +242,10 @@ class TestExecute:
 class TestCalibration:
     def _write_calib(self, path: Path) -> Path:
         data = {
-            cam: {"name": cam, "size": [16, 16], "matrix": [[1, 0, 8], [0, 1, 8], [0, 0, 1]]}
+            cam: {
+                "name": cam, "size": [16, 16], "matrix": [[1, 0, 8], [0, 1, 8], [0, 0, 1]],
+                "distortions": [0.0] * 5, "rotation": [0.0] * 3, "translation": [0.0] * 3,
+            }
             for cam in CAMERAS
         }
         path.write_text(toml.dumps(data))
@@ -244,7 +257,12 @@ class TestCalibration:
         assignment = classify_slp_files(config)
         assert assignment.calibration_toml["default"].name == "calibration.toml"
         out = execute_setup(config, assignment)
-        assert (out / "experiments/default/calibration.toml").exists()
+        assert not (out / "experiments/default/calibration.toml").exists()
+        project = Project.load(out)
+        entry = project.active_calibration("default")
+        assert entry.method == "imported"
+        assert entry.metadata["source_path"].endswith("calibration.toml")
+        assert project.has_calibration
 
     def test_unrelated_toml_is_not_mistaken_for_calibration(self, source):
         (source["slps"][0].parent / "notes.toml").write_text('[meta]\nauthor = "x"\n')

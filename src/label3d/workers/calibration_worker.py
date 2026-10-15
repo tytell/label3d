@@ -1,15 +1,15 @@
 """Background worker for Charuco corner detection and camera calibration.
 
-Two-phase workflow:
-  1. DetectionWorker: scans calibration/{cam}/ folders, detects Charuco corners
-     per camera using images or video, emits per-camera progress.
-  2. CalibrationWorker: given detected rows, runs aniposelib bundle adjustment,
-     computes per-corner reprojection errors, emits results.
+Workflow:
+  1. DetectionWorker: detects Charuco corners in each calibration take's
+     videos (calibrations/{cam}/), emits per-camera progress.
+  2. MultiTakeCalibrationWorker: calibrates each take, then all takes jointly.
+  3. RefineWorker: refines a calibration with labelled points (Phase 12).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -22,8 +22,26 @@ _log = logging.getLogger(__name__)
 from aniposelib.boards import CharucoBoard, merge_rows
 from aniposelib.cameras import Camera, CameraGroup
 
-from label3d.calibration_compare import run_spread
 from label3d.calibration_io import compute_frame_errors
+from label3d.calibration_refine import (
+    RefineOptions,
+    RefineResult,
+    calibrate_takes,
+    charuco_points,
+    charuco_rows,
+    refine,
+)
+from label3d.calibration_registry import CalibrationEntry, load_calibration
+from label3d.calibration_solve import (
+    JOINT_TAKE,
+    CalibrationTake,
+    TakeCalibration,
+    TakeVideo,
+    build_board,
+    calibrate_repeated,
+    rows_for_take,
+    take_camera_sizes,
+)
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".cine"}
@@ -67,31 +85,6 @@ def _draw_corners(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
             cv2.circle(out, (int(x), int(y)), 6, (0, 255, 0), -1)
     return out
 
-
-@dataclass
-class TakeVideo:
-    """One camera's video within a calibration take, with optional trimming."""
-
-    path: Path
-    start: int = 0
-    end: int | None = None
-
-
-@dataclass
-class CalibrationTake:
-    """One synchronized calibration recording across cameras.
-
-    start/end bound the synchronized frames used for calibration (inclusive;
-    end None means through the end of the take).
-    """
-
-    name: str
-    videos: dict[str, TakeVideo] = field(default_factory=dict)  # camera -> video
-    start: int = 0
-    end: int | None = None
-
-    def contains(self, frame: int) -> bool:
-        return frame >= self.start and (self.end is None or frame <= self.end)
 
 
 class DetectionWorker(QThread):
@@ -249,75 +242,6 @@ class DetectionWorker(QThread):
         return board.fill_points_rows(v_rows)
 
 
-JOINT_TAKE = "All takes (joint)"
-
-
-@dataclass
-class TakeCalibration:
-    """One calibration solution — a single take, or all takes jointly."""
-
-    name: str
-    cgroup: object
-    error: float
-    frame_errors: dict
-    n_rows: int
-    # Largest (rotation_deg, baseline_pct) between the repeated runs.
-    spread: tuple[float, float] = (0.0, 0.0)
-
-
-def _build_board(bp: dict) -> CharucoBoard:
-    return CharucoBoard(
-        squaresX=bp["squares_x"],
-        squaresY=bp["squares_y"],
-        square_length=bp["square_length"],
-        marker_length=bp["marker_length"],
-        marker_bits=bp.get("marker_bits", 4),
-        dict_size=bp.get("dict_size", 50),
-    )
-
-
-def calibrate_rows(
-    cam_names: list[str],
-    cam_sizes: dict[str, tuple[int, int]],
-    rows_by_cam: dict[str, list],
-    board: CharucoBoard,
-) -> tuple[object, float, dict]:
-    """Run bundle adjustment on one set of rows. Returns (cgroup, error, errors)."""
-    cameras = [Camera(name=n, size=cam_sizes.get(n)) for n in cam_names]
-    cgroup = CameraGroup(cameras)
-    rows_list = [rows_by_cam.get(cam, []) for cam in cam_names]
-    error = cgroup.calibrate_rows(rows_list, board, verbose=False)
-    _, frame_errors = compute_frame_errors(cgroup, board, rows_list, cam_names)
-    return cgroup, float(error), frame_errors
-
-
-def rows_for_take(rows_by_cam: dict[str, list], take: str) -> dict[str, list]:
-    """Subset of detection rows belonging to one take."""
-    return {
-        cam: [
-            r for r in rows
-            if isinstance(r.get("framenum"), tuple) and r["framenum"][0] == take
-        ]
-        for cam, rows in rows_by_cam.items()
-    }
-
-
-def rows_in_range(
-    rows_by_cam: dict[str, list], takes: list[CalibrationTake]
-) -> dict[str, list]:
-    """Drop detection rows outside their take's start/end range.
-
-    Rows from a take not in `takes` are kept — there is no range to apply.
-    """
-    by_name = {take.name: take for take in takes}
-
-    def keep(row: dict) -> bool:
-        framenum = row.get("framenum")
-        if not isinstance(framenum, tuple) or framenum[0] not in by_name:
-            return True
-        return by_name[framenum[0]].contains(framenum[1])
-
-    return {cam: [r for r in rows if keep(r)] for cam, rows in rows_by_cam.items()}
 
 
 class MultiTakeCalibrationWorker(QThread):
@@ -364,36 +288,14 @@ class MultiTakeCalibrationWorker(QThread):
         self, name: str, rows: dict[str, list], board
     ) -> TakeCalibration:
         """Calibrate `rows` n_repeats times; keep the lowest-error run."""
-        n_rows = sum(len(r) for r in rows.values())
-        self.progress.emit(f"  Calibrating {name} ({n_rows} detections)...")
-        runs = []
-        for i in range(self._n_repeats):
-            try:
-                cgroup, error, frame_errors = calibrate_rows(
-                    self._cam_names, self._cam_sizes, rows, board
-                )
-            except Exception as exc:
-                self.progress.emit(f"    run {i + 1}/{self._n_repeats} failed: {exc}")
-                continue
-            self.progress.emit(
-                f"    run {i + 1}/{self._n_repeats}: mean error {error:.3f} px"
-            )
-            runs.append((error, cgroup, frame_errors))
-        if not runs:
-            raise RuntimeError(f"every calibration run of {name} failed")
-
-        error, cgroup, frame_errors = min(runs, key=lambda r: r[0])
-        spread = run_spread([r[1] for r in runs])
-        if len(runs) > 1:
-            self.progress.emit(
-                f"    kept {error:.3f} px; run-to-run spread "
-                f"{spread[0]:.2f} deg rotation, {spread[1]:.1f}% baseline"
-            )
-        return TakeCalibration(name, cgroup, error, frame_errors, n_rows, spread)
+        return calibrate_repeated(
+            self._cam_names, self._cam_sizes, rows, board, self._n_repeats, name,
+            progress=self.progress.emit,
+        )
 
     def run(self):
         try:
-            board = _build_board(self._board_params)
+            board = build_board(self._board_params)
             results: list[TakeCalibration] = []
 
             for take in self._take_names:
@@ -487,3 +389,103 @@ class CalibrationWorker(QThread):
         except Exception as exc:
             self.error_occurred.emit(str(exc))
 
+
+
+@dataclass
+class RefineOutcome:
+    """What RefineWorker produced, ready for the dialog to show and save.
+
+    parent is the registry entry the refinement started from, or None when
+    Stage 1 calibrated the takes afresh; then stage1 holds that new solution,
+    which is saved before the refinement.
+    """
+
+    result: RefineResult
+    parent: CalibrationEntry | None
+    stage1: TakeCalibration | None
+    stage1_takes: list[str]
+
+
+class RefineWorker(QThread):
+    """Runs a calibration refinement (Phase 12) off the UI thread.
+
+    Stage 1 either loads an existing entry or calibrates the chosen takes
+    jointly. Stage 2 adjusts it with the selected points, aligns the result
+    back onto it and measures errors on held-out frames and charuco corners.
+
+    Emits:
+        progress(str)
+        finished(RefineOutcome)
+        error_occurred(str)
+    """
+
+    progress = Signal(str)
+    finished = Signal(object)
+    error_occurred = Signal(str)
+
+    def __init__(
+        self,
+        exp_dir: Path,
+        cam_names: list[str],
+        p2ds: np.ndarray,
+        index,
+        options: RefineOptions,
+        start_entry: CalibrationEntry | None = None,
+        takes: list[CalibrationTake] | None = None,
+        take_names: list[str] | None = None,
+        board_params: dict | None = None,
+        n_stage1_repeats: int = 3,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._exp_dir = exp_dir
+        self._cam_names = cam_names
+        self._p2ds = p2ds
+        self._index = index
+        self._options = options
+        self._start_entry = start_entry
+        self._takes = takes or []
+        self._take_names = take_names or []
+        self._board_params = board_params or {}
+        self._n_stage1_repeats = n_stage1_repeats
+
+    def run(self):
+        try:
+            stage1 = None
+            if self._start_entry is not None:
+                self.progress.emit(f"Stage 1: starting from {self._start_entry.label}")
+                start = load_calibration(self._start_entry)
+                names = self._start_entry.charuco_takes
+            else:
+                names = self._take_names
+                self.progress.emit(f"Stage 1: calibrating {', '.join(names)}")
+                rows = charuco_rows(self._exp_dir, self._cam_names, self._takes, names)
+                sizes = take_camera_sizes(self._takes, self._cam_names)
+                stage1 = calibrate_takes(
+                    rows, self._cam_names, sizes, self._board_params,
+                    self._n_stage1_repeats, self.progress.emit,
+                )
+                start = stage1.cgroup
+
+            # Points follow the order of the calibration's cameras.
+            order = start.get_names()
+            if sorted(order) != sorted(self._cam_names):
+                raise ValueError(
+                    f"the calibration has cameras {order}, the project has {self._cam_names}"
+                )
+            p2ds = self._p2ds[[self._cam_names.index(n) for n in order]]
+
+            charuco = None
+            if names:
+                rows = charuco_rows(self._exp_dir, order, self._takes, names)
+                charuco = charuco_points(rows, order)
+
+            self.progress.emit("Stage 2: bundle adjustment with the selected points")
+            result = refine(
+                start, p2ds, self._index, self._options,
+                charuco_p2ds=charuco, progress=self.progress.emit,
+            )
+            self.finished.emit(RefineOutcome(result, self._start_entry, stage1, list(names)))
+        except Exception as exc:
+            _log.exception("Refinement failed")
+            self.error_occurred.emit(str(exc))

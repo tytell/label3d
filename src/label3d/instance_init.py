@@ -6,8 +6,9 @@ random     — scatter bodyparts around a center point using Gaussian noise;
              if skeleton.node_offsets_cm is defined, those cm offsets are
              projected through the camera at a nominal depth instead.
 
-average    — compute mean relative positions from existing labeled instances
-             in this trial+camera, place the new instance at center_px.
+average    — compute each bodypart's mean offset from the first skeleton node
+             over labeled instances in this experiment+camera; place the first
+             node at center_px and the rest at their mean offsets.
              Falls back to random when fewer than 2 qualifying instances exist.
 
 reprojected — triangulate the selected instance from its existing cameras and
@@ -138,7 +139,6 @@ def init_random(
 def init_average(
     points_store: PointsStore,
     experiment: str,
-    trial: str,
     camera_name: str,
     skeleton: Skeleton,
     center_px: tuple[float, float] | None,
@@ -146,83 +146,72 @@ def init_average(
 ) -> tuple[dict[str, tuple[float, float]], bool]:
     """Return (coords, used_fallback) for average-relative placement.
 
-    Collects all instances in experiment+trial that have state set/predicted in
-    ≥ half of the skeleton nodes for camera_name.  Computes per-bodypart offsets
-    relative to each instance's centroid, then averages them.  The new instance
-    is placed centred at center_px (or frame centre).
+    The first skeleton node is the anchor.  For every instance in the
+    experiment whose anchor is placed (set/predicted) in camera_name, each
+    other placed bodypart's offset from the anchor is collected; the offsets
+    are averaged per bodypart.  The anchor goes at center_px, or, without one,
+    at the anchor's mean position in this camera (frame centre if it has never
+    been placed), and every other bodypart at anchor + mean offset.  A bodypart
+    with no offsets gets a random position.
 
-    used_fallback is True when fewer than 2 qualifying instances were found
-    (random placement is used instead).
+    used_fallback is True when fewer than 2 instances give offsets (random
+    placement is used instead).
     """
     w, h = frame_size
-    cx, cy = center_px if center_px is not None else _frame_center(frame_size)
+    nodes = skeleton.nodes
+    anchor = nodes[0] if nodes else ""
 
-    min_fraction = 0.5
-    n_nodes = len(skeleton.nodes)
-    offsets_per_bp: dict[str, list[tuple[float, float]]] = {
-        bp: [] for bp in skeleton.nodes
-    }
-    qualifying_count = 0
+    mean_offsets = pd.DataFrame(columns=["dx", "dy"], dtype=float)
+    anchor_xy = np.empty((0, 2))
+    n_sources = 0
 
     try:
-        trial_df = points_store.df.loc[(experiment, trial)]
+        exp_df = points_store.df.loc[experiment]
     except KeyError:
-        trial_df = None
+        exp_df = None
 
-    if trial_df is not None and (camera_name, "state") in trial_df.columns:
-        for (_frame, _inst), group in trial_df.groupby(level=["frame", "instance"]):
-            cam_states = group[(camera_name, "state")]
-            n_labeled = int(cam_states.isin(["set", "predicted"]).sum())
-            if n_labeled < max(1, int(n_nodes * min_fraction)):
-                continue
+    if anchor and exp_df is not None and (camera_name, "state") in exp_df.columns:
+        placed = exp_df[(camera_name, "state")].isin(["set", "predicted"])
+        xy = (
+            exp_df.loc[placed, [(camera_name, "x"), (camera_name, "y")]]
+            .apply(pd.to_numeric, errors="coerce")
+            .dropna()
+        )
+        xy.columns = ["x", "y"]
+        # Index (trial, frame, instance), one row per placed bodypart
+        xy = xy.reset_index(level="bodypart")
+        anchors = xy.loc[xy["bodypart"] == anchor, ["x", "y"]]
+        anchor_xy = anchors.to_numpy(dtype=float)
 
-            # Centroid from labeled bodyparts only
-            cam_x = pd.to_numeric(group[(camera_name, "x")], errors="coerce")
-            cam_y = pd.to_numeric(group[(camera_name, "y")], errors="coerce")
-            valid_mask = cam_states.isin(["set", "predicted"])
-            xs = cam_x[valid_mask].dropna().values.astype(float)
-            ys = cam_y[valid_mask].dropna().values.astype(float)
-            if len(xs) == 0:
-                continue
+        others = xy.loc[xy["bodypart"] != anchor].join(
+            anchors, rsuffix="_anchor", how="inner"
+        )
+        others["dx"] = others["x"] - others["x_anchor"]
+        others["dy"] = others["y"] - others["y_anchor"]
+        mean_offsets = others.groupby("bodypart")[["dx", "dy"]].mean()
+        n_sources = others.index.unique().size
 
-            qualifying_count += 1
-            cent_x = float(xs.mean())
-            cent_y = float(ys.mean())
+    if center_px is not None:
+        cx, cy = center_px
+    elif len(anchor_xy):
+        cx, cy = (float(v) for v in anchor_xy.mean(axis=0))
+    else:
+        cx, cy = _frame_center(frame_size)
 
-            for bp in skeleton.nodes:
-                if bp not in group.index:
-                    continue
-                row = group.loc[bp]
-                if isinstance(row, pd.DataFrame):
-                    row = row.iloc[0]
-                state = row[(camera_name, "state")]
-                bx = row[(camera_name, "x")]
-                by = row[(camera_name, "y")]
-                if state not in ("set", "predicted"):
-                    continue
-                try:
-                    bx_f, by_f = float(bx), float(by)
-                except (TypeError, ValueError):
-                    continue
-                if np.isnan(bx_f) or np.isnan(by_f):
-                    continue
-                offsets_per_bp[bp].append((bx_f - cent_x, by_f - cent_y))
-
-    if qualifying_count < 2:
-        # Random fallback
-        fallback = init_random(skeleton, camera_name, None, center_px, frame_size)
-        return fallback, True
+    random_coords = init_random(skeleton, camera_name, None, (cx, cy), frame_size)
+    if n_sources < 2:
+        return random_coords, True
 
     result: dict[str, tuple[float, float]] = {}
-    for bp in skeleton.nodes:
-        if offsets_per_bp[bp]:
-            avg_dx = float(np.mean([o[0] for o in offsets_per_bp[bp]]))
-            avg_dy = float(np.mean([o[1] for o in offsets_per_bp[bp]]))
+    for bp in nodes:
+        if bp == anchor:
+            x, y = cx, cy
+        elif bp in mean_offsets.index:
+            x = cx + float(mean_offsets.at[bp, "dx"])
+            y = cy + float(mean_offsets.at[bp, "dy"])
         else:
-            avg_dx, avg_dy = 0.0, 0.0
-        x = float(np.clip(cx + avg_dx, 0, w))
-        y = float(np.clip(cy + avg_dy, 0, h))
-        result[bp] = (x, y)
+            x, y = random_coords[bp]
+        result[bp] = (float(np.clip(x, 0, w)), float(np.clip(y, 0, h)))
 
     return result, False
 
@@ -296,20 +285,21 @@ def available_strategies(
     """Return the set of strategies currently usable.
 
     "random"      — always available.
-    "average"     — available if any instance in this trial+camera has at least
-                    one set/predicted point (init_average will fall back to random
-                    with a status message if < 2 qualifying instances are found).
+    "average"     — available if any instance in this experiment+camera has at
+                    least one set/predicted point (init_average will fall back to
+                    random with a status message if < 2 qualifying instances are
+                    found).
     "reprojected" — available if instance is not None and that instance has
                     set/predicted points in ≥2 cameras other than camera_name
                     in this frame.
     """
     result: set[Literal["random", "average", "reprojected"]] = {"random"}
 
-    # Average: quick check — any labeled point in trial+camera
+    # Average: quick check — any labeled point in experiment+camera
     try:
-        trial_df = points_store.df.loc[(experiment, trial)]
-        if (camera_name, "state") in trial_df.columns:
-            if trial_df[(camera_name, "state")].isin(["set", "predicted"]).any():
+        exp_df = points_store.df.loc[experiment]
+        if (camera_name, "state") in exp_df.columns:
+            if exp_df[(camera_name, "state")].isin(["set", "predicted"]).any():
                 result.add("average")
     except KeyError:
         pass

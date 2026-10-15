@@ -6,6 +6,7 @@ import enum
 import math
 
 from PySide6.QtCore import Qt, QRectF
+from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QApplication, QSplitter, QVBoxLayout, QWidget
 
 from label3d.video import FrameProvider
@@ -268,17 +269,50 @@ class CameraGrid(QWidget):
         for panel in self._zoom_targets():
             panel.fit_view()
 
+    def panel_under_mouse(self) -> CameraPanel | None:
+        """The visible panel whose viewport contains the mouse cursor, if any."""
+        pos = QCursor.pos()
+        for panel in self._panels.values():
+            viewport = panel.viewport()
+            if panel.isVisible() and viewport.rect().contains(viewport.mapFromGlobal(pos)):
+                return panel
+        return None
+
+    def zoom_in_under_mouse(self):
+        panel = self.panel_under_mouse()
+        if panel is not None:
+            panel.zoom_in()
+
+    def zoom_out_under_mouse(self):
+        panel = self.panel_under_mouse()
+        if panel is not None:
+            panel.zoom_out()
+
     def zoom_to_instance(self, instance: int):
-        """Zoom the target panels to the visible points of one instance."""
+        """Zoom the target panels to the points of one instance, including
+        unset points estimated by reprojection from the other cameras.
+
+        A camera where the instance has no such points shows the whole image.
+        """
         for panel in self._zoom_targets():
-            panel.zoom_to_points(panel.skeleton_overlay.visible_points(instance))
+            points = panel.skeleton_overlay.instance_points(instance)
+            if points:
+                panel.zoom_to_points(points)
+            else:
+                panel.fit_view()
 
     def zoom_to_point(self, instance: int, bodypart: str):
-        """Zoom the target panels to a small box around one point."""
+        """Zoom the target panels to a small box around one point.
+
+        A camera where the point isn't placed (not set, or not visible) shows
+        the whole image.
+        """
         for panel in self._zoom_targets():
-            item = panel.skeleton_overlay.get_point_item(instance, bodypart)
-            if item is not None and item.isVisible():
-                panel.zoom_to_point(item.pos())
+            point = panel.skeleton_overlay.placed_point(instance, bodypart)
+            if point is not None:
+                panel.zoom_to_point(point)
+            else:
+                panel.fit_view()
 
     def get_panel(self, camera: str) -> CameraPanel | None:
         return self._panels.get(camera)

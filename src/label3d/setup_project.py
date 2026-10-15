@@ -12,8 +12,11 @@ from pathlib import Path
 import pandas as pd
 import sleap_io as sio
 import toml
+from aniposelib.cameras import CameraGroup
 
-from label3d.project import Project
+from label3d.calibration_registry import REFINED_DIR, camera_dir, save_calibration
+from label3d.project import Project, check_trial_videos, write_trials_csv
+from label3d.skeleton import Skeleton
 from label3d.slp_sync import SlpMapping
 
 logger = logging.getLogger(__name__)
@@ -62,6 +65,14 @@ class SetupConfig:
     # Set up the project from the videos that could be located, leaving the
     # cameras whose videos are missing blank in trials.csv
     allow_missing_videos: bool = False
+    # Skeleton given in the setup file (see skeleton_from_setup); must match
+    # the skeleton of any .slp files
+    skeleton: Skeleton | None = None
+
+    def __post_init__(self):
+        # Camera folders share calibrations/ with the refinements folder
+        if REFINED_DIR in self.camera_names:
+            raise ValueError(f"'{REFINED_DIR}' can't be used as a camera name")
 
     def effective_video_mode(self) -> str:
         """Video handling mode, falling back to the legacy copy_files flag."""
@@ -337,6 +348,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
                 f"Experiment '{exp}' has no calibration video for: {', '.join(missing)}"
             )
 
+    _apply_config_skeleton(config, assignment)
     return assignment
 
 
@@ -447,7 +459,42 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
         )
 
     _assign_calibration(config, assignment, slp_paths)
+    _apply_config_skeleton(config, assignment)
     return assignment
+
+
+def skeleton_from_setup(table: dict, base_dir: Path | None = None) -> Skeleton:
+    """The skeleton named by a setup file's [skeleton] table.
+
+    The table either names a skeleton.json (``file``, relative to base_dir
+    when not absolute) or gives ``nodes``, ``edges``, ``symmetries`` and
+    ``node_offsets_cm`` inline, not both.
+    """
+    if "file" in table:
+        if set(table) - {"file"}:
+            raise ValueError("[skeleton] takes either 'file' or inline nodes, not both")
+        path = Path(table["file"]).expanduser()
+        if not path.is_absolute() and base_dir is not None:
+            path = base_dir / path
+        if not path.exists():
+            raise FileNotFoundError(f"Skeleton file not found: {path}")
+        return Skeleton.from_json(path)
+    return Skeleton.from_dict(table)
+
+
+def _apply_config_skeleton(config: SetupConfig, assignment: FileAssignment) -> None:
+    """Use the setup file's skeleton, after checking it against the .slp one."""
+    if config.skeleton is None:
+        return
+    if assignment.skeleton is not None:
+        from_slp = Skeleton.from_dict(assignment.skeleton)
+        if not config.skeleton.same_topology(from_slp):
+            raise ValueError(
+                "The skeleton in the setup file does not match the .slp files' skeleton "
+                f"(setup: {', '.join(config.skeleton.nodes)}; "
+                f".slp: {', '.join(from_slp.nodes)})"
+            )
+    assignment.skeleton = config.skeleton.to_dict()
 
 
 def _expand_slp_paths(paths: list[Path]) -> list[Path]:
@@ -578,6 +625,11 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
     lines.append(f"Output:  {config.output_dir}")
     lines.append(f"Experiments: {', '.join(config.experiment_keywords) if config.experiment_keywords else '(default)'}")
     lines.append(f"Cameras: {', '.join(config.camera_names)}")
+    if assignment.skeleton:
+        source = "setup file" if config.skeleton is not None else ".slp files"
+        lines.append(f"Skeleton: {', '.join(assignment.skeleton['nodes'])} (from {source})")
+    else:
+        lines.append("Skeleton: none (add one later with File > Load skeleton...)")
     strategy_str = config.match_strategy
     if config.match_strategy == "keyword":
         strategy_str += f" (keyword={config.trial_keyword!r})"
@@ -714,7 +766,10 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
                 lines.append(f"    {trial_name}  " + "  ".join(parts))
         if assignment.calibration_toml:
             for exp_name, path in sorted(assignment.calibration_toml.items()):
-                lines.append(f"  [{exp_name}]  calibration.toml found at {path}")
+                lines.append(
+                    f"  [{exp_name}]  calibration found at {path} "
+                    "(imported into the calibration registry)"
+                )
         lines.append("")
 
     if assignment.video_remaps:
@@ -759,6 +814,7 @@ def _blank_row(
         row[cam] = ""
         row[f"{cam}_start"] = ""
         row[f"{cam}_end"] = ""
+        row[f"{cam}_mtime"] = ""
     return row
 
 
@@ -807,13 +863,13 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     Output layout:
       project/
         project.toml
-        skeleton.json            <- written if SLP files provided a skeleton
+        skeleton.json            <- from the setup file or the SLP files
         trials.csv               <- experiment, trial, is_calibration columns
         slp/
         experiments/
           default/
             videos/
-            calibration/{cam}/
+            calibrations/{cam}/
 
     Returns the output directory path.
     """
@@ -852,6 +908,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     # Calibration takes get rows too, flagged with is_calibration.
     all_experiments = sorted(set(exp_trials) | set(assignment.calibration_takes))
     trials_rows: list[dict] = []
+    active_calibrations: dict[str, str] = {}
     for exp_name in all_experiments:
         exp_dir = out / "experiments" / exp_name
         video_root = assignment.video_roots.get(exp_name)
@@ -867,15 +924,21 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         # inputs.  Referenced trial videos are still left where they are.
         calib_transfer = shutil.copy2 if reference else transfer
         for cam, files in assignment.exp_calibration.get(exp_name, {}).items():
-            cam_dir = exp_dir / "calibration" / cam
+            cam_dir = camera_dir(exp_dir, cam)
             cam_dir.mkdir(parents=True, exist_ok=True)
             for f in files:
                 calib_transfer(str(f), str(cam_dir / f.name))
 
+        # An existing aniposelib calibration becomes an "imported" registry
+        # entry, and the active one.
         src_toml = assignment.calibration_toml.get(exp_name)
         if src_toml is not None:
             exp_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(src_toml), str(exp_dir / "calibration.toml"))
+            entry = save_calibration(
+                exp_dir, CameraGroup.load(str(src_toml)), "imported", "imported",
+                source_path=str(src_toml),
+            )
+            active_calibrations[exp_name] = entry.id
 
         for trial_name in sorted(exp_trials.get(exp_name, [])):
             cam_files = assignment.trials[trial_name]
@@ -892,7 +955,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
 
         # Calibration files have already been copied above, so only record
         # them — always by bare filename, since they now live in the project's
-        # calibration/{cam}/ regardless of the video mode.
+        # calibrations/{cam}/ regardless of the video mode.
         for take in sorted(assignment.calibration_takes.get(exp_name, {})):
             cam_files = assignment.calibration_takes[exp_name][take]
             row = _blank_row(exp_name, take, True, config.camera_names)
@@ -904,9 +967,15 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     if trials_rows:
         columns = ["experiment", "trial", "is_calibration"]
         for cam in config.camera_names:
-            columns.extend([cam, f"{cam}_start", f"{cam}_end"])
+            columns.extend([cam, f"{cam}_start", f"{cam}_end", f"{cam}_mtime"])
         df = pd.DataFrame(trials_rows, columns=columns)
-        df.to_csv(out / "trials.csv", index=False)
+        # Record each video's last frame and modification time now, so the
+        # first open doesn't have to measure them.
+        roots = {
+            exp: Path(root) for exp, root in (assignment.video_roots if reference else {}).items()
+        }
+        check_trial_videos(df, out, roots, config.camera_names)
+        write_trials_csv(out / "trials.csv", df, backup=False)
 
     # Move/copy SLP files (deduplicate: one slp_path may cover multiple trial+camera pairs).
     # In reference mode the .slp files are copied, not moved: the source folder
@@ -929,9 +998,10 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         config.charuco,
         video_roots=assignment.video_roots if reference else None,
         slp_mapping=_slp_mapping_config(assignment),
+        active_calibrations=active_calibrations,
     )
 
-    # Write skeleton.json if a skeleton was extracted from SLP files
+    # Write skeleton.json from the setup file or the SLP files
     if assignment.skeleton:
         with open(out / "skeleton.json", "w") as fh:
             json.dump(assignment.skeleton, fh, indent=2)
@@ -996,6 +1066,7 @@ def split_project_groups(
             trial_keyword=config.trial_keyword,
             trial_regex=config.trial_regex,
             experiment_keywords=config.experiment_keywords,
+            skeleton=config.skeleton,
         )
 
         sub_trials = {
@@ -1023,8 +1094,12 @@ def write_project_toml(
     charuco: dict | None = None,
     video_roots: dict[str, Path] | None = None,
     slp_mapping: dict | None = None,
+    active_calibrations: dict[str, str] | None = None,
 ) -> Path:
-    """Write project.toml to the project directory."""
+    """Write project.toml to the project directory.
+
+    active_calibrations (experiment -> registry id) becomes [calibration.active].
+    """
     config_data: dict = {
         "project": {"name": project_name},
     }
@@ -1036,6 +1111,8 @@ def write_project_toml(
         }
     if slp_mapping:
         config_data["slp"] = slp_mapping
+    if active_calibrations:
+        config_data["calibration"] = {"active": dict(sorted(active_calibrations.items()))}
 
     path = project_dir / "project.toml"
     with open(path, "w") as f:

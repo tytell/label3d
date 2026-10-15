@@ -14,7 +14,7 @@ A cross-platform desktop app for:
 | Document | Contents |
 |---|---|
 | [docs/user_workflow.md](docs/user_workflow.md) | **User guide**: the label → train → review loop, step by step (draft) |
-| [docs/data_model.md](docs/data_model.md) | Project layout, `points.csv` schema, `project.toml`, `trials.csv`, `calibration.toml`, adapter interface, project setup utility |
+| [docs/data_model.md](docs/data_model.md) | Project layout, `points.csv` schema, `project.toml`, `trials.csv`, calibration registry, adapter interface, project setup utility |
 | [docs/workflows.md](docs/workflows.md) | Calibration UI, axis alignment, labeling UI, export UI, keyboard shortcuts, key features |
 | [docs/architecture.md](docs/architecture.md) | Package layout, build order, technology stack, risks, design decisions |
 | [docs/testing.md](docs/testing.md) | Test modules and testing conventions |
@@ -23,11 +23,11 @@ A cross-platform desktop app for:
 | [docs/phases/phase_8.md](docs/phases/phase_8.md) | Phase 8 — SLP write-back (completed) |
 | [docs/phases/phase_9.md](docs/phases/phase_9.md) | Phase 9 — Calibration Takes (completed) |
 | [docs/phases/phase_10.md](docs/phases/phase_10.md) | Phase 10 — Point provenance and reviewing new points (completed) |
-| [docs/phases/phase_11.md](docs/phases/phase_11.md) | Phase 11 — Calibration registry and switching calibrations |
-| [docs/phases/phase_12.md](docs/phases/phase_12.md) | Phase 12 — Refining the calibration with labelled points |
+| [docs/phases/phase_11.md](docs/phases/phase_11.md) | Phase 11 — Calibration registry and switching calibrations (completed) |
+| [docs/phases/phase_12.md](docs/phases/phase_12.md) | Phase 12 — Refining the calibration with labelled points (complete) |
 | [docs/phases/phase_13.md](docs/phases/phase_13.md) | Phase 13 — Batch triangulation and export |
 | [docs/phases/phase_14.md](docs/phases/phase_14.md) | Phase 14 — Axis alignment (deferred; partially implemented) |
-| [docs/phases/phase_15_16.md](docs/phases/phase_15_16.md) | Phases 15–16: Export view, Polish and robustness (deferred) |
+| [docs/phases/phase_15_16.md](docs/phases/phase_15_16.md) | Phases 15–16: Export to other pose formats, Polish and robustness (deferred) |
 | [docs/phases/phase_17.md](docs/phases/phase_17.md) | Phase 17 — Multi-instance support and cross-camera matching (deferred) |
 | [docs/phases/archive/phases_1_7.md](docs/phases/archive/phases_1_7.md) | Phases 1–7 (completed; archived for reference) |
 
@@ -47,10 +47,10 @@ A cross-platform desktop app for:
 | 8 | SLP write-back (File > Sync with Sleap) | ✓ Complete |
 | 9 | Calibration takes | ✓ Complete |
 | 10 | Point provenance and reviewing new points | ✓ Complete |
-| 11 | Calibration registry and switching | Not started |
-| 12 | Calibration refinement with labelled points | Not started |
-| 13 | Batch triangulation and export | Not started |
+| 11 | Calibration registry and switching | ✓ Complete |
+| 12 | Calibration refinement with labelled points | ✓ Complete |
+| 13 | Batch triangulation and export | In progress — code, tests and docs done; awaiting review in the app |
 | 14 | Axis alignment | Deferred; partial — geometry helpers done, UI widget not created |
-| 15 | Export view | Deferred |
+| 15 | Export to other pose formats | Deferred |
 | 16 | Polish and robustness | Deferred |
 | 17 | Multi-instance support | Deferred |

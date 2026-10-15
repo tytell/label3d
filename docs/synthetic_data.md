@@ -1,6 +1,6 @@
 # label3d — Synthetic Data Generator
 
-`generate_synthetic.py` creates a complete test project with known-correct ground truth: cameras, videos with rendered skeleton keypoints, `calibration.toml`, `points.csv`, `skeleton.json`, and `.slp` files.
+`generate_synthetic.py` creates a complete test project with known-correct ground truth: cameras, videos with rendered skeleton keypoints, a ground-truth calibration registry entry, `points.csv`, `skeleton.json`, and `.slp` files.
 
 ```bash
 uv run python generate_synthetic.py synthetic_config.toml
@@ -34,8 +34,8 @@ test_project/
 ├── slp/
 └── experiments/
     └── default/
-        ├── calibration/{cam}/*.png
-        ├── calibration.toml      # ground-truth camera params
+        ├── calibrations/{cam}/*.mp4                     # charuco take videos
+        ├── calibrations/ground-truth_{timestamp}.toml   # ground-truth camera params; active
         ├── points.csv            # ground-truth points (5-level row index)
         └── videos/               # rendered trial videos
 ```
@@ -68,4 +68,4 @@ The `[charuco]` section is optional — if absent, calibration images are not ge
 1. **Generate flat board image** — `cv2.aruco.CharucoBoard.generateImage()` produces a high-resolution image of the board
 2. **Compute board poses** — For each of `num_images` poses: pick a random position within the placement volume and random orientation (tilted up to `tilt_range_deg`). Uses seeded RNG for reproducibility
 3. **Render into each camera** — For each (pose, camera) pair: reverse-map each output pixel through the camera model to the board plane, look up the board texture. **Horizontal flip**: the U coordinate is mirrored (`1 - u`) so ArUco markers read correctly through the camera
-4. **Write output** — Save as `calibration/{cam_name}/board_{NN:03d}.png`
+4. **Write output** — Save as `calibrations/{cam_name}/board_{NN:03d}.png`

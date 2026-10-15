@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -15,9 +16,37 @@ import logging
 logger = logging.getLogger(__name__)
 
 from label3d.adapters.sleap_adapter import SleapAdapter
+from label3d.calibration_registry import (
+    CalibrationEntry,
+    camera_dir,
+    find_calibration,
+    list_calibrations,
+)
 from label3d.points import PointsStore
 from label3d.skeleton import Skeleton
 from label3d.slp_sync import MergeResult, SlpMapping, compute_merge
+
+
+# Per-camera trials.csv columns: {cam}_start, {cam}_end, {cam}_mtime. Any other
+# column that is not in NON_CAMERA_COLUMNS is a camera name.
+CAMERA_COLUMN_SUFFIXES = ("_start", "_end", "_mtime")
+
+# Called as progress(done, total, text) while videos are checked on load;
+# returning False cancels the load (Project.load raises LoadCancelled).
+ProgressCallback = Callable[[int, int, str], bool]
+
+
+class LoadCancelled(Exception):
+    """Project.load was cancelled through its progress callback."""
+
+
+@dataclass
+class VideoCheck:
+    """Result of check_trial_videos."""
+
+    changed: bool = False                               # trials_df was filled in
+    missing: list[str] = field(default_factory=list)    # external references not found
+    mismatched: list[str] = field(default_factory=list) # videos modified since recorded
 
 
 SYNC_HISTORY_COLUMNS = [
@@ -28,7 +57,7 @@ SYNC_HISTORY_COLUMNS = [
 
 @dataclass
 class CameraInfo:
-    """Minimal camera info from calibration.toml (enough for display; full
+    """Minimal camera info from the active calibration (enough for display; full
     calibration data loaded later when geometry is needed)."""
 
     name: str
@@ -78,13 +107,21 @@ class Project:
     config: dict = field(default_factory=dict)  # from project.toml
     experiments: dict[str, ExperimentInfo] = field(default_factory=dict)
     active_experiment: str = ""
+    # Videos whose modification time differs from the one in trials.csv
+    video_warnings: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._attach_latest_sync()
 
     @classmethod
-    def load(cls, path: Path) -> Project:
-        """Load a project from a directory."""
+    def load(cls, path: Path, progress: ProgressCallback | None = None) -> Project:
+        """Load a project from a directory.
+
+        Every video in trials.csv is checked first (check_trial_videos): blank
+        end frames and modification times are measured and written back, so
+        later loads don't open the videos. progress, if given, is called once
+        per video; returning False raises LoadCancelled.
+        """
         root = Path(path)
         if not root.is_dir():
             raise FileNotFoundError(f"Project directory not found: {root}")
@@ -112,6 +149,19 @@ class Project:
             for name, value in config.get("video_roots", {}).items()
         }
 
+        # Videos referenced outside the project must exist — a broken reference
+        # is a stale [video_roots] entry or an unmounted drive, and failing here
+        # names the trial and path instead of failing later inside OpenCV.
+        check = check_trial_videos(trials_df, root, video_roots, cameras, progress)
+        if check.missing:
+            raise FileNotFoundError(
+                "Referenced videos not found:\n  "
+                + "\n  ".join(check.missing)
+                + "\nCheck the [video_roots] section of project.toml."
+            )
+        if check.changed:
+            write_trials_csv(trials_path, trials_df)
+
         # --- Build ExperimentInfo for each experiment ---
         if "experiment" in trials_df.columns:
             experiment_names = sorted(trials_df["experiment"].unique().tolist())
@@ -119,7 +169,6 @@ class Project:
             experiment_names = ["default"]
 
         experiments: dict[str, ExperimentInfo] = {}
-        missing: list[str] = []
         for exp_name in experiment_names:
             exp_dir = root / "experiments" / exp_name
 
@@ -133,15 +182,14 @@ class Project:
             video_root = video_roots.get(exp_name)
             for trial in exp_trials:
                 _resolve_trial_length(trial, videos_dir, video_root, root)
-            missing.extend(
-                _missing_references(exp_name, exp_trials, video_root, videos_dir, root)
-            )
 
-            # Calibration take videos live under calibration/{cam}/, not
+            # Calibration take videos live under calibrations/{cam}/, not
             # videos/, so their lengths are resolved on demand instead.
             exp_takes = _parse_calibration_takes(exp_rows, cameras)
 
-            has_calibration, camera_info = _read_camera_info(exp_dir / "calibration.toml")
+            has_calibration, camera_info = _read_camera_info(
+                _active_calibration_path(config, exp_name, exp_dir)
+            )
 
             experiments[exp_name] = ExperimentInfo(
                 name=exp_name,
@@ -152,16 +200,6 @@ class Project:
                 camera_info=camera_info,
                 calibration_takes=exp_takes,
                 video_root=video_root,
-            )
-
-        # Videos referenced outside the project must exist — a broken reference
-        # is a stale [video_roots] entry or an unmounted drive, and failing here
-        # names the trial and path instead of failing later inside OpenCV.
-        if missing:
-            raise FileNotFoundError(
-                "Referenced videos not found:\n  "
-                + "\n  ".join(missing)
-                + "\nCheck the [video_roots] section of project.toml."
             )
 
         active_experiment = experiment_names[0]
@@ -199,12 +237,13 @@ class Project:
             config=config,
             experiments=experiments,
             active_experiment=active_experiment,
+            video_warnings=check.mismatched,
         )
 
     def video_path(self, trial_name: str, camera: str) -> Path:
         """Resolve absolute path to a trial or calibration-take video.
 
-        Calibration takes live in calibration/{camera}/, trials in videos/ —
+        Calibration takes live in calibrations/{camera}/, trials in videos/ —
         unless the cell names a path, in which case the video is referenced
         where it already lives (see _resolve_video).
         """
@@ -215,10 +254,10 @@ class Project:
         except KeyError:
             take = self.get_calibration_take(trial_name)
             filename, _, _ = take.camera_videos[camera]
-            default_dir = exp_dir / "calibration" / camera
+            default_dir = camera_dir(exp_dir, camera)
             # Calibration videos are copied into the project even when trial
             # videos are referenced in place, so a cell naming a file in
-            # calibration/{camera}/ wins over the experiment's video_root.
+            # calibrations/{camera}/ wins over the experiment's video_root.
             local = default_dir / filename
             if local.exists():
                 return local
@@ -227,10 +266,60 @@ class Project:
             default_dir = exp_dir / "videos"
         return _resolve_video(filename, video_root, default_dir, self.root)
 
-    def calibration_path(self, experiment: str | None = None) -> Path:
-        """Path to an experiment's calibration.toml (default: the active one)."""
+    def calibration_path(self, experiment: str | None = None) -> Path | None:
+        """File of an experiment's active calibration (default experiment: the
+        active one). None when no calibration is active or its file is gone."""
         name = experiment or self.active_experiment
-        return self.root / "experiments" / name / "calibration.toml"
+        return _active_calibration_path(self.config, name, self.root / "experiments" / name)
+
+    def calibrations(self, experiment: str | None = None) -> list[CalibrationEntry]:
+        """An experiment's registry entries, newest first."""
+        name = experiment or self.active_experiment
+        return list_calibrations(self.root / "experiments" / name)
+
+    def active_calibration_id(self, experiment: str | None = None) -> str | None:
+        name = experiment or self.active_experiment
+        return _pointer(self.config, "active", name)
+
+    def active_calibration(self, experiment: str | None = None) -> CalibrationEntry | None:
+        name = experiment or self.active_experiment
+        entry_id = self.active_calibration_id(name)
+        if entry_id is None:
+            return None
+        return find_calibration(self.root / "experiments" / name, entry_id)
+
+    def triangulated_with(self, experiment: str | None = None) -> str | None:
+        """Id of the calibration the experiment's 3D points were last computed with."""
+        name = experiment or self.active_experiment
+        return _pointer(self.config, "triangulated_with", name)
+
+    def set_active_calibration(self, experiment: str | None, entry_id: str | None) -> None:
+        """Point an experiment at a registry entry (None clears it) and reload."""
+        name = experiment or self.active_experiment
+        self._set_pointer("active", name, entry_id)
+        self.reload_calibration(name)
+
+    def set_triangulated_with(self, experiment: str | None, entry_id: str | None) -> None:
+        name = experiment or self.active_experiment
+        self._set_pointer("triangulated_with", name, entry_id)
+
+    def triangulation_is_stale(self, experiment: str | None = None) -> bool:
+        """True when 3D points may come from a calibration other than the active one."""
+        name = experiment or self.active_experiment
+        active = self.active_calibration_id(name)
+        return active is not None and self.triangulated_with(name) != active
+
+    def _set_pointer(self, table: str, experiment: str, entry_id: str | None) -> None:
+        # save_config_sections replaces whole sections, so copy [calibration]
+        # to keep frame_skip, repeats and the drift thresholds.
+        calibration = dict(self.config.get("calibration", {}))
+        pointers = dict(calibration.get(table, {}))
+        if entry_id is None:
+            pointers.pop(experiment, None)
+        else:
+            pointers[experiment] = entry_id
+        calibration[table] = pointers
+        self.save_config_sections({"calibration": calibration})
 
     @property
     def slp_dir(self) -> Path:
@@ -250,13 +339,69 @@ class Project:
         config_path = self.root / "project.toml"
         config = toml.load(config_path) if config_path.exists() else {}
         config.update(sections)
-        with open(config_path, "w") as f:
-            toml.dump(config, f)
+        _write_config(self.root, config)
         self.config = config
 
     def save_slp_mapping(self, mapping: SlpMapping) -> None:
         """Write the [slp] section to project.toml, keeping all other sections."""
         self.save_config_sections({"slp": mapping.to_config()})
+
+    # -- Skeleton --------------------------------------------------------------
+
+    def skeleton_removals(self, skeleton: Skeleton) -> dict[str, int]:
+        """Labelled points, by node, that set_skeleton(skeleton) would delete.
+
+        Counts (frame, instance) points of nodes missing from skeleton, across
+        all experiments, that are set, predicted or not visible in at least one
+        camera or have 3D coordinates. Rows that hold nothing aren't counted.
+        """
+        keep = set(skeleton.nodes)
+        counts: dict[str, int] = {}
+        for name in self.experiments:
+            df = self.experiment_points_df(name)
+            if df.empty:
+                continue
+            gone = df[~df.index.get_level_values("bodypart").isin(keep)]
+            if gone.empty:
+                continue
+            labelled = pd.Series(False, index=gone.index)
+            for view in gone.columns.get_level_values("view").unique():
+                if view == "3d":
+                    labelled |= gone["3d"].notna().any(axis=1)
+                else:
+                    labelled |= gone[(view, "state")].fillna("not_set") != "not_set"
+            for node, n in gone[labelled].groupby(level="bodypart").size().items():
+                counts[node] = counts.get(node, 0) + int(n)
+        return counts
+
+    def set_skeleton(self, skeleton: Skeleton) -> None:
+        """Make skeleton the project's skeleton, merging it into the points.
+
+        Points of nodes in both skeletons are kept as they are; new nodes start
+        unlabelled. Points of nodes missing from skeleton are deleted in every
+        experiment (see skeleton_removals). skeleton.json is rewritten, the old
+        one kept as skeleton.json.bak.
+        """
+        keep = set(skeleton.nodes)
+        for name, exp in self.experiments.items():
+            df = self.experiment_points_df(name)
+            drop = ~df.index.get_level_values("bodypart").isin(keep)
+            if df.empty or not drop.any():
+                continue
+            df = df[~drop]
+            if name == self.active_experiment and self.points is not None:
+                self.points.replace_df(df)
+                self.points.save_if_changed()
+            else:
+                path = exp.root / "points.csv"
+                path.replace(path.with_suffix(".csv.bak"))
+                df.to_csv(path)
+
+        path = self.root / "skeleton.json"
+        if path.exists():
+            path.replace(path.with_suffix(".json.bak"))
+        skeleton.to_json(path)
+        self.skeleton = skeleton
 
     def experiment_points_df(self, experiment: str) -> pd.DataFrame:
         """Points for an experiment: the live store if active, else its points.csv."""
@@ -309,6 +454,16 @@ class Project:
     def _merge_by_experiment(
         self, slp_df: pd.DataFrame, sync_id: int | None
     ) -> dict[str, MergeResult]:
+        # Nodes outside the skeleton (e.g. ones removed by set_skeleton) are
+        # left out, so a .slp file still carrying them doesn't bring them back.
+        if self.skeleton is not None and not slp_df.empty:
+            known = slp_df.index.get_level_values("bodypart").isin(self.skeleton.nodes)
+            if not known.all():
+                logger.info(
+                    "Ignoring SLP points of nodes not in the skeleton: %s",
+                    ", ".join(sorted(set(slp_df.index.get_level_values("bodypart")[~known]))),
+                )
+                slp_df = slp_df[known]
         results = {}
         for name in self.experiments:
             exp_slp = slp_df
@@ -482,10 +637,8 @@ class Project:
         self._attach_latest_sync()
 
     def reload_calibration(self, experiment: str | None = None) -> None:
-        """Re-read an experiment's calibration.toml (default: the active one).
-
-        For a calibration written after the project was loaded.
-        """
+        """Re-read an experiment's active calibration (default: the active
+        experiment), after the pointer moved or a calibration was written."""
         name = experiment or self.active_experiment
         exp = self.experiments[name]
         exp.has_calibration, exp.camera_info = _read_camera_info(
@@ -527,9 +680,28 @@ class Project:
         return start
 
 
-def _read_camera_info(calib_path: Path) -> tuple[bool, dict[str, CameraInfo]]:
-    """(has_calibration, camera name -> CameraInfo) from a calibration.toml."""
-    if not calib_path.exists():
+def _write_config(root: Path, config: dict) -> None:
+    with open(root / "project.toml", "w") as f:
+        toml.dump(config, f)
+
+
+def _pointer(config: dict, table: str, experiment: str) -> str | None:
+    """An experiment's id in [calibration.{table}] of project.toml, or None."""
+    value = config.get("calibration", {}).get(table, {}).get(experiment)
+    return str(value) if value else None
+
+
+def _active_calibration_path(config: dict, experiment: str, exp_dir: Path) -> Path | None:
+    entry_id = _pointer(config, "active", experiment)
+    if entry_id is None:
+        return None
+    entry = find_calibration(exp_dir, entry_id)
+    return entry.path if entry else None
+
+
+def _read_camera_info(calib_path: Path | None) -> tuple[bool, dict[str, CameraInfo]]:
+    """(has_calibration, camera name -> CameraInfo) from a calibration file."""
+    if calib_path is None or not calib_path.exists():
         return False, {}
     camera_info: dict[str, CameraInfo] = {}
     cal = toml.load(calib_path)
@@ -550,7 +722,7 @@ NON_CAMERA_COLUMNS = ("trial", "experiment", "is_calibration")
 def _extract_cameras(columns: list[str]) -> list[str]:
     """Extract ordered camera names from trials.csv columns.
 
-    Skips NON_CAMERA_COLUMNS and any *_start / *_end suffix columns. Anything
+    Skips NON_CAMERA_COLUMNS and any CAMERA_COLUMN_SUFFIXES columns. Anything
     else is taken to be a camera, so every new metadata column must be added to
     NON_CAMERA_COLUMNS or it becomes a phantom camera.
     """
@@ -558,7 +730,7 @@ def _extract_cameras(columns: list[str]) -> list[str]:
     for col in columns:
         if col in NON_CAMERA_COLUMNS:
             continue
-        if col.endswith("_start") or col.endswith("_end"):
+        if col.endswith(CAMERA_COLUMN_SUFFIXES):
             continue
         cameras.append(col)
     return cameras
@@ -621,7 +793,7 @@ def _resolve_video(
     2. a path-valued cell, or any cell when the experiment has a ``video_root``
        — resolved against that root, falling back to the project root;
     3. a bare filename with no ``video_root`` — the classic layout, resolved
-       against ``default_dir`` (``videos/`` for trials, ``calibration/{cam}/``
+       against ``default_dir`` (``videos/`` for trials, ``calibrations/{cam}/``
        for takes).
 
     Projects written before external video references existed have no
@@ -644,28 +816,133 @@ def _is_external_cell(cell: str, video_root: Path | None) -> bool:
     return video_root is not None or len(Path(cell).parts) > 1 or Path(cell).is_absolute()
 
 
-def _missing_references(
-    experiment: str,
-    trials: list[TrialInfo],
-    video_root: Path | None,
-    videos_dir: Path,
-    project_root: Path,
-) -> list[str]:
-    """Describe every external video reference that does not exist on disk.
+def _video_mtime(path: Path) -> str | None:
+    """A video's modification time as stored in trials.csv (UTC, to the second),
+    or None if it can't be read. One stat call, which also tells if it exists."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return datetime.fromtimestamp(int(st.st_mtime), tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
-    Only external references are checked: a bare filename under videos/ may be
-    legitimately absent (a trial one camera did not record), and those projects
-    predate this check.
+
+def _frame_count(path: Path) -> int:
+    cap = cv2.VideoCapture(str(path))
+    try:
+        return int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
+    finally:
+        cap.release()
+
+
+def _take_video_path(
+    cell: str, video_root: Path | None, calib_dir: Path, project_root: Path
+) -> Path:
+    """Where a calibration take's video is (see Project.video_path)."""
+    local = calib_dir / cell
+    if local.exists():
+        return local
+    return _resolve_video(cell, video_root, calib_dir, project_root)
+
+
+def check_trial_videos(
+    trials_df: pd.DataFrame,
+    root: Path,
+    video_roots: dict[str, Path],
+    cameras: list[str],
+    progress: ProgressCallback | None = None,
+) -> VideoCheck:
+    """Check every video in trials.csv, filling in what's missing (in place).
+
+    For each camera cell: a blank {cam}_end is set to the video's last frame,
+    and a blank {cam}_mtime to its modification time. Opening a video to count
+    frames is slow on a network share, so this happens once; later loads only
+    stat each file. A stored mtime that no longer matches is reported in
+    `mismatched` and left as it is. External references that don't exist are
+    reported in `missing`; a bare filename under videos/ may be legitimately
+    absent (a trial one camera did not record).
     """
-    problems = []
-    for trial in trials:
-        for cam, (filename, _, _) in trial.camera_videos.items():
-            if not _is_external_cell(filename, video_root):
-                continue
-            path = _resolve_video(filename, video_root, videos_dir, project_root)
-            if not path.exists():
-                problems.append(f"{experiment}/{trial.name} [{cam}]: {path}")
-    return problems
+    # Missing columns go in the usual order: cam, _start, _end, _mtime.
+    for cam in cameras:
+        previous = cam
+        for suffix in CAMERA_COLUMN_SUFFIXES:
+            column = f"{cam}{suffix}"
+            if column not in trials_df.columns:
+                position = trials_df.columns.get_loc(previous) + 1
+                trials_df.insert(position, column, 0 if suffix == "_start" else None)
+            previous = column
+        for suffix in ("_end", "_mtime"):
+            trials_df[f"{cam}{suffix}"] = trials_df[f"{cam}{suffix}"].astype(object)
+
+    is_calibration = (
+        _calibration_mask(trials_df) if "is_calibration" in trials_df.columns
+        else pd.Series(False, index=trials_df.index)
+    )
+    cells = [
+        (idx, cam) for idx in trials_df.index for cam in cameras
+        if not _is_blank_cell(str(trials_df.at[idx, cam]))
+    ]
+
+    check = VideoCheck()
+    for done, (idx, cam) in enumerate(cells):
+        row = trials_df.loc[idx]
+        exp = str(row["experiment"]) if "experiment" in trials_df.columns else "default"
+        trial = str(row["trial"])
+        cell = str(row[cam])
+        exp_dir = root / "experiments" / exp
+        video_root = video_roots.get(exp)
+        end_blank = pd.isna(row[f"{cam}_end"]) or row[f"{cam}_end"] == ""
+
+        if progress is not None:
+            verb = "Measuring" if end_blank else "Checking"
+            if not progress(done, len(cells), f"{verb} videos: {exp}/{trial} [{cam}]"):
+                raise LoadCancelled()
+
+        if is_calibration[idx]:
+            path = _take_video_path(cell, video_root, camera_dir(exp_dir, cam), root)
+        else:
+            path = _resolve_video(cell, video_root, exp_dir / "videos", root)
+        mtime = _video_mtime(path)
+        if mtime is None:
+            if not is_calibration[idx] and _is_external_cell(cell, video_root):
+                check.missing.append(f"{exp}/{trial} [{cam}]: {path}")
+            continue
+
+        stored = row[f"{cam}_mtime"]
+        if pd.isna(stored) or stored == "":
+            trials_df.at[idx, f"{cam}_mtime"] = mtime
+            check.changed = True
+        elif str(stored) != mtime:
+            check.mismatched.append(
+                f"{exp}/{trial} [{cam}]: {path.name} (recorded {stored}, now {mtime})"
+            )
+
+        if end_blank:
+            total = _frame_count(path)
+            if total > 0:
+                trials_df.at[idx, f"{cam}_end"] = total - 1
+                check.changed = True
+
+    if progress is not None:
+        progress(len(cells), len(cells), "Opening project…")
+    return check
+
+
+def write_trials_csv(path: Path, trials_df: pd.DataFrame, backup: bool = True) -> None:
+    """Write trials.csv, keeping frame numbers as integers.
+
+    With backup, the first rewrite of an existing file keeps the original as
+    trials.csv.bak.
+    """
+    backup_path = path.with_name(path.name + ".bak")
+    if backup and path.exists() and not backup_path.exists():
+        shutil.copy2(path, backup_path)
+    out = trials_df.copy()
+    for col in out.columns:
+        if str(col).endswith(("_start", "_end")):
+            out[col] = pd.to_numeric(out[col], errors="coerce").astype("Int64")
+    out.to_csv(path, index=False)
 
 
 def _resolve_trial_length(

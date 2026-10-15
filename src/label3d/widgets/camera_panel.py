@@ -448,25 +448,33 @@ class CameraPanel(QGraphicsView):
         self._label_debounce.start()
         self.set_scene_rect(rect)
 
-    def wheelEvent(self, event: QWheelEvent):
-        """Zoom in/out with scroll wheel, clamped to image bounds."""
+    def zoom_in(self):
+        """Zoom in one step, anchored under the mouse."""
         self._hide_line_labels()
         self._label_debounce.start()
-        if event.angleDelta().y() > 0:
-            self.scale(self.ZOOM_FACTOR, self.ZOOM_FACTOR)
+        self.scale(self.ZOOM_FACTOR, self.ZOOM_FACTOR)
+
+    def zoom_out(self):
+        """Zoom out one step, anchored under the mouse; never past the full image."""
+        self._hide_line_labels()
+        self._label_debounce.start()
+        img_rect = self._pixmap_item.boundingRect()
+        if img_rect.isEmpty():
+            return
+        visible = self.mapToScene(self.viewport().rect()).boundingRect()
+        # If the visible area would exceed the image, clamp to fit
+        if (visible.width() * (1.0 / self.ZOOM_FACTOR) >= img_rect.width()
+                or visible.height() * (1.0 / self.ZOOM_FACTOR) >= img_rect.height()):
+            self.fit_view()
         else:
-            # Don't zoom out past the full image
-            img_rect = self._pixmap_item.boundingRect()
-            if img_rect.isEmpty():
-                return
-            vp = self.viewport().size()
-            visible = self.mapToScene(self.viewport().rect()).boundingRect()
-            # If the visible area would exceed the image, clamp to fit
-            if (visible.width() * (1.0 / self.ZOOM_FACTOR) >= img_rect.width()
-                    or visible.height() * (1.0 / self.ZOOM_FACTOR) >= img_rect.height()):
-                self.fit_view()
-            else:
-                self.scale(1.0 / self.ZOOM_FACTOR, 1.0 / self.ZOOM_FACTOR)
+            self.scale(1.0 / self.ZOOM_FACTOR, 1.0 / self.ZOOM_FACTOR)
+
+    def wheelEvent(self, event: QWheelEvent):
+        """Zoom in/out with scroll wheel, clamped to image bounds."""
+        if event.angleDelta().y() > 0:
+            self.zoom_in()
+        else:
+            self.zoom_out()
 
     def mouseDoubleClickEvent(self, event):
         """Double-click to reset zoom."""
