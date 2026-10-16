@@ -1,12 +1,12 @@
-# Phases 15–16
+# Phases 16–17
 
 ---
 
-## Phase 15 — Export
+## Phase 16 — Export
 
 **Goal**: Export labeled data back to external formats.
 
-### 15.1 Export to other pose formats (`widgets/export_view.py`)
+### 16.1 Export to other pose formats (`widgets/export_view.py`)
 
 There is no Export tab any more (removed in Phase 13). This would be a dialog reached from the File menu, like **Export points...**.
 
@@ -22,7 +22,7 @@ There is no Export tab any more (removed in Phase 13). This would be a dialog re
 
 ---
 
-## Phase 16 — Polish and Robustness
+## Phase 17 — Polish and Robustness
 
 - [ ] **Undo/redo**: Command pattern — each point edit creates `UndoCommand(trial, frame, instance, bodypart, camera, old_value, new_value)` on `QUndoStack`; `Ctrl+Z`/`Ctrl+Shift+Z`
 - [ ] **Auto-save**: `PointsStore` writes `points.csv` every 30s if dirty + on app close; backup to `.points.csv.bak` before overwriting

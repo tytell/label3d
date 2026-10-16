@@ -40,10 +40,10 @@ label3d/
 │   ├── bodypart_list.py         # ✓ Sidebar: bodypart names, click to select
 │   ├── calibration_view.py      # ✓ Calibration mode: settings panel + camera grid
 │   ├── refine_dialog.py         # ✓ Refine with points dialog (Phase 12)
-│   ├── axis_alignment_widget.py # Phase 14: Axis alignment panel (not yet created)
+│   ├── axis_alignment_widget.py # Phase 15: Axis alignment panel (not yet created)
 │   ├── label_view.py            # ✓ Labeling mode: grid + controls + sidebar
 │   ├── export_dialog.py         # ✓ File > Export points... options (Phase 13)
-│   └── export_view.py           # Phase 15: export to other pose formats (not yet created)
+│   └── export_view.py           # Phase 16: export to other pose formats (not yet created)
 ├── adapters/
 │   ├── __init__.py              # ✓ Registry: discover PoseAdapter subclasses
 │   ├── base.py                  # ✓ PoseAdapter ABC

@@ -435,7 +435,7 @@ Written by **Sync** and by **Export points...**, one file per entry in the `[slp
 - `Instance` (user) or `PredictedInstance` (predicted) per instance; `NaN` → invisible
 - Saved via `sleap_io.save_file(labels, path)`
 
-Exporting to other pose formats is Phase 15.1.
+Exporting to other pose formats is Phase 16.1.
 
 ### Iterative workflow
 
