@@ -68,6 +68,8 @@ class ExportResult:
     counts: dict[str, dict[tuple[str, str], int]] = field(default_factory=dict)
     two_d_only: list[str] = field(default_factory=list)  # experiments without a calibration
     slp_files_written: int | None = None  # None when the SLP files were not written
+    # Why the SLP files could not be written (skeleton conflicts, mixed files)
+    slp_problems: list[str] = field(default_factory=list)
 
 
 # -- Pre-flight checks ----------------------------------------------------------
@@ -184,7 +186,9 @@ def export_points(project: Project, options: ExportOptions | None = None) -> Exp
     result.n_rows = len(out)
 
     if options.write_slp and slp_mapping_complete(project):
-        result.slp_files_written = project.write_slp_files()
+        result.slp_problems = project.slp_write_problems()
+        if not result.slp_problems:
+            result.slp_files_written = project.write_slp_files()
     return result
 
 
@@ -286,7 +290,10 @@ def format_summary(result: ExportResult) -> str:
         lines.append(f"  {name}: {', '.join(parts) or 'no points'}")
     if result.two_d_only:
         lines.append(f"2D only (no active calibration): {', '.join(result.two_d_only)}")
-    if result.slp_files_written is None:
+    if result.slp_problems:
+        lines.append("SLP files were not written: the skeletons need fixing first")
+        lines.extend(f"  {problem}" for problem in result.slp_problems)
+    elif result.slp_files_written is None:
         lines.append("SLP files were not written")
     else:
         lines.append(f"Wrote {result.slp_files_written} SLP file(s)")

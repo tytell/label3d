@@ -474,3 +474,85 @@ class TestProjectSkeletons:
         before = loaded.skeletons
         assert loaded.load_skeletons() is False
         assert loaded.skeletons is before
+
+
+# ---------------------------------------------------------------------------
+# One skeleton per .slp file (phase 14.6)
+# ---------------------------------------------------------------------------
+
+from label3d.export import ExportOptions, export_points  # noqa: E402
+from label3d.slp_sync import SlpBlock, SlpFileSpec, SlpMapping  # noqa: E402
+from tests.test_project_sync import TRIALS as SYNC_TRIALS  # noqa: E402
+
+
+def _one_file(name: str = "slp/all.slp") -> SlpMapping:
+    return SlpMapping(files=[
+        SlpFileSpec(Path(name), [SlpBlock(SYNC_EXP, list(SYNC_TRIALS), list(SYNC_CAMS))])
+    ])
+
+
+class TestMappingCheckInProject:
+    def test_per_camera_files_are_fine(self, project):
+        project.assign_skeleton(HEAD_ONLY, ["cam1"])
+        assert project.check_slp_mapping().ok
+        assert project.slp_write_problems() == []
+
+    def test_one_file_mixing_skeletons(self, project):
+        project.assign_skeleton(HEAD_ONLY, ["cam1"])
+        problems = project.slp_write_problems(_one_file())
+        assert problems == [
+            "slp/all.slp: cameras with different skeletons: cam0 (skeleton); cam1 (head_only)"
+        ]
+
+    def test_conflicts_are_problems(self, project):
+        write_slp(project.root / "slp/cam1.slp", Skeleton(nodes=SYNC_NODES), with_frame=False)
+        project.load_skeletons()
+        assert project.skeleton_conflicts
+        problems = project.slp_write_problems()
+        assert problems[:len(project.skeleton_conflicts)] == project.skeleton_conflicts
+        # The file also differs from the skeleton assigned to its camera
+        assert problems[-1] == (
+            "slp/cam1.slp: cam1 is assigned skeleton skeleton, but the file has unnamed"
+        )
+
+    def test_export_skips_slp_files_with_problems(self, project, tmp_path):
+        project.assign_skeleton(HEAD_ONLY, ["cam1"])
+        project.save_slp_mapping(_one_file())
+        result = export_points(project, ExportOptions(output=tmp_path / "out.csv"))
+        assert result.slp_files_written is None
+        assert result.slp_problems and "different skeletons" in result.slp_problems[0]
+        assert not (project.root / "slp/all.slp").exists()
+
+
+class TestSetupDialogSkeletons:
+    def _dialog(self, project):
+        from label3d.widgets.slp_setup_dialog import SlpSetupDialog
+        return SlpSetupDialog(project)
+
+    def _file_texts(self, dialog):
+        return [dialog._file_list.item(i).text() for i in range(dialog._file_list.count())]
+
+    def test_single_skeleton_shows_no_tags(self, project):
+        dialog = self._dialog(project)
+        assert self._file_texts(dialog) == ["cam0.slp", "cam1.slp"]
+        assert dialog._preset_combo.currentData() == "per_camera"
+
+    def test_mixed_file_disables_apply(self, project):
+        project.assign_skeleton(HEAD_ONLY, ["cam1"])
+        dialog = self._dialog(project)
+        assert dialog._preset_combo.currentData() == "per_experiment_camera"
+        assert self._file_texts(dialog) == ["cam0.slp  [skeleton]", "cam1.slp  [head_only]"]
+        assert dialog._apply_btn.isEnabled()
+
+        dialog._pattern_edit.setText("labels.slp")
+        dialog._on_apply_preset()
+        assert self._file_texts(dialog) == ["labels.slp  [mixed]"]
+        assert not dialog._apply_btn.isEnabled()
+        assert "different skeletons" in dialog._status.text()
+
+    def test_rename_ignores_skeleton_tag(self, project):
+        project.assign_skeleton(HEAD_ONLY, ["cam1"])
+        dialog = self._dialog(project)
+        item = dialog._file_list.item(1)
+        item.setText("renamed.slp  [head_only]")
+        assert Path("slp/renamed.slp") in dialog._editor.files

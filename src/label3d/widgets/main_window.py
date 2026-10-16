@@ -670,6 +670,28 @@ class MainWindow(QMainWindow):
                 f"The skeletons conflict ({len(conflicts)} problem(s)): {conflicts[0]}"
             )
 
+    def _check_slp_skeletons(self, title: str) -> bool:
+        """False, after explaining, when the .slp files can't be written as mapped."""
+        problems = self._project.slp_write_problems()
+        if not problems:
+            return True
+        shown = "\n".join(f"• {p}" for p in problems[:15])
+        more = f"\n…and {len(problems) - 15} more" if len(problems) > 15 else ""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(title)
+        box.setText(
+            "The SLP files can't be written until the skeletons are fixed. Each "
+            "file must have one skeleton, and the skeletons must not conflict."
+        )
+        box.setInformativeText(shown + more)
+        setup = box.addButton("Set up Sleap files…", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is setup:
+            self._do_setup_slp()
+        return False
+
     def _do_load_skeleton(self) -> None:
         """Merge a skeleton.json into the project, asking before deleting points."""
         path, _ = QFileDialog.getOpenFileName(
@@ -1374,6 +1396,8 @@ class MainWindow(QMainWindow):
         if self._project.points is not None:
             self._project.points.save_if_changed()
         self._reload_skeletons()
+        if not self._check_slp_skeletons("Sync with Sleap"):
+            return
 
         progress = self._busy_dialog("Reading SLP files…", "Sync with Sleap")
         self._slp_read_worker = SlpReadWorker(self._project, parent=self)
@@ -1666,6 +1690,15 @@ class MainWindow(QMainWindow):
         """Read, merge and write the SLP files on the main thread.  False = cancelled."""
         self._project.points.save_if_changed()
         self._project.load_skeletons()
+        problems = self._project.slp_write_problems()
+        if problems:
+            QMessageBox.warning(
+                self, "Sync with Sleap",
+                "The SLP files can't be written until the skeletons are fixed:\n\n"
+                + "\n".join(f"• {p}" for p in problems[:15])
+                + "\n\nClose without syncing, or fix them in Set up Sleap files.",
+            )
+            return False
         results = self._project.read_slp_for_sync()
         overwrite = self._confirm_merge(results)
         if overwrite is None:

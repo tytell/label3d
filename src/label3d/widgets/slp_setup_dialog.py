@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QTableWidget,
@@ -29,9 +31,12 @@ from PySide6.QtWidgets import (
 
 from label3d.adapters.sleap_adapter import SleapAdapter
 from label3d.project import Project
+from label3d.skeleton import MappingCheck, Skeleton
 from label3d.slp_sync import PRESETS, Cell, SlpMapping, SlpMappingEditor
 
 DATA_ROLE = Qt.ItemDataRole.UserRole
+# The skeleton tag after a file name in the list, "  [name]"
+SKELETON_TAG = re.compile(r"\s+\[[^\]]*\]$")
 
 
 class SlpSetupDialog(QDialog):
@@ -48,12 +53,60 @@ class SlpSetupDialog(QDialog):
         self._editor = SlpMappingEditor(mapping, project.trials_df, project.cameras)
         if not mapping.files and self._existing_slp_files():
             self._adopt_existing()
+        self._file_skeletons = project.existing_slp_skeletons(mapping)
+        self._check = MappingCheck()
 
         self._build_ui()
+        if self._several_skeletons():
+            # One file per camera per experiment never mixes skeletons
+            index = self._preset_combo.findData("per_experiment_camera")
+            self._preset_combo.setCurrentIndex(index)
         self._refresh()
 
     def mapping(self) -> SlpMapping:
         return self._editor.mapping()
+
+    def accept(self) -> None:
+        """Ask before applying a mapping that leaves some videos without nodes they had."""
+        if self._check.warnings:
+            reply = QMessageBox.warning(
+                self, "Set up Sleap files",
+                "\n".join(self._check.warnings)
+                + "\n\nPoints of those nodes stay in label3d but are hidden, and "
+                "are not written to the SLP files. Apply anyway?",
+                QMessageBox.StandardButton.Apply | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Apply:
+                return
+        super().accept()
+
+    # -- Skeletons -------------------------------------------------------------
+
+    def _several_skeletons(self) -> bool:
+        skeletons = self._project.skeletons
+        if skeletons is None:
+            return False
+        found: list[Skeleton] = []
+        for sk in [skeletons.camera_skeleton(c) for c in self._project.cameras] + list(
+            self._file_skeletons.values()
+        ):
+            if not any(sk.same_topology(f) for f in found):
+                found.append(sk)
+        return len(found) > 1
+
+    def _skeleton_label(self, path: Path) -> str:
+        """The skeleton a file has or will be created with, or "mixed"."""
+        if path in self._file_skeletons:
+            return self._file_skeletons[path].name or "unnamed"
+        skeletons = self._project.skeletons
+        cameras = dict.fromkeys(c[2] for c in self._editor.cells_of(path))
+        found = [skeletons.camera_skeleton(c) for c in cameras]
+        if not found:
+            return ""
+        if any(not found[0].same_topology(sk) for sk in found[1:]):
+            return "mixed"
+        return found[0].name or "unnamed"
 
     # -- UI --------------------------------------------------------------------
 
@@ -181,10 +234,18 @@ class SlpSetupDialog(QDialog):
             select = self._selected_files()
         self._file_list.blockSignals(True)
         self._file_list.clear()
+        several = self._several_skeletons()
         for path in self._editor.files:
-            item = QListWidgetItem(self._swatch(path), path.name)
+            label = self._skeleton_label(path) if several else ""
+            text = f"{path.name}  [{label}]" if label else path.name
+            item = QListWidgetItem(self._swatch(path), text)
             item.setData(DATA_ROLE, path)
-            item.setToolTip(f"{path.as_posix()} — {len(self._editor.cells_of(path))} video(s)")
+            tooltip = f"{path.as_posix()} — {len(self._editor.cells_of(path))} video(s)"
+            if label:
+                tooltip += f"; skeleton: {label}"
+                if label == "mixed":
+                    item.setForeground(QColor(176, 0, 32))
+            item.setToolTip(tooltip)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             self._file_list.addItem(item)
             item.setSelected(path in select)
@@ -229,7 +290,13 @@ class SlpSetupDialog(QDialog):
         self._grid.blockSignals(False)
 
     def _update_status(self) -> None:
-        errors = self._editor.errors()
+        self._check = self._project.check_slp_mapping(
+            self._editor.mapping(), self._file_skeletons
+        )
+        errors = (
+            self._editor.errors() + list(self._project.skeleton_conflicts)
+            + self._check.errors
+        )
         self._apply_btn.setEnabled(not errors)
         if errors:
             summary = "; ".join(errors)
@@ -238,9 +305,16 @@ class SlpSetupDialog(QDialog):
                 f"{len(self._editor.files)} file(s); all "
                 f"{len(self._editor.cells_info)} videos assigned"
             )
+            if self._check.warnings:
+                summary += " — " + "; ".join(self._check.warnings)
         text = f"{self._message} — {summary}" if self._message else summary
         self._status.setText(text)
-        self._status.setStyleSheet("color: #b00020;" if errors else "")
+        if errors:
+            self._status.setStyleSheet("color: #b00020;")
+        elif self._check.warnings:
+            self._status.setStyleSheet("color: #a05a00;")
+        else:
+            self._status.setStyleSheet("")
 
     def _update_buttons(self) -> None:
         files = self._selected_files()
@@ -328,7 +402,8 @@ class SlpSetupDialog(QDialog):
     def _on_file_renamed(self, item: QListWidgetItem) -> None:
         old = item.data(DATA_ROLE)
         try:
-            new = self._editor.rename(old, old.parent / item.text().strip())
+            name = SKELETON_TAG.sub("", item.text().strip())
+            new = self._editor.rename(old, old.parent / name)
         except ValueError as exc:
             self._message = str(exc)
             new = old

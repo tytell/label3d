@@ -27,6 +27,7 @@ from label3d.calibration_registry import (
 )
 from label3d.points import CAM_COORDS, PointsStore
 from label3d.skeleton import (
+    MappingCheck,
     ProjectSkeleton,
     Skeleton,
     SkeletonConflict,
@@ -474,6 +475,40 @@ class Project:
                     for cell in lookup.get(Path(video.filename).name, []):
                         cell_files.setdefault(cell, rel)
         return by_file, cell_files
+
+    def existing_slp_skeletons(self, mapping: SlpMapping | None = None) -> dict[Path, Skeleton]:
+        """Skeletons of the existing slp/*.slp files and mapped files (relative paths)."""
+        mapping = self.slp_mapping if mapping is None else mapping
+        paths = [p.relative_to(self.root) for p in sorted(self.slp_dir.glob("*.slp"))]
+        paths += [spec.path for spec in mapping.files]
+        found: dict[Path, Skeleton] = {}
+        for rel in dict.fromkeys(paths):
+            if (self.root / rel).exists():
+                try:
+                    found[rel] = Skeleton.from_slp(self.root / rel)
+                except Exception as exc:
+                    logger.warning("Could not read the skeleton of %s: %s", rel, exc)
+        return found
+
+    def check_slp_mapping(
+        self,
+        mapping: SlpMapping | None = None,
+        file_skeletons: dict[Path, Skeleton] | None = None,
+    ) -> MappingCheck:
+        """One skeleton per .slp file: problems with mapping (default: the current one).
+
+        file_skeletons are the existing files' skeletons, read if not given.
+        """
+        mapping = self.slp_mapping if mapping is None else mapping
+        if self.skeletons is None:
+            return MappingCheck()
+        if file_skeletons is None:
+            file_skeletons = self.existing_slp_skeletons(mapping)
+        return self.skeletons.mapping_problems(mapping.cell_map(), file_skeletons)
+
+    def slp_write_problems(self, mapping: SlpMapping | None = None) -> list[str]:
+        """Why the .slp files can't be written: skeleton conflicts or mixed files."""
+        return list(self.skeleton_conflicts) + self.check_slp_mapping(mapping).errors
 
     def assign_skeleton(self, skeleton: Skeleton, cameras: list[str]) -> bool:
         """Assign skeleton to cameras in project.toml, then reload the skeletons.

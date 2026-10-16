@@ -132,17 +132,17 @@ Today there is one skeleton per project:
 
 `ProjectSkeleton.mapping_problems(mapping)` checks every file in a mapping:
 
-- [ ] **A file that doesn't exist yet:** all its cells must have the same skeleton by rules 2–4 (same nodes in the same order, same edges and symmetries). Otherwise it is an **error**, naming the file and the cameras on each side, for example "slp/trial1.slp: cam0 (full) and cam1 (no_tail) have different skeletons".
-- [ ] **An existing file:** its skeleton wins (rule 1).
+- [x] **A file that doesn't exist yet:** all its cells must have the same skeleton by rules 2–4 (same nodes in the same order, same edges and symmetries). Otherwise it is an **error**, naming the file and the cameras on each side, for example "slp/trial1.slp: cam0 (full) and cam1 (no_tail) have different skeletons".
+- [x] **An existing file:** its skeleton wins (rule 1).
   - A cell whose camera has an **assigned** skeleton that differs from the file's is an **error**: the assignment says the camera should have a different skeleton from the file's.
   - A cell with no assignment whose skeleton currently differs from the file's (for example one moved from another existing file) is a **warning**. It lists the nodes that would become unavailable and how many labelled points that leaves behind (14.7).
 
 Where the check runs:
 
-- [ ] **Set up Sleap files** dialog: the check runs after every edit, including **apply preset**, so a pattern like `{trial}.slp` that puts cameras with different skeletons into one file is caught at once. Each file row shows its skeleton name, or "mixed". Errors are listed inline and disable OK. Warnings are listed and need a confirmation on OK.
-- [ ] The dialog's **default preset** for a project with more than one skeleton is one file per camera per experiment (`{experiment}_{camera}.slp`). That never mixes skeletons.
-- [ ] **Sync** runs the check before reading or writing. With an error it is refused, with a dialog that lists the problems and offers to open **Set up Sleap files**. This catches a skeleton loaded after the mapping was made (14.2).
-- [ ] **Setup from `.slp` files** (14.8): the mapping comes from the files, so each file has one skeleton by construction. Nothing extra is needed.
+- [x] **Set up Sleap files** dialog: the check runs after every edit, including **apply preset**, so a pattern like `{trial}.slp` that puts cameras with different skeletons into one file is caught at once. When the project has more than one skeleton, each file row shows its skeleton name, or "mixed", as `name.slp  [skeleton]` (renaming ignores the tag). Errors are listed inline and disable OK. Warnings are listed and need a confirmation on OK.
+- [x] The dialog's **default preset** for a project with more than one skeleton is one file per camera per experiment (`{experiment}_{camera}.slp`). That never mixes skeletons.
+- [x] **Sync** runs the check before reading or writing. With an error it is refused, with a dialog that lists the problems and offers to open **Set up Sleap files**. This catches a skeleton loaded after the mapping was made (14.2). Skeleton conflicts refuse it the same way. Sync on close explains and cancels the close, so the user can close without syncing. **Export points** writes the CSV but skips the `.slp` files and lists the problems in its summary (`ExportResult.slp_problems`).
+- [x] **Setup from `.slp` files** (14.8): the mapping comes from the files, so each file has one skeleton by construction. Nothing extra is needed.
 
 ## 14.7 Points that no longer fit
 
