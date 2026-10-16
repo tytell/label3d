@@ -40,16 +40,16 @@ Today there is one skeleton per project:
 
 ## 14.1 Skeletons and the union (`skeleton.py`, `project.py`)
 
-- [ ] `Skeleton.from_slp(path) -> Skeleton`, replacing `from_sleap`. It reads only the file's metadata via `sleap_io.io.slp.read_skeletons(path)`, not the labelled frames, so it is cheap enough to run on every load. Edge direction is kept as in the file.
-- [ ] `Skeleton` gets a `name` (the SLEAP skeleton name, or the file stem for a loaded `.json`). It is shown in dialogs and is not used for matching.
-- [ ] `merge_skeletons(skeletons: dict[str, Skeleton]) -> Skeleton` builds the union. The keys are labels for messages: a file path, or "assigned to cam0, cam2".
+- [x] `Skeleton.from_slp(path) -> Skeleton`, replacing `from_sleap`. It reads only the file's metadata via `sleap_io.io.slp.read_skeletons(path)`, not the labelled frames, so it is cheap enough to run on every load. Edge direction is kept as in the file.
+- [x] `Skeleton` gets a `name` (the SLEAP skeleton name, or the file stem for a loaded `.json`). It is shown in dialogs and is not used for matching.
+- [x] `merge_skeletons(skeletons: dict[str, Skeleton]) -> Skeleton` builds the union. The keys are labels for messages: a file path, or "assigned to cam0, cam2".
   - **Node order:** existing files in mapping order, then assigned skeletons in `project.toml` order. The first skeleton's nodes come first, in its order. Each later skeleton's new nodes are appended in that skeleton's order.
   - **Edges and symmetries:** union; direction is ignored when comparing.
   - **Conflicts** raise `SkeletonConflict(ValueError)`, which lists every conflict with the skeletons involved, not just the first:
     1. Two skeletons that both contain nodes `a` and `b` disagree on whether `a–b` is an edge.
     2. Two skeletons that both contain nodes `a` and `b` disagree on whether `a ↔ b` is a symmetry.
     3. In the union, a node has more than one symmetry partner.
-- [ ] `ProjectSkeleton` holds the skeletons:
+- [x] `ProjectSkeleton` holds the skeletons:
   - `union: Skeleton`
   - `by_file: dict[Path, Skeleton]`: existing mapped files (paths relative to the project root, as in `SlpMapping`)
   - `by_camera: dict[str, Skeleton]`: assigned skeletons
