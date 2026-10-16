@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
+import numpy as np
 import pandas as pd
 import toml
 
@@ -22,8 +23,8 @@ from label3d.calibration_registry import (
     find_calibration,
     list_calibrations,
 )
-from label3d.points import PointsStore
-from label3d.skeleton import Skeleton
+from label3d.points import CAM_COORDS, PointsStore
+from label3d.skeleton import ProjectSkeleton, Skeleton
 from label3d.slp_sync import MergeResult, SlpMapping, compute_merge
 
 
@@ -90,6 +91,51 @@ class ExperimentInfo:
     # project, from the [video_roots] section of project.toml. None for the
     # classic layout, where videos live in videos/ and cells are bare filenames.
     video_root: Path | None = None
+
+
+def drop_unavailable(
+    slp_df: pd.DataFrame, skeletons: ProjectSkeleton
+) -> tuple[pd.DataFrame, dict[str, dict[tuple[str, str], int]]]:
+    """Clear SLP points of nodes that their cell's skeleton lacks.
+
+    Returns the cleared df and, per experiment, (camera, node) -> number of
+    points cleared. Cleared cells become not_set, so the merge ignores them.
+    """
+    idx = slp_df.index
+    keys = pd.MultiIndex.from_arrays([
+        idx.get_level_values("experiment"),
+        idx.get_level_values("trial"),
+        idx.get_level_values("bodypart"),
+    ])
+    combos = keys.unique()
+    cameras = [c for c in slp_df.columns.get_level_values("view").unique() if c != "3d"]
+    df = None
+    dropped: dict[str, dict[tuple[str, str], int]] = {}
+    for cam in cameras:
+        unavailable = [
+            (e, t, bp) for e, t, bp in combos
+            if bp not in skeletons.nodes_for((e, t, cam))
+        ]
+        if not unavailable:
+            continue
+        state = slp_df[(cam, "state")]
+        mask = keys.isin(unavailable) & state.isin(("set", "predicted", "not_visible")).to_numpy()
+        if not mask.any():
+            continue
+        if df is None:
+            df = slp_df.copy()
+        for (exp, bp), n in pd.Series(1, index=idx[mask]).groupby(
+            level=["experiment", "bodypart"]
+        ).sum().items():
+            dropped.setdefault(exp, {})[(cam, bp)] = int(n)
+        for coord in CAM_COORDS:
+            if coord == "state":
+                df.loc[mask, (cam, coord)] = "not_set"
+            elif coord == "source":
+                df.loc[mask, (cam, coord)] = ""
+            else:
+                df.loc[mask, (cam, coord)] = np.nan
+    return (slp_df if df is None else df), dropped
 
 
 @dataclass
@@ -348,6 +394,15 @@ class Project:
 
     # -- Skeleton --------------------------------------------------------------
 
+    @property
+    def skeletons(self) -> ProjectSkeleton | None:
+        """Every camera's skeleton; for now self.skeleton in all of them."""
+        if self.skeleton is None:
+            return None
+        return ProjectSkeleton.build(
+            self.cameras, by_camera={cam: self.skeleton for cam in self.cameras}
+        )
+
     def skeleton_removals(self, skeleton: Skeleton) -> dict[str, int]:
         """Labelled points, by node, that set_skeleton(skeleton) would delete.
 
@@ -464,12 +519,17 @@ class Project:
                     ", ".join(sorted(set(slp_df.index.get_level_values("bodypart")[~known]))),
                 )
                 slp_df = slp_df[known]
+        dropped: dict[str, dict[tuple[str, str], int]] = {}
+        skeletons = self.skeletons
+        if skeletons is not None and not slp_df.empty:
+            slp_df, dropped = drop_unavailable(slp_df, skeletons)
         results = {}
         for name in self.experiments:
             exp_slp = slp_df
             if not slp_df.empty:
                 exp_slp = slp_df[slp_df.index.get_level_values("experiment") == name]
             results[name] = compute_merge(self.experiment_points_df(name), exp_slp, sync_id)
+            results[name].dropped = dropped.get(name, {})
         return results
 
     # -- Sync history ----------------------------------------------------------
@@ -587,6 +647,7 @@ class Project:
             all_df,
             cameras=self.cameras,
             skeleton=self.skeleton,
+            skeletons=self.skeletons,
             trials_df=self.trials_df,
             mapping=mapping,
             root=self.root,

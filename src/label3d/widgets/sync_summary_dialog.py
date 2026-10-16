@@ -34,6 +34,16 @@ COLUMNS = [
 ]
 
 
+def dropped_text(dropped: dict[tuple[str, str], int]) -> str:
+    """Describe SLP points left out because a camera's skeleton lacks the node."""
+    total = sum(dropped.values())
+    parts = [f"{node} in {cam} ({n})" for (cam, node), n in sorted(dropped.items())]
+    return (
+        f"{total} point(s) were left out because the camera's skeleton does not "
+        f"have the node: {', '.join(parts)}"
+    )
+
+
 class SyncSummaryDialog(QDialog):
     """Table of new points per experiment × trial for one sync.
 
@@ -48,6 +58,7 @@ class SyncSummaryDialog(QDialog):
         rows: pd.DataFrame,
         active_experiment: str,
         unmatched_videos: list[str] | None = None,
+        dropped: dict[tuple[str, str], int] | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -100,6 +111,11 @@ class SyncSummaryDialog(QDialog):
                 f"{len(unmatched_videos)} video(s) in the imported files match no trial "
                 f"and were skipped: {shown}{more}"
             )
+            note.setWordWrap(True)
+            layout.addWidget(note)
+
+        if dropped:
+            note = QLabel(dropped_text(dropped))
             note.setWordWrap(True)
             layout.addWidget(note)
 

@@ -183,6 +183,7 @@ class SleapAdapter(PoseAdapter):
         cameras: list[str],
         skeleton=None,
         trials_df: pd.DataFrame | None = None,
+        skeletons=None,
         file_map: dict[tuple[str, str, str], Path] | None = None,
         output_dir: Path | None = None,
         mapping: SlpMapping | None = None,
@@ -197,8 +198,11 @@ class SleapAdapter(PoseAdapter):
         - output_dir (Phase 16 export view): one {camera}_{trial}.slp per cell with data
 
         Each file is written once with all of its videos.  If the file already
-        exists, its videos (matched by basename), suggestions, tracks and
-        provenance are kept; labeled frames are replaced.  Videos no longer
+        exists, its skeleton, videos (matched by basename), suggestions, tracks
+        and provenance are kept; labeled frames are replaced.  A new file gets
+        its cells' skeleton from skeletons (a ProjectSkeleton), else skeleton
+        for every file, else the df's bodyparts; raises ValueError if its cells
+        have different skeletons.  Only the nodes of a file's skeleton are written.  Videos no longer
         assigned to the file are dropped.  Files are written even when they
         have no labeled frames.  Returns the number of files written.
         """
@@ -235,9 +239,13 @@ class SleapAdapter(PoseAdapter):
         else:
             raise ValueError("One of mapping, file_map or output_dir must be provided")
 
-        sio_skeleton = _make_skeleton(skeleton, df)
+        made: dict[int, object] = {}
         for path, cells in targets.items():
-            self._write_file(path, cells, trial_groups, sio_skeleton, cells_info, root)
+            new_skeleton = _new_file_skeleton(path, cells, skeletons, skeleton)
+            key = id(new_skeleton)
+            if key not in made:
+                made[key] = _make_skeleton(new_skeleton, df)
+            self._write_file(path, cells, trial_groups, made[key], cells_info, root)
         return len(targets)
 
     # -- Internal --------------------------------------------------------------
@@ -273,12 +281,9 @@ class SleapAdapter(PoseAdapter):
     ) -> None:
         existing = sio.load_file(str(path)) if path.exists() else None
 
+        # An existing file keeps its skeleton, whatever the project's
         skeleton = sio_skeleton
-        if (
-            existing is not None
-            and existing.skeletons
-            and existing.skeletons[0].node_names == sio_skeleton.node_names
-        ):
+        if existing is not None and existing.skeletons:
             skeleton = existing.skeletons[0]
 
         existing_videos = {}
@@ -324,9 +329,24 @@ class SleapAdapter(PoseAdapter):
         os.replace(tmp_path, path)
 
 
+def _new_file_skeleton(path: Path, cells: list[Cell], skeletons, skeleton):
+    """The label3d Skeleton a new file at path is created with (None: df bodyparts)."""
+    if skeletons is None or not cells:
+        return skeleton if skeletons is None else skeletons.union
+    found = []
+    for cell in cells:
+        sk = skeletons.skeleton_for(cell)
+        if not any(sk is f or sk.same_topology(f) for f in found):
+            found.append(sk)
+    if len(found) > 1:
+        names = ", ".join(sk.name or "unnamed" for sk in found)
+        raise ValueError(f"{path.name}: its videos have different skeletons ({names})")
+    return found[0]
+
+
 def _make_skeleton(skeleton, df: pd.DataFrame):
     """Build a sleap_io Skeleton from a label3d Skeleton (or df bodyparts)."""
-    sio_skeleton = sio.Skeleton(name="label3d")
+    sio_skeleton = sio.Skeleton(name=(skeleton.name if skeleton else None) or "label3d")
     if skeleton is None:
         for bp in df.index.get_level_values("bodypart").unique():
             sio_skeleton.add_node(str(bp))
@@ -335,6 +355,8 @@ def _make_skeleton(skeleton, df: pd.DataFrame):
             sio_skeleton.add_node(node)
         for src, dst in skeleton.edges:
             sio_skeleton.add_edge(src, dst)
+        for a, b in skeleton.symmetries:
+            sio_skeleton.add_symmetry(a, b)
     return sio_skeleton
 
 

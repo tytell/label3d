@@ -239,3 +239,111 @@ class TestMappingProblems:
         assert check.warnings == [
             "slp/b.slp: 1 video(s) would lose node(s) not in the file's skeleton: tail"
         ]
+
+
+# ---------------------------------------------------------------------------
+# Writing .slp files and filtering imports (phase 14.3)
+# ---------------------------------------------------------------------------
+
+from label3d.adapters.sleap_adapter import SleapAdapter  # noqa: E402
+from label3d.project import drop_unavailable  # noqa: E402
+from tests.test_sleap_adapter import (  # noqa: E402
+    CAMERAS as ADAPTER_CAMS,
+    EXP,
+    _df,
+    _one_file_per_camera,
+    _trials_df,
+)
+
+HEAD_TAIL = Skeleton(nodes=["head", "tail"], edges=[("head", "tail")], name="head_tail")
+HEAD = Skeleton(nodes=["head"], name="head_only")
+
+
+def _points():
+    return _df({
+        ("t1", 0, 0, "head"): {"cam1": (1.0, 2.0, "set"), "cam2": (3.0, 4.0, "set")},
+        ("t1", 0, 0, "tail"): {"cam1": (5.0, 6.0, "set"), "cam2": (7.0, 8.0, "set")},
+    })
+
+
+def _write_existing(tmp_path, rel: str, skeleton: Skeleton) -> None:
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_slp(path, skeleton, with_frame=False)
+
+
+class TestWriteKeepsFileSkeleton:
+    def test_existing_file_keeps_smaller_skeleton(self, tmp_path):
+        _write_existing(tmp_path, "slp/cam2.slp", HEAD)
+        skeletons = ProjectSkeleton.build(ADAPTER_CAMS, by_camera={"cam1": HEAD_TAIL})
+        SleapAdapter().save(
+            _points(), cameras=ADAPTER_CAMS, trials_df=_trials_df(),
+            mapping=_one_file_per_camera(), root=tmp_path, skeletons=skeletons,
+        )
+        cam2 = sio.load_file(str(tmp_path / "slp/cam2.slp"))
+        assert cam2.skeleton.node_names == ["head"]
+        assert cam2.skeleton.name == "head_only"
+        [lf] = cam2.labeled_frames
+        assert lf.instances[0].numpy().tolist() == [[3.0, 4.0]]
+        # cam1's new file is created with cam1's skeleton
+        cam1 = sio.load_file(str(tmp_path / "slp/cam1.slp"))
+        assert cam1.skeleton.node_names == ["head", "tail"]
+
+    def test_existing_file_kept_even_with_plain_skeleton(self, tmp_path):
+        _write_existing(tmp_path, "slp/cam1.slp", HEAD)
+        SleapAdapter().save(
+            _points(), cameras=ADAPTER_CAMS, skeleton=HEAD_TAIL, trials_df=_trials_df(),
+            mapping=_one_file_per_camera(), root=tmp_path,
+        )
+        cam1 = sio.load_file(str(tmp_path / "slp/cam1.slp"))
+        assert cam1.skeleton.node_names == ["head"]
+
+    def test_new_files_get_camera_skeletons_with_symmetries(self, tmp_path):
+        sym = Skeleton(
+            nodes=["head", "left", "right"], symmetries=[("left", "right")], name="sym"
+        )
+        skeletons = ProjectSkeleton.build(
+            ADAPTER_CAMS, by_camera={"cam1": sym, "cam2": HEAD}
+        )
+        SleapAdapter().save(
+            _points(), cameras=ADAPTER_CAMS, trials_df=_trials_df(),
+            mapping=_one_file_per_camera(), root=tmp_path, skeletons=skeletons,
+        )
+        cam1 = Skeleton.from_slp(tmp_path / "slp/cam1.slp")
+        assert cam1.same_as(sym) and cam1.name == "sym"
+        assert Skeleton.from_slp(tmp_path / "slp/cam2.slp").nodes == ["head"]
+
+    def test_new_file_mixing_skeletons_raises(self, tmp_path):
+        from label3d.slp_sync import SlpBlock, SlpFileSpec, SlpMapping
+        mapping = SlpMapping(files=[
+            SlpFileSpec(Path("slp/all.slp"), [SlpBlock(EXP, ["t1", "t2"], ADAPTER_CAMS)]),
+        ])
+        skeletons = ProjectSkeleton.build(
+            ADAPTER_CAMS, by_camera={"cam1": HEAD_TAIL, "cam2": HEAD}
+        )
+        with pytest.raises(ValueError, match="different skeletons"):
+            SleapAdapter().save(
+                _points(), cameras=ADAPTER_CAMS, trials_df=_trials_df(),
+                mapping=mapping, root=tmp_path, skeletons=skeletons,
+            )
+
+
+class TestDropUnavailable:
+    def test_clears_and_counts(self):
+        skeletons = ProjectSkeleton.build(
+            ADAPTER_CAMS, by_camera={"cam1": HEAD_TAIL, "cam2": HEAD}
+        )
+        df, dropped = drop_unavailable(_points(), skeletons)
+        assert dropped == {EXP: {("cam2", "tail"): 1}}
+        tail = df.xs("tail", level="bodypart").iloc[0]
+        assert tail[("cam2", "state")] == "not_set"
+        assert np.isnan(tail[("cam2", "x")])
+        assert tail[("cam1", "state")] == "set"
+        head = df.xs("head", level="bodypart").iloc[0]
+        assert head[("cam2", "x")] == 3.0
+
+    def test_nothing_to_drop_returns_same_df(self):
+        skeletons = ProjectSkeleton.build(ADAPTER_CAMS, by_camera={"cam1": HEAD_TAIL})
+        points = _points()
+        df, dropped = drop_unavailable(points, skeletons)
+        assert df is points and dropped == {}

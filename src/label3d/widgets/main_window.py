@@ -51,7 +51,7 @@ from label3d.widgets.frame_controls import FrameControls
 from label3d.widgets.label_view import LabelView
 from label3d.widgets.point_item import ColorMode
 from label3d.widgets.slp_setup_dialog import SlpSetupDialog
-from label3d.widgets.sync_summary_dialog import SyncSummaryDialog
+from label3d.widgets.sync_summary_dialog import SyncSummaryDialog, dropped_text
 
 logger = logging.getLogger(__name__)
 
@@ -579,15 +579,25 @@ class MainWindow(QMainWindow):
     def _show_sync_summary(self, results=None, unmatched: list[str] | None = None) -> None:
         """Show what the latest sync brought in, if the merge just applied recorded one."""
         latest = self._project.latest_sync_id()
+        dropped: dict[tuple[str, str], int] = {}
+        for result in (results or {}).values():
+            for key, n in result.dropped.items():
+                dropped[key] = dropped.get(key, 0) + n
         if results is not None:
             ids = {r.sync_id for r in results.values() if r.sync_id is not None}
             if latest not in ids:
+                notes = []
                 if unmatched:
+                    notes.append(
+                        f"{len(unmatched)} video(s) match no trial: "
+                        + ", ".join(unmatched[:10])
+                    )
+                if dropped:
+                    notes.append(dropped_text(dropped))
+                if notes:
                     QMessageBox.information(
                         self, "Import predictions",
-                        "No new predictions were imported.\n\n"
-                        f"{len(unmatched)} video(s) match no trial: "
-                        + ", ".join(unmatched[:10]),
+                        "No new predictions were imported.\n\n" + "\n\n".join(notes),
                     )
                 return
         if latest is None:
@@ -595,7 +605,7 @@ class MainWindow(QMainWindow):
         history = self._project.sync_history()
         rows = history[history["id"] == latest]
         dialog = SyncSummaryDialog(
-            rows, self._project.active_experiment, unmatched, parent=self
+            rows, self._project.active_experiment, unmatched, dropped, parent=self
         )
         dialog.exec()
         if dialog.go_to_first_new():

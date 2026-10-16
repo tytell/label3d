@@ -451,6 +451,9 @@ class MergeResult:
     trial_counts: dict[tuple[str, str], dict[str, int]] = field(default_factory=dict)
     n_score_updates: int = 0    # predictions that kept their x/y but got a new score
     sync_id: int | None = None
+    # SLP points left out because their camera's skeleton lacks the node:
+    # (camera, node) -> count
+    dropped: dict[tuple[str, str], int] = field(default_factory=dict)
 
     @property
     def conflict_frames(self) -> set[tuple[str, str, int]]:

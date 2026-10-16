@@ -101,9 +101,9 @@ Today there is one skeleton per project:
 
 ## 14.3 Reading and writing `.slp` files (`adapters/sleap_adapter.py`, `project.py`)
 
-- [ ] **Writing:** `_write_file` always keeps an existing file's skeleton (`existing.skeletons[0]`) and never replaces it. A new file is created with `skeleton_for` its cells (one skeleton, guaranteed by 14.6), built by `_make_skeleton` with edges **and** symmetries (symmetries are dropped today) and with the skeleton's name. `SleapAdapter.save` takes `skeletons: ProjectSkeleton` in place of `skeleton`. `_cell_frames` already writes only the nodes of the skeleton it is given, so a file never gains nodes.
-- [ ] **Reading mapped files:** no change. Rows come from each instance's own `skeleton.node_names`, so a cell only gets points for its file's nodes.
-- [ ] **Importing predictions from elsewhere** (`read_predictions_for_import`): such a file may have a different skeleton from the cell's. `_merge_by_experiment` drops, for each cell, SLP points of nodes not in `nodes_for(cell)`, as well as nodes outside the union, which it already drops. The number dropped, by node and camera, goes into `MergeResult` and is shown in the sync summary dialog, not just logged.
+- [x] **Writing:** `_write_file` always keeps an existing file's skeleton (`existing.skeletons[0]`) and never replaces it. A new file is created with `skeleton_for` its cells (one skeleton, guaranteed by 14.6), built by `_make_skeleton` with edges **and** symmetries (symmetries are dropped today) and with the skeleton's name. `SleapAdapter.save` takes `skeletons: ProjectSkeleton` in place of `skeleton`. `_cell_frames` already writes only the nodes of the skeleton it is given, so a file never gains nodes.
+- [x] **Reading mapped files:** no change. Rows come from each instance's own `skeleton.node_names`, so a cell only gets points for its file's nodes.
+- [x] **Importing predictions from elsewhere** (`read_predictions_for_import`): such a file may have a different skeleton from the cell's. `_merge_by_experiment` drops, for each cell, SLP points of nodes not in `nodes_for(cell)`, as well as nodes outside the union, which it already drops. The number dropped, by node and camera, goes into `MergeResult` and is shown in the sync summary dialog, not just logged.
 
 ## 14.4 Triangulation and instance init (`geometry.py`, `workers/triangulation_worker.py`, `instance_init.py`)
 
