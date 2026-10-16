@@ -117,11 +117,6 @@ class Skeleton:
             skeleton.name = Path(path).stem
         return skeleton
 
-    def to_json(self, path: Path) -> None:
-        """Save to skeleton.json."""
-        with open(path, "w") as f:
-            json.dump(self.to_dict(), f, indent=2)
-
     # -- SLEAP import --
 
     @classmethod
@@ -167,7 +162,7 @@ def _describe(labels: list[str]) -> str:
     return f"{', '.join(labels[:3])} (+{len(labels) - 3} more)"
 
 
-def merge_skeletons(skeletons: dict[str, Skeleton]) -> Skeleton:
+def merge_skeletons(skeletons: dict[str, Skeleton], strict: bool = True) -> Skeleton:
     """The union of skeletons, whose keys label them in conflict messages.
 
     Nodes keep the order of the first skeleton, then each later skeleton's new
@@ -177,6 +172,7 @@ def merge_skeletons(skeletons: dict[str, Skeleton]) -> Skeleton:
     - two skeletons that both have nodes a and b disagree on edge a-b;
     - ... or on symmetry a-b;
     - a node has more than one symmetry partner in the union.
+    With strict=False the union is returned in spite of conflicts.
     """
     if not skeletons:
         raise ValueError("No skeletons to merge")
@@ -227,7 +223,7 @@ def merge_skeletons(skeletons: dict[str, Skeleton]) -> Skeleton:
                 f"{node} has more than one symmetry partner: {', '.join(partners[node])}"
             )
 
-    if conflicts:
+    if conflicts and strict:
         raise SkeletonConflict(conflicts)
     return Skeleton(nodes=nodes, edges=edges, symmetries=symmetries)
 
@@ -282,8 +278,12 @@ class ProjectSkeleton:
         by_file: dict[Path, Skeleton] | None = None,
         by_camera: dict[str, Skeleton] | None = None,
         cell_files: dict[Cell, Path] | None = None,
+        strict: bool = True,
     ) -> ProjectSkeleton:
-        """Merge the files' then the assigned skeletons; raises SkeletonConflict."""
+        """Merge the files' then the assigned skeletons.
+
+        Raises SkeletonConflict, unless strict is False.
+        """
         by_file = dict(by_file or {})
         by_camera = dict(by_camera or {})
         labelled = {str(path): sk for path, sk in by_file.items()}
@@ -291,7 +291,7 @@ class ProjectSkeleton:
             label = f"the skeleton assigned to {camera}"
             labelled[label] = sk
         return cls(
-            union=merge_skeletons(labelled),
+            union=merge_skeletons(labelled, strict=strict),
             cameras=list(cameras),
             by_file=by_file,
             by_camera=by_camera,
@@ -393,3 +393,62 @@ class ProjectSkeleton:
                     f"node(s) not in the file's skeleton: {', '.join(nodes)}"
                 )
         return check
+
+
+def assigned_skeletons(config: dict, cameras: list[str]) -> dict[str, Skeleton]:
+    """Camera -> skeleton from [[skeleton.assigned]] in a project.toml dict.
+
+    Raises ValueError for an entry that is not a valid skeleton, or a camera
+    in more than one entry. Cameras not in cameras are ignored.
+    """
+    by_camera: dict[str, Skeleton] = {}
+    for entry in config.get("skeleton", {}).get("assigned", []):
+        try:
+            skeleton = Skeleton.from_dict(entry)
+        except ValueError as exc:
+            raise ValueError(f"project.toml [[skeleton.assigned]] {entry.get('name')}: {exc}")
+        for camera in entry.get("cameras", []):
+            if camera in by_camera:
+                raise ValueError(
+                    f"project.toml assigns more than one skeleton to camera {camera}"
+                )
+            if camera in cameras:
+                by_camera[camera] = skeleton
+    return by_camera
+
+
+def assign_in_config(
+    section: dict, skeleton: Skeleton, cameras: list[str], camera_order: list[str]
+) -> dict:
+    """The [skeleton] section with skeleton assigned to cameras.
+
+    The cameras leave any other entry; an entry with the same topology is
+    reused; entries left without cameras are dropped. The skeleton's offsets
+    are added to node_offsets_cm.
+    """
+    section = dict(section)
+    entries = []
+    for entry in section.get("assigned", []):
+        entry = dict(entry)
+        entry["cameras"] = [c for c in entry.get("cameras", []) if c not in cameras]
+        entries.append(entry)
+    for entry in entries:
+        if Skeleton.from_dict(entry).same_topology(skeleton):
+            entry["cameras"] = [
+                c for c in camera_order if c in entry["cameras"] or c in cameras
+            ]
+            break
+    else:
+        entries.append({
+            "name": skeleton.name or "skeleton",
+            "cameras": [c for c in camera_order if c in cameras],
+            "nodes": list(skeleton.nodes),
+            "edges": [list(e) for e in skeleton.edges],
+            "symmetries": [list(e) for e in skeleton.symmetries],
+        })
+    section["assigned"] = [e for e in entries if e["cameras"]]
+    if skeleton.node_offsets_cm:
+        offsets = dict(section.get("node_offsets_cm", {}))
+        offsets.update(skeleton.node_offsets_cm)
+        section["node_offsets_cm"] = offsets
+    return section

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +25,7 @@ from label3d.setup_project import (
     _extract_calib_prefix,
     _extract_trial_prefix,
 )
+from label3d.project import Project
 from label3d.skeleton import Skeleton
 
 
@@ -509,20 +511,17 @@ class TestExecuteSetup:
         assert config_data["charuco"]["squares_x"] == 6
         assert config_data["charuco"]["marker_bits"] == 4
 
-    def test_skeleton_json_written(self, basic_config):
+    def test_no_skeleton_files_written(self, basic_config):
+        """The .slp files are the skeleton's source: no skeleton.json, no [skeleton]."""
         assignment = classify_files(basic_config)
         execute_setup(basic_config, assignment)
+        assert not (basic_config.output_dir / "skeleton.json").exists()
+        assert "skeleton" not in toml.load(basic_config.output_dir / "project.toml")
+        project = Project.load(basic_config.output_dir)
+        assert project.skeleton.nodes == ["nose", "tail"]
 
-        skel_path = basic_config.output_dir / "skeleton.json"
-        assert skel_path.is_file()
-        import json
-        data = json.loads(skel_path.read_text())
-        assert data["nodes"] == ["nose", "tail"]
-        assert data["edges"] == []
-        assert data["symmetries"] == []
-
-    def test_no_skeleton_json_without_slp(self, tmp_path):
-        """When no SLP files are present, skeleton.json should not be written."""
+    def test_no_skeleton_without_slp(self, tmp_path):
+        """No SLP files and no setup skeleton: nothing is written."""
         src = tmp_path / "src"
         src.mkdir()
         (src / "left_001.mp4").write_bytes(b"\x00" * 100)
@@ -537,9 +536,10 @@ class TestExecuteSetup:
         assignment = classify_files(config)
         execute_setup(config, assignment)
         assert not (tmp_path / "out" / "skeleton.json").exists()
+        assert "skeleton" not in toml.load(tmp_path / "out" / "project.toml")
 
     def test_setup_skeleton_written_without_slp(self, tmp_path):
-        """A skeleton from the setup file is written when there are no SLP files."""
+        """A setup file skeleton is assigned to every camera in project.toml."""
         src = tmp_path / "src"
         src.mkdir()
         (src / "left_001.mp4").write_bytes(b"\x00" * 100)
@@ -548,24 +548,28 @@ class TestExecuteSetup:
             source_dir=src, output_dir=tmp_path / "out",
             camera_names=["left", "right"], calib_keyword="calib",
             match_strategy="number",
-            skeleton=Skeleton(["head", "tail"], edges=[("head", "tail")]),
+            skeleton=Skeleton(["head", "tail"], edges=[("head", "tail")], name="fish"),
         )
         assignment = classify_files(config)
         execute_setup(config, assignment)
-        loaded = Skeleton.from_json(tmp_path / "out" / "skeleton.json")
-        assert loaded.nodes == ["head", "tail"]
-        assert loaded.edges == [("head", "tail")]
+        [entry] = toml.load(tmp_path / "out" / "project.toml")["skeleton"]["assigned"]
+        assert entry["name"] == "fish"
+        assert entry["cameras"] == ["left", "right"]
+        assert entry["nodes"] == ["head", "tail"]
+        assert entry["edges"] == [["head", "tail"]]
 
     def test_setup_skeleton_matching_slp_is_used(self, basic_config):
-        """A matching setup skeleton wins, so its offsets are kept."""
+        """A matching setup skeleton is assigned, so its offsets are kept."""
         basic_config.skeleton = Skeleton(
             ["tail", "nose"], node_offsets_cm={"nose": [1.0, 0.0, 0.0]},
         )
         assignment = classify_files(basic_config)
         execute_setup(basic_config, assignment)
-        loaded = Skeleton.from_json(basic_config.output_dir / "skeleton.json")
-        assert loaded.nodes == ["tail", "nose"]
-        assert loaded.node_offsets_cm == {"nose": [1.0, 0.0, 0.0]}
+        section = toml.load(basic_config.output_dir / "project.toml")["skeleton"]
+        assert section["assigned"][0]["nodes"] == ["tail", "nose"]
+        assert section["node_offsets_cm"] == {"nose": [1.0, 0.0, 0.0]}
+        project = Project.load(basic_config.output_dir)
+        assert project.skeleton.node_offsets_cm == {"nose": [1.0, 0.0, 0.0]}
 
     def test_setup_skeleton_mismatching_slp_raises(self, basic_config):
         basic_config.skeleton = Skeleton(["nose", "tail", "fin"])
@@ -967,7 +971,9 @@ class TestSlpMatching:
 
 class TestSkeletonFromSetup:
     def test_file(self, tmp_path):
-        Skeleton(["a", "b"], edges=[("a", "b")]).to_json(tmp_path / "sk.json")
+        (tmp_path / "sk.json").write_text(
+            json.dumps(Skeleton(["a", "b"], edges=[("a", "b")]).to_dict())
+        )
         sk = skeleton_from_setup({"file": "sk.json"}, base_dir=tmp_path)
         assert sk.nodes == ["a", "b"]
 

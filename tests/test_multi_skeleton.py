@@ -31,14 +31,16 @@ NO_TAIL = Skeleton(
 )
 
 
-def write_slp(path: Path, skeleton: Skeleton, with_frame: bool = True) -> Path:
+def write_slp(
+    path: Path, skeleton: Skeleton, with_frame: bool = True, video_name: str = "vid.mp4"
+) -> Path:
     """Write a .slp file with this skeleton and (optionally) one labelled frame."""
     sk = sio.Skeleton(list(skeleton.nodes), name=skeleton.name)
     for a, b in skeleton.edges:
         sk.add_edge(a, b)
     for a, b in skeleton.symmetries:
         sk.add_symmetry(a, b)
-    video = sio.Video(filename="vid.mp4", open_backend=False)
+    video = sio.Video(filename=video_name, open_backend=False)
     frames = []
     if with_frame:
         pts = np.arange(len(skeleton.nodes) * 2, dtype=float).reshape(-1, 2)
@@ -375,3 +377,100 @@ class TestSyntheticMissingNodes:
         cam3 = sio.load_file(str(tmp_path / "cam3.slp"))
         assert cam3.skeleton.node_names == ["snout", "dorsal"]
         assert cam3.labeled_frames[0].instances[0].numpy().tolist() == [[1, 2], [5, 6]]
+
+
+# ---------------------------------------------------------------------------
+# Project loading (phase 14.1)
+# ---------------------------------------------------------------------------
+
+import toml  # noqa: E402
+
+from label3d.project import Project  # noqa: E402
+from tests.test_project_sync import (  # noqa: E402
+    BODYPARTS as SYNC_NODES,
+    CAMERAS as SYNC_CAMS,
+    EXP as SYNC_EXP,
+    project,  # noqa: F401  (fixture)
+)
+
+HEAD_ONLY = Skeleton(nodes=["head"], name="head_only")
+
+
+def _set_config(project: Project, **sections) -> None:
+    config = toml.load(project.root / "project.toml")
+    for key, value in sections.items():
+        if value is None:
+            config.pop(key, None)
+        else:
+            config[key] = value
+    (project.root / "project.toml").write_text(toml.dumps(config))
+    project.config = config
+
+
+class TestProjectSkeletons:
+    def test_skeleton_json_moves_to_project_toml(self, project):
+        section = toml.load(project.root / "project.toml")["skeleton"]
+        [entry] = section["assigned"]
+        assert entry["nodes"] == SYNC_NODES
+        assert entry["cameras"] == SYNC_CAMS
+        assert (project.root / "skeleton.json").exists()
+        assert project.skeletons.by_camera["cam0"].nodes == SYNC_NODES
+
+    def test_file_skeleton_per_camera(self, project):
+        write_slp(project.root / "slp/cam1.slp", HEAD_ONLY, with_frame=False)
+        _set_config(project, skeleton=None)
+        # The only skeleton is cam1's file, so the union loses "tail"
+        assert project.load_skeletons() is True
+        assert project.skeleton.nodes == ["head"]
+        assert project.skeletons.nodes_for((SYNC_EXP, "t1", "cam0")) == {"head"}
+
+    def test_file_wins_over_assignment(self, project):
+        write_slp(project.root / "slp/cam1.slp", HEAD_ONLY, with_frame=False)
+        project.load_skeletons()
+        assert project.skeletons.nodes_for((SYNC_EXP, "t1", "cam1")) == {"head"}
+        assert project.skeletons.nodes_for((SYNC_EXP, "t1", "cam0")) == set(SYNC_NODES)
+        assert project.skeletons.partial_nodes(SYNC_EXP, "t1") == {"tail": ["cam0"]}
+
+    def test_no_mapping_matches_videos_by_basename(self, project):
+        _set_config(project, slp=None)
+        write_slp(
+            project.root / "slp/some.slp", HEAD_ONLY, with_frame=False,
+            video_name="/elsewhere/cam1_t1.mp4",
+        )
+        project.load_skeletons()
+        assert project.skeletons.nodes_for((SYNC_EXP, "t1", "cam1")) == {"head"}
+        # No file holds t2's cam1 video: the assigned skeleton
+        assert project.skeletons.nodes_for((SYNC_EXP, "t2", "cam1")) == set(SYNC_NODES)
+
+    def test_assign_skeleton_moves_cameras(self, project):
+        assert project.assign_skeleton(HEAD_ONLY, ["cam1"]) is False
+        entries = toml.load(project.root / "project.toml")["skeleton"]["assigned"]
+        assert [(e["name"], e["cameras"]) for e in entries] == [
+            ("skeleton", ["cam0"]), ("head_only", ["cam1"])
+        ]
+        assert project.skeletons.nodes_for((SYNC_EXP, "t1", "cam1")) == {"head"}
+        # Assigning the first topology back reuses its entry; head_only is dropped
+        project.assign_skeleton(Skeleton(nodes=["tail", "head"], edges=[("head", "tail")]),
+                                ["cam1"])
+        entries = toml.load(project.root / "project.toml")["skeleton"]["assigned"]
+        assert [(e["name"], e["cameras"]) for e in entries] == [("skeleton", SYNC_CAMS)]
+
+    def test_assign_skeleton_adds_offsets(self, project):
+        sk = Skeleton(nodes=SYNC_NODES, edges=[("head", "tail")],
+                      node_offsets_cm={"head": [1.0, 2.0, 3.0]})
+        project.assign_skeleton(sk, SYNC_CAMS)
+        assert project.skeleton.node_offsets_cm == {"head": [1.0, 2.0, 3.0]}
+
+    def test_conflict_is_recorded_not_raised(self, project):
+        no_edge = Skeleton(nodes=SYNC_NODES, name="no_edge")
+        write_slp(project.root / "slp/cam1.slp", no_edge, with_frame=False)
+        loaded = Project.load(project.root)
+        assert loaded.skeleton_conflicts == [
+            "edge head - tail is in the skeleton assigned to cam0, "
+            "the skeleton assigned to cam1 but not in slp/cam1.slp"
+        ]
+        assert loaded.skeleton.nodes == SYNC_NODES
+        # A later reload with a conflict keeps the skeletons it had
+        before = loaded.skeletons
+        assert loaded.load_skeletons() is False
+        assert loaded.skeletons is before

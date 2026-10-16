@@ -6,7 +6,6 @@ outside the project tree, which is the case the feature exists for.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -180,10 +179,11 @@ class TestExecute:
         data = toml.load(out / "project.toml")
         assert data["video_roots"]["default"] == str(source["rig"].resolve())
 
-    def test_skeleton_json_written(self, source):
+    def test_skeleton_comes_from_slp_files(self, source):
         config = _config(source)
         out = execute_setup(config, classify_slp_files(config))
-        assert json.loads((out / "skeleton.json").read_text())["nodes"] == NODES
+        assert not (out / "skeleton.json").exists()
+        assert Project.load(out).skeleton.nodes == NODES
 
     def test_slp_files_are_copied_not_moved(self, source):
         config = _config(source)

@@ -16,7 +16,9 @@ import toml
 import logging
 logger = logging.getLogger(__name__)
 
-from label3d.adapters.sleap_adapter import SleapAdapter
+from sleap_io.io.slp import read_videos
+
+from label3d.adapters.sleap_adapter import SleapAdapter, basename_lookup
 from label3d.calibration_registry import (
     CalibrationEntry,
     camera_dir,
@@ -24,7 +26,13 @@ from label3d.calibration_registry import (
     list_calibrations,
 )
 from label3d.points import CAM_COORDS, PointsStore
-from label3d.skeleton import ProjectSkeleton, Skeleton
+from label3d.skeleton import (
+    ProjectSkeleton,
+    Skeleton,
+    SkeletonConflict,
+    assign_in_config,
+    assigned_skeletons,
+)
 from label3d.slp_sync import MergeResult, SlpMapping, compute_merge
 
 
@@ -155,8 +163,16 @@ class Project:
     active_experiment: str = ""
     # Videos whose modification time differs from the one in trials.csv
     video_warnings: list[str] = field(default_factory=list)
+    # Every camera's skeleton; skeleton is their union (load_skeletons)
+    skeletons: ProjectSkeleton | None = None
+    # Conflicts between the skeletons found by the last load_skeletons()
+    skeleton_conflicts: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        if self.skeletons is None and self.skeleton is not None:
+            self.skeletons = ProjectSkeleton.build(
+                self.cameras, by_camera={cam: self.skeleton for cam in self.cameras}
+            )
         self._attach_latest_sync()
 
     @classmethod
@@ -251,11 +267,8 @@ class Project:
         active_experiment = experiment_names[0]
         active = experiments[active_experiment]
 
-        # --- skeleton.json at project root (shared) ---
-        skeleton: Skeleton | None = None
-        skel_path = root / "skeleton.json"
-        if skel_path.exists():
-            skeleton = Skeleton.from_json(skel_path)
+        # --- skeleton.json of older projects moves to project.toml ---
+        _migrate_skeleton_json(root, config, cameras)
 
         # --- points.csv inside active experiment folder ---
         points: PointsStore | None = None
@@ -271,13 +284,12 @@ class Project:
             )
             points._save_path = points_path
 
-        return cls(
+        project = cls(
             root=root,
             cameras=active.cameras,
             trials=active.trials,
             camera_info=active.camera_info,
             has_calibration=active.has_calibration,
-            skeleton=skeleton,
             points=points,
             trials_df=trials_df,
             config=config,
@@ -285,6 +297,8 @@ class Project:
             active_experiment=active_experiment,
             video_warnings=check.mismatched,
         )
+        project.load_skeletons()
+        return project
 
     def video_path(self, trial_name: str, camera: str) -> Path:
         """Resolve absolute path to a trial or calibration-take video.
@@ -394,14 +408,84 @@ class Project:
 
     # -- Skeleton --------------------------------------------------------------
 
-    @property
-    def skeletons(self) -> ProjectSkeleton | None:
-        """Every camera's skeleton; for now self.skeleton in all of them."""
-        if self.skeleton is None:
-            return None
-        return ProjectSkeleton.build(
-            self.cameras, by_camera={cam: self.skeleton for cam in self.cameras}
+    def load_skeletons(self) -> bool:
+        """Read the .slp files' and the assigned skeletons; True if the union changed.
+
+        The mapped files are read, or slp/*.slp with their videos matched to
+        cells by basename when there is no mapping. Only file headers are
+        read. A conflict is recorded in skeleton_conflicts; the previous
+        skeletons are kept if there were any, else the union is used anyway.
+        """
+        by_file, cell_files = self._slp_skeletons()
+        by_camera = assigned_skeletons(self.config, self.cameras)
+        if not by_file and not by_camera:
+            changed = self.skeleton is not None
+            self.skeletons, self.skeleton, self.skeleton_conflicts = None, None, []
+            return changed
+        try:
+            skeletons = ProjectSkeleton.build(self.cameras, by_file, by_camera, cell_files)
+            self.skeleton_conflicts = []
+        except SkeletonConflict as exc:
+            self.skeleton_conflicts = exc.conflicts
+            logger.warning("%s", exc)
+            if self.skeletons is not None:
+                return False
+            skeletons = ProjectSkeleton.build(
+                self.cameras, by_file, by_camera, cell_files, strict=False
+            )
+        offsets = self.config.get("skeleton", {}).get("node_offsets_cm", {})
+        unknown = sorted(set(offsets) - set(skeletons.union.nodes))
+        if unknown:
+            logger.info("Ignoring node offsets for nodes in no skeleton: %s", ", ".join(unknown))
+        skeletons.union.node_offsets_cm = {
+            str(n): [float(x) for x in v] for n, v in offsets.items()
+            if n in skeletons.union.nodes
+        }
+        old = self.skeleton
+        self.skeletons, self.skeleton = skeletons, skeletons.union
+        return old is None or not old.same_as(skeletons.union)
+
+    def _slp_skeletons(self) -> tuple[dict[Path, Skeleton], dict]:
+        """(existing file -> skeleton, cell -> file) for the project's .slp files."""
+        mapping = self.slp_mapping
+        if mapping.files:
+            cell_files = mapping.cell_map()
+            paths = list(dict.fromkeys(spec.path for spec in mapping.files))
+        else:
+            cell_files = {}
+            paths = [p.relative_to(self.root) for p in sorted(self.slp_dir.glob("*.slp"))]
+        lookup = (
+            basename_lookup(self.trials_df, self.cameras)
+            if not mapping.files and self.trials_df is not None else {}
         )
+        by_file: dict[Path, Skeleton] = {}
+        for rel in paths:
+            path = self.root / rel
+            if not path.exists():
+                continue
+            try:
+                by_file[rel] = Skeleton.from_slp(path)
+                videos = read_videos(str(path), open_backend=False) if lookup else []
+            except Exception as exc:
+                logger.warning("Could not read the skeleton of %s: %s", rel, exc)
+                continue
+            for video in videos:
+                if isinstance(video.filename, str):
+                    for cell in lookup.get(Path(video.filename).name, []):
+                        cell_files.setdefault(cell, rel)
+        return by_file, cell_files
+
+    def assign_skeleton(self, skeleton: Skeleton, cameras: list[str]) -> bool:
+        """Assign skeleton to cameras in project.toml, then reload the skeletons.
+
+        Applies to cells whose .slp file does not exist yet. Returns True if
+        the union changed.
+        """
+        section = assign_in_config(
+            self.config.get("skeleton", {}), skeleton, cameras, self.cameras
+        )
+        self.save_config_sections({"skeleton": section})
+        return self.load_skeletons()
 
     def skeleton_removals(self, skeleton: Skeleton) -> dict[str, int]:
         """Labelled points, by node, that set_skeleton(skeleton) would delete.
@@ -430,12 +514,11 @@ class Project:
         return counts
 
     def set_skeleton(self, skeleton: Skeleton) -> None:
-        """Make skeleton the project's skeleton, merging it into the points.
+        """Assign skeleton to every camera, deleting points of nodes it lacks.
 
         Points of nodes in both skeletons are kept as they are; new nodes start
         unlabelled. Points of nodes missing from skeleton are deleted in every
-        experiment (see skeleton_removals). skeleton.json is rewritten, the old
-        one kept as skeleton.json.bak.
+        experiment (see skeleton_removals), each points.csv backed up first.
         """
         keep = set(skeleton.nodes)
         for name, exp in self.experiments.items():
@@ -451,12 +534,7 @@ class Project:
                 path = exp.root / "points.csv"
                 path.replace(path.with_suffix(".csv.bak"))
                 df.to_csv(path)
-
-        path = self.root / "skeleton.json"
-        if path.exists():
-            path.replace(path.with_suffix(".json.bak"))
-        skeleton.to_json(path)
-        self.skeleton = skeleton
+        self.assign_skeleton(skeleton, list(self.cameras))
 
     def experiment_points_df(self, experiment: str) -> pd.DataFrame:
         """Points for an experiment: the live store if active, else its points.csv."""
@@ -646,7 +724,6 @@ class Project:
         return SleapAdapter().save(
             all_df,
             cameras=self.cameras,
-            skeleton=self.skeleton,
             skeletons=self.skeletons,
             trials_df=self.trials_df,
             mapping=mapping,
@@ -739,6 +816,22 @@ class Project:
         trial = self.get_trial(trial_name)
         _, start, _ = trial.camera_videos[camera]
         return start
+
+
+def _migrate_skeleton_json(root: Path, config: dict, cameras: list[str]) -> None:
+    """Copy an old project's skeleton.json into project.toml, once.
+
+    The skeleton is assigned to every camera and its offsets go to
+    [skeleton.node_offsets_cm]. The file is left in place and no longer read.
+    """
+    path = root / "skeleton.json"
+    if "skeleton" in config or not path.exists():
+        return
+    skeleton = Skeleton.from_json(path)
+    section = assign_in_config({}, skeleton, list(cameras), list(cameras))
+    config["skeleton"] = section
+    _write_config(root, config)
+    logger.info("Copied skeleton.json into project.toml [skeleton]")
 
 
 def _write_config(root: Path, config: dict) -> None:

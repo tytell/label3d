@@ -11,7 +11,6 @@ Usage:
 Generates:
     <output_dir>/
     ├── trials.csv
-    ├── skeleton.json
     ├── project.toml
     ├── slp/
     │   ├── cam1.slp          (all experiments & trials for cam1)
@@ -64,7 +63,6 @@ from synthetic import (
     write_flat_folder,
     write_points_csv,
     write_project_toml,
-    write_skeleton_json,
     write_slp_files,
     write_trials_csv,
     write_videos,
@@ -256,9 +254,6 @@ def main():
     trials_csv_path = output_dir / "trials.csv"
     write_trials_csv(all_trial_rows, trials_csv_path)
     print(f"  {trials_csv_path}")
-
-    print("Writing skeleton.json...")
-    write_skeleton_json(node_names, edges, node_offsets, output_dir / "skeleton.json")
 
     print("Writing project.toml...")
     charuco_board = (

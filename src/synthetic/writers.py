@@ -1,6 +1,5 @@
-"""Output writers: calibration registry entry, trials.csv, points.csv, skeleton.json, .slp files."""
+"""Output writers: calibration registry entry, trials.csv, points.csv, project.toml, .slp files."""
 
-import json
 import shutil
 from pathlib import Path
 
@@ -152,24 +151,6 @@ def camera_skeleton(
         "edges": [list(e) for e in edges if e[0] not in missing and e[1] not in missing],
         "symmetries": [],
     }
-
-
-def write_skeleton_json(
-    node_names: list[str],
-    edges: list[tuple[str, str]],
-    node_offsets: dict[str, np.ndarray],
-    output_path: Path,
-):
-    """Write skeleton.json (project metadata)."""
-    data = {
-        "nodes": node_names,
-        "edges": [list(e) for e in edges],
-        "symmetries": [],
-        "node_offsets_cm": {n: o.tolist() for n, o in node_offsets.items()},
-    }
-    with open(output_path, "w") as f:
-        json.dump(data, f, indent=2)
-    print(f"  {output_path}")
 
 
 def write_slp_files(

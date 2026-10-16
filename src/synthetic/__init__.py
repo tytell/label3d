@@ -12,7 +12,6 @@ from synthetic.writers import (
     write_points_csv,
     write_project_toml,
     camera_skeleton,
-    write_skeleton_json,
     write_slp_files,
     write_trials_csv,
 )
@@ -32,7 +31,6 @@ __all__ = [
     "write_points_csv",
     "write_project_toml",
     "camera_skeleton",
-    "write_skeleton_json",
     "write_slp_files",
     "write_trials_csv",
     "write_videos",

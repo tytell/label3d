@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from label3d.adapters import get_adapters
-from label3d.adapters.sleap_adapter import SleapAdapter, _build_basename_lookup
+from label3d.adapters.sleap_adapter import SleapAdapter, basename_lookup
 from label3d.points import CAM_COORDS, INDEX_NAMES, THREE_D_COORDS
 
 # SLP fixtures require sleap_io — skip gracefully if not installed.
@@ -242,7 +242,7 @@ class TestSleapSave:
 
 
 # ---------------------------------------------------------------------------
-# _build_basename_lookup — path separator and edge-case tests
+# basename_lookup — path separator and edge-case tests
 # ---------------------------------------------------------------------------
 
 class TestBasenameLookup:
@@ -255,7 +255,7 @@ class TestBasenameLookup:
 
     def test_forward_slash_filename(self):
         trials = self._make_trials("subdir/cam1_trial1.mp4")
-        lookup = _build_basename_lookup(trials, ["cam1"])
+        lookup = basename_lookup(trials, ["cam1"])
         assert "cam1_trial1.mp4" in lookup
 
     def test_backslash_filename(self):
@@ -264,7 +264,7 @@ class TestBasenameLookup:
         # Path("subdir\\cam1_trial1.mp4").name is OS-dependent, but the adapter
         # uses pathlib.Path which on POSIX treats the whole thing as one component.
         # We test that whatever .name returns, the lookup key is consistent.
-        lookup = _build_basename_lookup(trials, ["cam1"])
+        lookup = basename_lookup(trials, ["cam1"])
         # On POSIX: .name = "subdir\\cam1_trial1.mp4" (whole string)
         # On Windows: .name = "cam1_trial1.mp4"
         # Either way, lookup must have exactly one entry
@@ -272,7 +272,7 @@ class TestBasenameLookup:
 
     def test_filename_with_spaces(self):
         trials = self._make_trials("my recording cam1.mp4")
-        lookup = _build_basename_lookup(trials, ["cam1"])
+        lookup = basename_lookup(trials, ["cam1"])
         assert "my recording cam1.mp4" in lookup
 
     def test_multiple_cameras(self):
@@ -281,7 +281,7 @@ class TestBasenameLookup:
             "cam1": ["cam1_t1.mp4"],
             "cam2": ["cam2_t1.mp4"],
         })
-        lookup = _build_basename_lookup(trials, ["cam1", "cam2"])
+        lookup = basename_lookup(trials, ["cam1", "cam2"])
         assert "cam1_t1.mp4" in lookup
         assert "cam2_t1.mp4" in lookup
         assert lookup["cam1_t1.mp4"] == [("default", "t1", "cam1")]
@@ -292,18 +292,18 @@ class TestBasenameLookup:
             "trial": ["t1"],
             "cam1": [float("nan")],
         })
-        lookup = _build_basename_lookup(trials, ["cam1"])
+        lookup = basename_lookup(trials, ["cam1"])
         assert len(lookup) == 0
 
     def test_absolute_path_filename(self):
         trials = self._make_trials("/home/user/data/cam1_trial1.mp4")
-        lookup = _build_basename_lookup(trials, ["cam1"])
+        lookup = basename_lookup(trials, ["cam1"])
         assert "cam1_trial1.mp4" in lookup
 
     def test_case_sensitivity_documented(self):
         """Basename matching is case-sensitive on POSIX (document the behaviour)."""
         import sys
         trials = self._make_trials("Cam1_Trial1.mp4")
-        lookup = _build_basename_lookup(trials, ["cam1"])
+        lookup = basename_lookup(trials, ["cam1"])
         # Key is exactly what Path(...).name returns
         assert list(lookup.keys())[0] == "Cam1_Trial1.mp4"

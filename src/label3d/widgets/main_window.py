@@ -625,6 +625,7 @@ class MainWindow(QMainWindow):
             return
         if self._project.points is not None:
             self._project.points.save_if_changed()
+        self._reload_skeletons()
         progress = self._busy_dialog("Reading prediction files…", "Import predictions")
         self._import_worker = PredictionImportWorker(
             self._project, [Path(p) for p in paths], parent=self
@@ -654,6 +655,20 @@ class MainWindow(QMainWindow):
         self._show_sync_summary(results, unmatched)
 
     # -- Skeleton --------------------------------------------------------------
+
+    def _reload_skeletons(self) -> None:
+        """Re-read the .slp files' skeletons; refresh the view if the union changed."""
+        if self._project.load_skeletons():
+            self._state.skeleton = self._project.skeleton
+            self._label_view.set_skeleton(self._project.skeleton)
+        self._show_skeleton_conflicts()
+
+    def _show_skeleton_conflicts(self) -> None:
+        conflicts = self._project.skeleton_conflicts
+        if conflicts:
+            self._status_bar.showMessage(
+                f"The skeletons conflict ({len(conflicts)} problem(s)): {conflicts[0]}"
+            )
 
     def _do_load_skeleton(self) -> None:
         """Merge a skeleton.json into the project, asking before deleting points."""
@@ -689,9 +704,10 @@ class MainWindow(QMainWindow):
 
         old_nodes = set(self._project.skeleton.nodes) if self._project.skeleton else set()
         self._project.set_skeleton(skeleton)
-        self._state.skeleton = skeleton
-        self._label_view.set_skeleton(skeleton)
+        self._state.skeleton = self._project.skeleton
+        self._label_view.set_skeleton(self._project.skeleton)
         self._refresh_after_merge()
+        self._show_skeleton_conflicts()
 
         added = [n for n in skeleton.nodes if n not in old_nodes]
         removed = sorted(old_nodes - set(skeleton.nodes))
@@ -1357,6 +1373,7 @@ class MainWindow(QMainWindow):
         """Read the mapped SLP files, merge, then write them back."""
         if self._project.points is not None:
             self._project.points.save_if_changed()
+        self._reload_skeletons()
 
         progress = self._busy_dialog("Reading SLP files…", "Sync with Sleap")
         self._slp_read_worker = SlpReadWorker(self._project, parent=self)
@@ -1397,6 +1414,7 @@ class MainWindow(QMainWindow):
         progress: QProgressDialog,
     ) -> None:
         progress.close()
+        self._reload_skeletons()
         self._status_bar.showMessage(
             f"Synced — read {n_new} new, {n_predictions} predictions; "
             f"wrote {n} SLP file(s)"
@@ -1469,6 +1487,7 @@ class MainWindow(QMainWindow):
         old_mapping = self._project.slp_mapping
         if self._project.points is not None:
             self._project.points.save_if_changed()
+        self._reload_skeletons()
 
         # Read the old files first so labels made in SLEAP are not lost
         progress = self._busy_dialog("Reading SLP files…", "Set up Sleap files")
@@ -1506,6 +1525,7 @@ class MainWindow(QMainWindow):
 
     def _on_setup_written(self, n: int, backup_dir: str, progress: QProgressDialog) -> None:
         progress.close()
+        self._reload_skeletons()
         message = f"Set up {n} SLP file(s)"
         if backup_dir:
             message += f"; backup in {Path(backup_dir).relative_to(self._project.root).as_posix()}"
@@ -1626,6 +1646,7 @@ class MainWindow(QMainWindow):
         dialog's event loop would stack the next one under it."""
         if self._project.video_warnings:
             self._warn_changed_videos()
+        self._show_skeleton_conflicts()
         self._read_slp_on_open()
 
     def _warn_changed_videos(self) -> None:
@@ -1644,6 +1665,7 @@ class MainWindow(QMainWindow):
     def _sync_on_close(self) -> bool:
         """Read, merge and write the SLP files on the main thread.  False = cancelled."""
         self._project.points.save_if_changed()
+        self._project.load_skeletons()
         results = self._project.read_slp_for_sync()
         overwrite = self._confirm_merge(results)
         if overwrite is None:

@@ -57,15 +57,15 @@ Today there is one skeleton per project:
   - `cameras_for(experiment, trial, node) -> list[str]`, in camera order
   - `partial_nodes(experiment, trial) -> dict[str, list[str]]`: the nodes not available in every camera of the trial, with the cameras that have them
   - `mapping_problems(mapping) -> list[str]`: the one-skeleton-per-file check (14.6)
-- [ ] `Project.skeleton` stays the union `Skeleton`, so most callers don't change. A new `Project.skeletons: ProjectSkeleton` is added alongside it.
-- [ ] `Project.load_skeletons()` reads the existing mapped files, or `slp/*.slp` when there is no mapping (as `read_slp_for_sync` does), and the assigned skeletons from `project.toml`. It is called:
+- [x] `Project.skeleton` stays the union `Skeleton`, so most callers don't change. A new `Project.skeletons: ProjectSkeleton` is added alongside it.
+- [x] `Project.load_skeletons()` reads the existing mapped files, or `slp/*.slp` when there is no mapping (as `read_slp_for_sync` does), and the assigned skeletons from `project.toml`. It is called:
   - in `Project.load`;
   - at the start of every Sync and import (`read_slp_for_sync`, `read_predictions_for_import`), because the user may have dropped new files into `slp/`;
   - after a Sync that created files;
   - after **Set up Sleap files** saves a new mapping, and after **Load skeleton...**.
 
   If the union changed, `LabelView.set_skeleton` refreshes the view. If there is a `SkeletonConflict`, the project still loads but with the last good skeleton, the status bar reports the conflict, and Sync is refused with a dialog listing the conflicts.
-- [ ] **`project.toml` layout:**
+- [x] **`project.toml` layout:**
 
   ```toml
   [skeleton.node_offsets_cm]      # used by init_random
@@ -80,9 +80,9 @@ Today there is one skeleton per project:
   ```
 
   A camera appears in at most one `assigned` entry. An entry left with no cameras is removed.
-- [ ] **Offsets:** offsets for nodes not in the union are ignored with a log message, not raised as an error, because nodes can now disappear when a file changes.
-- [ ] **Old projects:** if `skeleton.json` exists and `project.toml` has no `[skeleton]` table, `Project.load` copies it once into `project.toml`: its offsets to `node_offsets_cm`, and its nodes, edges and symmetries as an `assigned` entry for every camera. The file itself is left in place and ignored. For a project whose `.slp` files all exist, the assignment changes nothing (rule 1 wins), but it still applies to files created later.
-- [ ] Remove `Project.set_skeleton` (replaced by 14.2) and `Skeleton.to_json`. Keep `from_json` and `same_topology`.
+- [x] **Offsets:** offsets for nodes not in the union are ignored with a log message, not raised as an error, because nodes can now disappear when a file changes.
+- [x] **Old projects:** if `skeleton.json` exists and `project.toml` has no `[skeleton]` table, `Project.load` copies it once into `project.toml`: its offsets to `node_offsets_cm`, and its nodes, edges and symmetries as an `assigned` entry for every camera. The file itself is left in place and ignored. For a project whose `.slp` files all exist, the assignment changes nothing (rule 1 wins), but it still applies to files created later.
+- [ ] Remove `Project.set_skeleton` (replaced by 14.2). Until then it deletes points of removed nodes and assigns the skeleton to every camera. `Skeleton.to_json` is removed (done); `from_json` and `same_topology` stay.
 
 ## 14.2 Load skeleton for chosen cameras (`widgets/load_skeleton_dialog.py`, `project.py`, `main_window.py`)
 
@@ -160,11 +160,11 @@ A skeleton can change after labelling: a node is dropped or renamed in SLEAP, a 
 - [ ] `FileAssignment.skeleton` holds the union, plus the per-file skeletons for the summary.
 - [ ] The setup summary reports the union, then one line per partial node, for example "Skeleton: 12 nodes; tail_tip only in cam0, cam2".
 - [ ] A setup file `[skeleton]` is written as an assignment (14.2). When there are `.slp` files, it must merge with them without conflict, replacing today's exact-match check (`_apply_config_skeleton`). Its `node_offsets_cm` go to `project.toml`.
-- [ ] Stop writing `skeleton.json`.
+- [x] Stop writing `skeleton.json`.
 
 ## 14.9 Synthetic data (`generate_synthetic.py`, `src/synthetic/`, `synthetic_config.toml`)
 
-- [x] Write `node_offsets_cm` to `project.toml` (`[skeleton.node_offsets_cm]`). `skeleton.json` is still written too until the project reads `project.toml` (step 4 of the order of work).
+- [x] Write `node_offsets_cm` to `project.toml` (`[skeleton.node_offsets_cm]`); `skeleton.json` is no longer written.
 - [x] New per-camera key `missing_nodes = [...]` under `[cameras.camN]`. That camera's `.slp` file is written with a skeleton without those nodes (named `synthetic_without_<nodes>`) and with no points for them; `points.csv` leaves those cells `not_set`.
 - [ ] Turn on `missing_nodes = ["dorsal"]` for cam3 in `synthetic_config.toml` (it is there, commented out) once loading (14.1) and setup (14.8) accept different skeletons, then regenerate `projects/test_project`.
 - [x] A `--no-slp` option writes the project without `.slp` files and with the skeletons as `assigned` entries in `project.toml` (honouring `missing_nodes`). This gives test data for the load-skeleton-first workflow.

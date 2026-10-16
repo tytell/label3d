@@ -70,7 +70,7 @@ class SleapAdapter(PoseAdapter):
         """
         cells_info = video_cells(trials, cameras)
         cell_ends = _cell_ends(trials, cameras)
-        basename_to_cells = _build_basename_lookup(trials, cameras)
+        basename_to_cells = basename_lookup(trials, cameras)
         rows: list[dict] = []
 
         for slp_path, allowed in self._sources(files, mapping, root):
@@ -167,7 +167,7 @@ class SleapAdapter(PoseAdapter):
         Reads the video references embedded in each SLP file and matches them
         against trials_df using the same basename lookup used during load.
         """
-        basename_to_trial_cam = _build_basename_lookup(trials_df, cameras)
+        basename_to_trial_cam = basename_lookup(trials_df, cameras)
         file_map: dict[tuple[str, str, str], Path] = {}
         for slp_path in files:
             labels = sio.load_file(str(slp_path))
@@ -420,7 +420,7 @@ def _cell_ends(trials: pd.DataFrame, cameras: list[str]) -> dict[Cell, int]:
     return ends
 
 
-def _build_basename_lookup(
+def basename_lookup(
     trials: pd.DataFrame, cameras: list[str]
 ) -> dict[str, list[tuple[str, str, str]]]:
     """Build video_basename -> [(experiment_name, trial_name, camera_name)] lookup."""

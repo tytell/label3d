@@ -55,11 +55,28 @@ class TestProjectLoad:
 
 @requires_test_project
 class TestMissingOptionalFiles:
-    def test_missing_skeleton_json_is_none(self, tmp_path):
-        """No skeleton.json → project.skeleton is None, no error raised."""
+    def test_no_skeleton_anywhere_is_none(self, tmp_path):
+        """No .slp files and no [skeleton] in project.toml → skeleton is None."""
         _copy_project_without(TEST_PROJECT, tmp_path, exclude={"skeleton.json"})
+        shutil.rmtree(tmp_path / "slp")
+        config = toml.load(tmp_path / "project.toml")
+        config.pop("skeleton", None)
+        config.pop("slp", None)
+        (tmp_path / "project.toml").write_text(toml.dumps(config))
         proj = Project.load(tmp_path)
         assert proj.skeleton is None
+        assert proj.skeletons is None
+
+    def test_skeleton_from_slp_files_alone(self, tmp_path):
+        """Without skeleton.json or [skeleton], the .slp files give the skeleton."""
+        _copy_project_without(TEST_PROJECT, tmp_path, exclude={"skeleton.json"})
+        config = toml.load(tmp_path / "project.toml")
+        config.pop("skeleton", None)
+        (tmp_path / "project.toml").write_text(toml.dumps(config))
+        proj = Project.load(tmp_path)
+        assert proj.skeleton.nodes == ["snout", "left_eye", "dorsal"]
+        assert proj.skeletons.by_camera == {}
+        assert proj.skeletons.skeleton_for(("exp1", "trial1", "cam2")).nodes == proj.skeleton.nodes
 
     def test_missing_points_csv_gives_empty_store(self, tmp_path):
         """No points.csv → an empty store ready to label into, no error raised."""

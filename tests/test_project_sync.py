@@ -259,8 +259,9 @@ class TestSetSkeleton:
         before = project.points.df.copy()
         project.set_skeleton(new)
         pd.testing.assert_frame_equal(project.points.df, before)
-        assert Skeleton.from_json(project.root / "skeleton.json").edges == [("head", "fin")]
-        assert (project.root / "skeleton.json.bak").exists()
+        [entry] = toml.load(project.root / "project.toml")["skeleton"]["assigned"]
+        assert entry["edges"] == [["head", "fin"]]
+        assert entry["cameras"] == CAMERAS
 
     def test_removed_node_counts_and_deletes(self, project):
         new = Skeleton(["head", "fin"])
@@ -280,10 +281,11 @@ class TestSetSkeleton:
         project.points.replace_df(df)
         assert project.skeleton_removals(Skeleton(["head"])) == {}
 
-    def test_removed_node_is_not_read_back_from_slp(self, project):
-        project.write_slp_files()   # .slp files still carry "tail"
+    def test_existing_slp_files_keep_their_skeleton(self, project):
+        project.write_slp_files()   # .slp files carry "tail"
+        project.load_skeletons()
         project.set_skeleton(Skeleton(["head"]))
-        results = project.read_slp_for_sync()
-        assert results[EXP].n_new == 0
-        bodyparts = set(results[EXP].df.index.get_level_values("bodypart"))
-        assert bodyparts == {"head"}
+        # The assignment is for cells without a file; the files keep "tail"
+        assert project.skeletons.by_camera["cam1"].nodes == ["head"]
+        assert "tail" in project.skeletons.nodes_for((EXP, TRIALS[0], "cam1"))
+        assert Skeleton.from_slp(project.root / "slp/cam1.slp").nodes == BODYPARTS

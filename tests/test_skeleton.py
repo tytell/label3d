@@ -82,16 +82,16 @@ class TestFromJson:
 # Saving to JSON (round-trip)
 # ---------------------------------------------------------------------------
 
-class TestToJson:
+class TestToDictRoundTrip:
     def test_roundtrip_nodes(self, simple_skeleton, tmp_path):
         p = tmp_path / "out.json"
-        simple_skeleton.to_json(p)
+        p.write_text(json.dumps(simple_skeleton.to_dict()))
         reloaded = Skeleton.from_json(p)
         assert reloaded.nodes == simple_skeleton.nodes
 
     def test_roundtrip_edges(self, simple_skeleton, tmp_path):
         p = tmp_path / "out.json"
-        simple_skeleton.to_json(p)
+        p.write_text(json.dumps(simple_skeleton.to_dict()))
         reloaded = Skeleton.from_json(p)
         assert set(reloaded.edges) == set(simple_skeleton.edges)
 
@@ -102,13 +102,13 @@ class TestToJson:
             symmetries=[("left_fin", "right_fin")],
         )
         p = tmp_path / "out.json"
-        sk.to_json(p)
+        p.write_text(json.dumps(sk.to_dict()))
         reloaded = Skeleton.from_json(p)
         assert reloaded.symmetries == sk.symmetries
 
     def test_roundtrip_special_char_names(self, skeleton_with_spaces, tmp_path):
         p = tmp_path / "special.json"
-        skeleton_with_spaces.to_json(p)
+        p.write_text(json.dumps(skeleton_with_spaces.to_dict()))
         reloaded = Skeleton.from_json(p)
         assert reloaded.nodes == skeleton_with_spaces.nodes
         assert reloaded.edges == skeleton_with_spaces.edges
@@ -117,7 +117,7 @@ class TestToJson:
     def test_save_to_path_with_spaces(self, simple_skeleton, tmp_path):
         dest = tmp_path / "output dir" / "skeleton.json"
         dest.parent.mkdir()
-        simple_skeleton.to_json(dest)
+        dest.write_text(json.dumps(simple_skeleton.to_dict()))
         assert dest.exists()
         reloaded = Skeleton.from_json(dest)
         assert reloaded.nodes == simple_skeleton.nodes

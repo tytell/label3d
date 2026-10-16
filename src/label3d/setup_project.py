@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import shutil
@@ -16,7 +15,7 @@ from aniposelib.cameras import CameraGroup
 
 from label3d.calibration_registry import REFINED_DIR, camera_dir, save_calibration
 from label3d.project import Project, check_trial_videos, write_trials_csv
-from label3d.skeleton import Skeleton
+from label3d.skeleton import Skeleton, assign_in_config
 from label3d.slp_sync import SlpMapping
 
 logger = logging.getLogger(__name__)
@@ -862,8 +861,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
 
     Output layout:
       project/
-        project.toml
-        skeleton.json            <- from the setup file or the SLP files
+        project.toml             <- [skeleton] from the setup file, if it has one
         trials.csv               <- experiment, trial, is_calibration columns
         slp/
         experiments/
@@ -991,7 +989,13 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
                     seen.add(f)
                     slp_transfer(str(f), str(slp_dir / f.name))
 
-    # Write project.toml
+    # Write project.toml. A setup file skeleton is assigned to every camera;
+    # otherwise the skeletons come from the .slp files themselves.
+    skeleton_section = None
+    if config.skeleton is not None:
+        skeleton_section = assign_in_config(
+            {}, config.skeleton, list(config.camera_names), list(config.camera_names)
+        )
     write_project_toml(
         out,
         config.project_name or out.name,
@@ -999,12 +1003,8 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         video_roots=assignment.video_roots if reference else None,
         slp_mapping=_slp_mapping_config(assignment),
         active_calibrations=active_calibrations,
+        skeleton=skeleton_section,
     )
-
-    # Write skeleton.json from the setup file or the SLP files
-    if assignment.skeleton:
-        with open(out / "skeleton.json", "w") as fh:
-            json.dump(assignment.skeleton, fh, indent=2)
 
     return out
 
@@ -1095,6 +1095,7 @@ def write_project_toml(
     video_roots: dict[str, Path] | None = None,
     slp_mapping: dict | None = None,
     active_calibrations: dict[str, str] | None = None,
+    skeleton: dict | None = None,
 ) -> Path:
     """Write project.toml to the project directory.
 
@@ -1113,6 +1114,8 @@ def write_project_toml(
         config_data["slp"] = slp_mapping
     if active_calibrations:
         config_data["calibration"] = {"active": dict(sorted(active_calibrations.items()))}
+    if skeleton:
+        config_data["skeleton"] = skeleton
 
     path = project_dir / "project.toml"
     with open(path, "w") as f:
