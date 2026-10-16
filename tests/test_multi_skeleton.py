@@ -347,3 +347,31 @@ class TestDropUnavailable:
         points = _points()
         df, dropped = drop_unavailable(points, skeletons)
         assert df is points and dropped == {}
+
+
+# ---------------------------------------------------------------------------
+# Synthetic data with missing_nodes (phase 14.9)
+# ---------------------------------------------------------------------------
+
+from synthetic import camera_skeleton, write_slp_files  # noqa: E402
+
+
+class TestSyntheticMissingNodes:
+    NODES = ["snout", "left_eye", "dorsal"]
+    EDGES = [("snout", "left_eye"), ("snout", "dorsal"), ("left_eye", "dorsal")]
+
+    def test_camera_skeleton_drops_node_and_its_edges(self):
+        skel = camera_skeleton(self.NODES, self.EDGES, {"dorsal"})
+        assert skel["name"] == "synthetic_without_dorsal"
+        assert skel["nodes"] == ["snout", "left_eye"]
+        assert skel["edges"] == [["snout", "left_eye"]]
+        assert camera_skeleton(self.NODES, self.EDGES, set())["name"] == "synthetic"
+
+    def test_slp_file_without_missing_node(self, tmp_path):
+        pts = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        data = {cam: [(tmp_path / f"{cam}.mp4", [pts])] for cam in ("cam1", "cam3")}
+        write_slp_files(data, self.NODES, self.EDGES, tmp_path, {"cam3": {"left_eye"}})
+        assert Skeleton.from_slp(tmp_path / "cam1.slp").nodes == self.NODES
+        cam3 = sio.load_file(str(tmp_path / "cam3.slp"))
+        assert cam3.skeleton.node_names == ["snout", "dorsal"]
+        assert cam3.labeled_frames[0].instances[0].numpy().tolist() == [[1, 2], [5, 6]]

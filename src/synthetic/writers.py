@@ -42,11 +42,14 @@ def write_points_csv(
     num_frames: int,
     output_path: Path,
     experiment_name: str = "default",
+    missing_nodes: dict[str, set[str]] | None = None,
 ):
     """Write ground-truth points.csv with zero reprojection error.
 
     Row index is 5-level: (experiment, trial, frame, instance, bodypart).
+    missing_nodes (camera -> nodes not in its skeleton) are left not_set.
     """
+    missing_nodes = missing_nodes or {}
     cam_names = list(cameras.keys())
 
     # Column MultiIndex
@@ -66,6 +69,14 @@ def write_points_csv(
             idx_tuples.append((experiment_name, trial_name, fi, 0, bp))
             row = {}
             for cam_name in cam_names:
+                if bp in missing_nodes.get(cam_name, ()):
+                    row.update({
+                        (cam_name, "x"): np.nan, (cam_name, "y"): np.nan,
+                        (cam_name, "xr"): np.nan, (cam_name, "yr"): np.nan,
+                        (cam_name, "state"): "not_set", (cam_name, "source"): "",
+                        (cam_name, "score"): np.nan, (cam_name, "sync"): np.nan,
+                    })
+                    continue
                 px, py = all_projected[cam_name][fi][bi]
                 # Synthetic: clicked == reprojected (zero error)
                 row[(cam_name, "x")] = px
@@ -94,15 +105,26 @@ def write_project_toml(
     project_name: str,
     charuco: dict | None = None,
     calibrations: dict[str, str] | None = None,
+    node_offsets: dict[str, np.ndarray] | None = None,
+    assigned_skeletons: list[dict] | None = None,
 ):
     """Write project.toml at the project root.
 
     calibrations (experiment -> registry id) is both the active calibration
     and the one the true 3D points in points.csv correspond to.
+    node_offsets go to [skeleton.node_offsets_cm]; assigned_skeletons (dicts
+    with name, cameras, nodes, edges, symmetries) to [[skeleton.assigned]].
     """
     data: dict = {"project": {"name": project_name}}
     if charuco:
         data["charuco"] = charuco
+    skeleton: dict = {}
+    if node_offsets:
+        skeleton["node_offsets_cm"] = {n: o.tolist() for n, o in node_offsets.items()}
+    if assigned_skeletons:
+        skeleton["assigned"] = assigned_skeletons
+    if skeleton:
+        data["skeleton"] = skeleton
     if calibrations:
         data["calibration"] = {
             "active": dict(calibrations),
@@ -111,6 +133,25 @@ def write_project_toml(
     with open(output_path, "w") as f:
         toml.dump(data, f)
     print(f"  {output_path}")
+
+
+def camera_skeleton(
+    node_names: list[str], edges: list[tuple[str, str]], missing: set[str]
+) -> dict:
+    """The skeleton of a camera without its missing nodes, as a project.toml dict.
+
+    Named "synthetic", or "synthetic_without_<nodes>" when nodes are missing.
+    """
+    nodes = [n for n in node_names if n not in missing]
+    name = "synthetic"
+    if missing:
+        name += "_without_" + "_".join(n for n in node_names if n in missing)
+    return {
+        "name": name,
+        "nodes": nodes,
+        "edges": [list(e) for e in edges if e[0] not in missing and e[1] not in missing],
+        "symmetries": [],
+    }
 
 
 def write_skeleton_json(
@@ -136,11 +177,14 @@ def write_slp_files(
     node_names: list[str],
     edges: list[tuple[str, str]],
     output_dir: Path,
+    missing_nodes: dict[str, set[str]] | None = None,
 ):
     """Write one .slp per camera spanning all experiments and trials.
 
     cam_trial_data[cam_name] = [(video_path, [frame0_pts, frame1_pts, ...]), ...]
     Each video_path is the absolute path to the MP4; frame arrays are (n_nodes, 2).
+    A camera's file leaves out its missing_nodes (camera -> nodes): they are not
+    in its skeleton and have no points.
     """
     try:
         import sleap_io as sio
@@ -148,21 +192,24 @@ def write_slp_files(
         print("  sleap_io not installed — skipping .slp generation")
         return
 
-    skeleton = sio.Skeleton(name="synthetic")
-    for name in node_names:
-        skeleton.add_node(name)
-    for src, dst in edges:
-        skeleton.add_edge(src, dst)
-
+    missing_nodes = missing_nodes or {}
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for cam_name, trials in cam_trial_data.items():
+        skel = camera_skeleton(node_names, edges, missing_nodes.get(cam_name, set()))
+        skeleton = sio.Skeleton(name=skel["name"])
+        for name in skel["nodes"]:
+            skeleton.add_node(name)
+        for src, dst in skel["edges"]:
+            skeleton.add_edge(src, dst)
+        keep = [node_names.index(n) for n in skel["nodes"]]
+
         labeled_frames = []
         for video_path, frame_arrays in trials:
             video = sio.Video(filename=str(video_path))
             for fi, pts_array in enumerate(frame_arrays):
                 inst = sio.PredictedInstance.from_numpy(
-                    pts_array.astype(np.float32), skeleton=skeleton, score=1.0
+                    pts_array[keep].astype(np.float32), skeleton=skeleton, score=1.0
                 )
                 lf = sio.LabeledFrame(video=video, frame_idx=fi, instances=[inst])
                 labeled_frames.append(lf)

@@ -6,6 +6,7 @@ Usage:
     python generate_synthetic.py synthetic_config.toml --no-charuco
     python generate_synthetic.py synthetic_config.toml --flat          # all strategies
     python generate_synthetic.py synthetic_config.toml --flat number   # one strategy
+    python generate_synthetic.py synthetic_config.toml --no-slp        # skeletons in project.toml
 
 Generates:
     <output_dir>/
@@ -26,6 +27,10 @@ Generates:
             └── videos/
                 ├── cam1_<exp>_trial1.mp4
                 └── ...
+
+A camera's `missing_nodes` (in [cameras.<name>]) are left out of its .slp
+skeleton and its points. With --no-slp, no .slp files are written and each
+camera's skeleton goes to [[skeleton.assigned]] in project.toml instead.
 
 With --flat, also generates flat folder(s) for testing setup_project:
     <output_dir>_flat_<strategy>/
@@ -54,6 +59,7 @@ from synthetic import (
     load_config,
     project_all_frames,
     run_sanity_checks,
+    camera_skeleton,
     write_calibration,
     write_flat_folder,
     write_points_csv,
@@ -94,6 +100,10 @@ def main():
             "Output goes to <output_dir>_flat_<strategy>/"
         ),
     )
+    parser.add_argument(
+        "--no-slp", action="store_true",
+        help="Write no .slp files; put each camera's skeleton in project.toml instead",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
@@ -124,6 +134,13 @@ def main():
     charuco_cfg = config.get("charuco")
 
     cam_names = list(config["cameras"].keys())
+    missing_nodes = {
+        cam: set(cfg.get("missing_nodes", [])) for cam, cfg in config["cameras"].items()
+    }
+    for cam, missing in missing_nodes.items():
+        unknown = missing - set(node_names)
+        if unknown:
+            parser.error(f"{cam}: missing_nodes not in the skeleton: {sorted(unknown)}")
 
     # Accumulate data across experiments for global outputs
     all_trial_rows: list[dict] = []
@@ -188,6 +205,7 @@ def main():
             node_names, trial_name, num_frames,
             points_csv_path,
             exp_name,
+            missing_nodes,
         )
         print(f"    {points_csv_path}")
 
@@ -249,13 +267,28 @@ def main():
          if k in charuco_cfg}
         if charuco_cfg else None
     )
+    assigned = None
+    if args.no_slp:
+        assigned = []
+        for cam in cam_names:
+            skel = camera_skeleton(node_names, edges, missing_nodes[cam])
+            same = next((a for a in assigned if a["nodes"] == skel["nodes"]), None)
+            if same is None:
+                assigned.append({**skel, "cameras": [cam]})
+            else:
+                same["cameras"].append(cam)
     write_project_toml(
         output_dir / "project.toml", project_cfg.get("name", output_dir.name), charuco_board,
         calibrations=calibrations,
+        node_offsets=node_offsets,
+        assigned_skeletons=assigned,
     )
 
-    print("Writing .slp files...")
-    write_slp_files(cam_trial_data, node_names, edges, output_dir / "slp")
+    if args.no_slp:
+        print("Skipping .slp files (--no-slp)")
+    else:
+        print("Writing .slp files...")
+        write_slp_files(cam_trial_data, node_names, edges, output_dir / "slp", missing_nodes)
 
     print(f"\nDone. Output: {output_dir}/")
     print(f"  Experiments: {[e['name'] for e in experiment_infos]}")

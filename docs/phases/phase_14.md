@@ -164,9 +164,10 @@ A skeleton can change after labelling: a node is dropped or renamed in SLEAP, a 
 
 ## 14.9 Synthetic data (`generate_synthetic.py`, `src/synthetic/`, `synthetic_config.toml`)
 
-- [ ] Write `node_offsets_cm` to `project.toml` instead of `skeleton.json`.
-- [ ] New per-camera key `missing_nodes = [...]` under `[cameras.camN]`. That camera's `.slp` file is written with a skeleton without those nodes and with no points for them. The default config sets it on one camera, so the synthetic project exercises this phase.
-- [ ] A `--no-slp` option writes the project without `.slp` files and with the skeletons as `assigned` entries in `project.toml` (honouring `missing_nodes`). This gives test data for the load-skeleton-first workflow.
+- [x] Write `node_offsets_cm` to `project.toml` (`[skeleton.node_offsets_cm]`). `skeleton.json` is still written too until the project reads `project.toml` (step 4 of the order of work).
+- [x] New per-camera key `missing_nodes = [...]` under `[cameras.camN]`. That camera's `.slp` file is written with a skeleton without those nodes (named `synthetic_without_<nodes>`) and with no points for them; `points.csv` leaves those cells `not_set`.
+- [ ] Turn on `missing_nodes = ["dorsal"]` for cam3 in `synthetic_config.toml` (it is there, commented out) once loading (14.1) and setup (14.8) accept different skeletons, then regenerate `projects/test_project`.
+- [x] A `--no-slp` option writes the project without `.slp` files and with the skeletons as `assigned` entries in `project.toml` (honouring `missing_nodes`). This gives test data for the load-skeleton-first workflow.
 
 ## 14.10 Tests
 
