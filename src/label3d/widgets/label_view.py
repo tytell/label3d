@@ -6,6 +6,7 @@ and selection state across all camera panels.
 
 from __future__ import annotations
 
+import html
 import math
 from pathlib import Path
 
@@ -200,13 +201,17 @@ class LabelView(QWidget):
 
     def _update_panel_overlays(self, panel):
         """Refresh overlays for a single camera panel."""
+        available = self._available()
+        cam_nodes = None if available is None else available.get(panel.camera_name)
+        bodypart = self._state.selected_bodypart
         panel.skeleton_overlay.update(
             self._state.points_store,
             self._state.skeleton,
             self._state.current_trial,
             self._state.current_frame,
             self._state.selected_instance,
-            self._state.selected_bodypart,
+            bodypart,
+            available=cam_nodes,
         )
         panel.epipolar_overlay.update(
             self._epipolar_cache,
@@ -215,7 +220,12 @@ class LabelView(QWidget):
             self._state.current_trial,
             self._state.current_frame,
             self._state.selected_instance,
-            self._state.selected_bodypart,
+            bodypart,
+            available=available,
+        )
+        missing = cam_nodes is not None and bool(bodypart) and bodypart not in cam_nodes
+        panel.set_notice(
+            f"<i>{html.escape(bodypart)}</i> not in this camera's skeleton" if missing else ""
         )
         panel.update_line_labels()
 
@@ -262,6 +272,8 @@ class LabelView(QWidget):
 
         trial = self._state.current_trial
         frame = self._state.current_frame
+        if not self._can_place(camera, bodypart):
+            return
 
         store.set_point(trial, frame, instance, bodypart, camera, x, y, state="set")
         self._state.points_changed.emit(trial, frame, instance, bodypart)
@@ -278,6 +290,8 @@ class LabelView(QWidget):
 
         trial = self._state.current_trial
         frame = self._state.current_frame
+        if not self._can_place(camera, bodypart):
+            return
         pt = store.get_point(trial, frame, instance, bodypart, camera)
 
         if pt.state == "not_visible":
@@ -539,15 +553,20 @@ class LabelView(QWidget):
 
     def _available(self) -> dict[str, frozenset[str]] | None:
         """Camera -> nodes its skeleton has in the current trial (None: all)."""
-        skeletons = self._project.skeletons
-        store = self._state.points_store
-        if skeletons is None or store is None:
+        if self._state.skeletons is None:
             return None
-        return skeletons.available(store.experiment_name, self._state.current_trial)
+        return {cam: self._state.available_nodes(cam) for cam in self._camera_grid.camera_names}
 
     def _camera_nodes(self, camera: str) -> frozenset[str] | None:
-        available = self._available()
-        return None if available is None else available.get(camera)
+        return self._state.available_nodes(camera)
+
+    def _can_place(self, camera: str, bodypart: str) -> bool:
+        """False, with a status message, if camera's skeleton lacks bodypart."""
+        nodes = self._state.available_nodes(camera)
+        if nodes is None or bodypart in nodes:
+            return True
+        self._show_status(f"{bodypart} is not in {camera}'s skeleton")
+        return False
 
     def _do_add_instance_single_camera(
         self,

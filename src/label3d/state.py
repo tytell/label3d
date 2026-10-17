@@ -9,7 +9,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal
 
 from label3d.points import PointsStore
-from label3d.skeleton import Skeleton
+from label3d.skeleton import ProjectSkeleton, Skeleton
 
 
 class ProjectState(QObject):
@@ -21,6 +21,7 @@ class ProjectState(QObject):
     selection_changed = Signal(int, str) # (instance, bodypart) or (-1, "") for deselect
     points_changed = Signal(str, int, int, str)  # (trial, frame, instance, bodypart)
     experiment_changed = Signal(str)     # experiment name
+    skeleton_changed = Signal()          # set_skeletons() was called
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -33,6 +34,7 @@ class ProjectState(QObject):
         self._auto_triangulate: bool = True
         self._points_store: PointsStore | None = None
         self._skeleton: Skeleton | None = None
+        self._skeletons: ProjectSkeleton | None = None
 
     # -- Points and skeleton --
 
@@ -51,6 +53,35 @@ class ProjectState(QObject):
     @skeleton.setter
     def skeleton(self, value: Skeleton | None):
         self._skeleton = value
+
+    @property
+    def skeletons(self) -> ProjectSkeleton | None:
+        """Every camera's skeleton; skeleton is their union."""
+        return self._skeletons
+
+    def set_skeletons(self, skeletons: ProjectSkeleton | None) -> None:
+        """Use the project's skeletons (skeleton becomes their union)."""
+        self._skeletons = skeletons
+        self._skeleton = skeletons.union if skeletons is not None else None
+        self.skeleton_changed.emit()
+
+    def _experiment(self) -> str:
+        if self._points_store is not None:
+            return self._points_store.experiment_name
+        return self._current_experiment
+
+    def available_nodes(self, camera: str) -> frozenset[str] | None:
+        """Nodes camera's skeleton has in the current trial; None: every node."""
+        if self._skeletons is None:
+            return None
+        return self._skeletons.nodes_for((self._experiment(), self._current_trial, camera))
+
+    def node_cameras(self, bodypart: str, cameras: list[str]) -> list[str]:
+        """The cameras (of cameras, in order) whose skeleton has bodypart this trial."""
+        if self._skeletons is None:
+            return list(cameras)
+        key = (self._experiment(), self._current_trial)
+        return [c for c in cameras if bodypart in self._skeletons.nodes_for((*key, c))]
 
     # -- Experiment --
 

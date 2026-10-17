@@ -114,19 +114,19 @@ Today there is one skeleton per project:
 
 ## 14.5 Label view (`widgets/bodypart_list.py`, `skeleton_overlay.py`, `epipolar_overlay.py`, `label_view.py`, `state.py`)
 
-- [ ] `ProjectState` gets `available_nodes(camera) -> set[str]` and `node_cameras(bodypart) -> list[str]` for the current experiment and trial, backed by `ProjectSkeleton`. It emits `skeleton_changed` when the project skeleton is reloaded.
-- [ ] **Points list** (`BodypartList`):
+- [x] `ProjectState` gets `set_skeletons(skeletons)`, `available_nodes(camera)` and `node_cameras(bodypart, cameras)` for the current experiment and trial, backed by `ProjectSkeleton`. `set_skeletons` emits `skeleton_changed`; the main window calls it on every skeleton reload, even when the union is unchanged, since which cameras have a node may have changed.
+- [x] **Points list** (`BodypartList`). A node in no camera's skeleton in the trial gets `—`.
   - The count becomes `[n/k]`, where `k` is the number of cameras that have the node in this trial, not all cameras. For a node in every camera nothing changes.
   - A node in some but not all cameras gets a ◐ after its name. A node in only one camera gets `2D`, because it is never triangulated.
   - Each marked row's tooltip names the cameras that have the node, for example "Only in cam0, cam2" or "Only in cam1 — not triangulated".
   - A one-line key under the list ("◐ some cameras · 2D one camera") appears only when the trial has partial nodes.
   - The list also refreshes on `trial_changed`, since availability is per trial.
-- [ ] **Camera panels:**
+- [x] **Camera panels:**
   - `SkeletonOverlay.update` takes the panel's available nodes. It draws no points, reprojections or edges for unavailable nodes, so they can't be clicked, dragged or toggled to not visible.
   - `EpipolarOverlay` draws no lines in a panel that lacks the selected node. Points in cameras that lack the node are not used as line sources either; they can only exist as leftovers (14.7).
-  - When the selected node is unavailable in a panel, the panel's line label reads "*tail_tip* not in this camera's skeleton" so the empty panel is explained.
-- [ ] `LabelView._can_place(camera, bodypart)` is a single guard used by every path that writes a point for one camera: drag, the not-visible toggle and the add/fill instance actions. It is a safety net behind the overlay, and refused writes show a status message.
-- [ ] Next/previous node (`Down` / `Up`) still steps through every node. Selection is shared across cameras, and a node unavailable in one camera is usually available in another.
+  - When the selected node is unavailable in a panel, a note at the top of the panel (`CameraPanel.set_notice`) reads "*tail_tip* not in this camera's skeleton" so the empty panel is explained.
+- [x] `LabelView._can_place(camera, bodypart)` guards drag and the not-visible toggle, a safety net behind the overlay; refused writes show a status message. The add/fill instance actions get only available nodes from instance init (14.4).
+- [x] Next/previous node (`Down` / `Up`) still steps through every node. Selection is shared across cameras, and a node unavailable in one camera is usually available in another.
 
 ## 14.6 One skeleton per `.slp` file (`slp_sync.py`, `widgets/slp_setup_dialog.py`, `project.py`)
 

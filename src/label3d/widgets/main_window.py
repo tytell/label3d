@@ -151,7 +151,7 @@ class MainWindow(QMainWindow):
         self._camera_grid.set_frame_provider(self._frame_provider)
 
         # Wire skeleton and points into state (before LabelView so sidebar populates)
-        state.skeleton = project.skeleton
+        state.set_skeletons(project.skeletons)
         state.points_store = project.points
 
         # Label view wraps the camera grid with overlays + sidebar
@@ -657,10 +657,14 @@ class MainWindow(QMainWindow):
     # -- Skeleton --------------------------------------------------------------
 
     def _reload_skeletons(self) -> None:
-        """Re-read the .slp files' skeletons; refresh the view if the union changed."""
-        if self._project.load_skeletons():
-            self._state.skeleton = self._project.skeleton
-            self._label_view.set_skeleton(self._project.skeleton)
+        """Re-read the .slp files' skeletons and refresh the view.
+
+        The view is refreshed even when the union is unchanged, since which
+        cameras have a node may have changed.
+        """
+        self._project.load_skeletons()
+        self._state.set_skeletons(self._project.skeletons)
+        self._label_view.set_skeleton(self._project.skeleton)
         self._show_skeleton_conflicts()
 
     def _show_skeleton_conflicts(self) -> None:
@@ -705,7 +709,7 @@ class MainWindow(QMainWindow):
         removed_points = 0
         if dialog.remove_points():
             removed_points = self._project.remove_points_outside(cameras=cameras)
-        self._state.skeleton = self._project.skeleton
+        self._state.set_skeletons(self._project.skeletons)
         self._label_view.set_skeleton(self._project.skeleton)
         self._refresh_after_merge()
 

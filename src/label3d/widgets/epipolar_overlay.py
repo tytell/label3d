@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Collection
 
 from typing import NamedTuple
 
@@ -70,8 +71,14 @@ class EpipolarOverlay:
         frame: int,
         selected_instance: int,
         selected_bodypart: str,
+        available: dict[str, Collection[str]] | None = None,
     ):
-        """Recompute and draw epipolar lines for the current selection."""
+        """Recompute and draw epipolar lines for the current selection.
+
+        available maps each camera to the nodes its skeleton has (None: all).
+        No lines are drawn in a camera without the selected node, and a camera
+        without it is no line source.
+        """
         line_idx = 0
         self._active_lines.clear()
 
@@ -87,8 +94,15 @@ class EpipolarOverlay:
 
         target_cam = self._camera_name
 
+        def has(cam: str) -> bool:
+            return available is None or selected_bodypart in available.get(cam, ())
+
+        if not has(target_cam):
+            self._hide_lines()
+            return
+
         for i, source_cam in enumerate(all_cameras):
-            if source_cam == target_cam:
+            if source_cam == target_cam or not has(source_cam):
                 continue
 
             pt = points_store.get_point(

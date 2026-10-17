@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
+    QLabel,
     QWidget,
 )
 import numpy as np
@@ -173,6 +174,16 @@ class CameraPanel(QGraphicsView):
         self._charuco_overlay = None  # CharucoOverlay — set externally for calibration mode
         self._pick_mode = False       # raw click-to-pick mode for axis alignment
 
+        # Viewport-fixed note at the top, e.g. "tail not in this camera's skeleton"
+        self._notice = QLabel(self.viewport())
+        self._notice.setStyleSheet(
+            "QLabel { color: white; background: rgba(0, 0, 0, 160);"
+            " padding: 2px 6px; border-radius: 3px; }"
+        )
+        self._notice.setTextFormat(Qt.TextFormat.RichText)
+        self._notice.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._notice.hide()
+
         # Epipolar line labels (viewport-fixed, rotated)
         self._line_labels: list[_RotatedLabel] = []
         self._label_debounce = QTimer(self)
@@ -210,6 +221,24 @@ class CameraPanel(QGraphicsView):
         self._legend = _CameraLegend(entries, parent=self.viewport())
         self._position_legend()
         self._legend.show()
+
+    def set_notice(self, html: str) -> None:
+        """Show a short note at the top of the panel; empty text hides it."""
+        if html == self._notice.text() and self._notice.isHidden() != bool(html):
+            return
+        self._notice.setText(html)
+        self._notice.setVisible(bool(html))
+        if html:
+            self._notice.adjustSize()
+            self._position_notice()
+
+    @property
+    def notice(self) -> str:
+        return "" if self._notice.isHidden() else self._notice.text()
+
+    def _position_notice(self) -> None:
+        vp = self.viewport()
+        self._notice.move(max(4, (vp.width() - self._notice.width()) // 2), 4)
 
     def _position_legend(self):
         """Place the legend in the bottom-left of the viewport."""
@@ -569,5 +598,6 @@ class CameraPanel(QGraphicsView):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._position_legend()
+        self._position_notice()
         self._hide_line_labels()
         self._label_debounce.start()

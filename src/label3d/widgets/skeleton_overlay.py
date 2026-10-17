@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Collection
 
 import numpy as np
 from PySide6.QtCore import QPointF, Qt
@@ -62,11 +63,14 @@ class SkeletonOverlay:
         frame: int,
         selected_instance: int,
         selected_bodypart: str,
+        available: Collection[str] | None = None,
     ):
         """Rebuild the overlay for the current frame.
 
-        All bodyparts for every instance are always shown.  Points without
-        stored coordinates are placed at a default position.
+        Every bodypart of every instance is shown, except those not in
+        available (the nodes this camera's skeleton has; None: all of them),
+        which are not drawn and can't be clicked. Points without stored
+        coordinates are placed at a default position.
         """
         self._active_points.clear()
 
@@ -86,6 +90,8 @@ class SkeletonOverlay:
                 continue
 
             for bp_idx, bp in enumerate(skeleton.nodes):
+                if available is not None and bp not in available:
+                    continue
                 pt = points_store.get_point(trial, frame, inst, bp, cam)
                 key = (inst, bp)
                 self._active_points.add(key)
@@ -140,7 +146,7 @@ class SkeletonOverlay:
                 self._label_items[key].setVisible(False)
 
         # Update skeleton edges
-        self._update_edges(points_store, skeleton, trial, frame, instances)
+        self._update_edges(points_store, skeleton, trial, frame, instances, available)
 
     def _update_edges(
         self,
@@ -149,13 +155,18 @@ class SkeletonOverlay:
         trial: str,
         frame: int,
         instances: list[int],
+        available: Collection[str] | None = None,
     ):
-        """Draw skeleton edge lines between connected bodyparts."""
+        """Draw skeleton edge lines between connected bodyparts (both available)."""
         cam = self._camera_name
         edge_idx = 0
 
         for inst in instances:
             for src_bp, dst_bp in skeleton.edges:
+                if available is not None and not (
+                    src_bp in available and dst_bp in available
+                ):
+                    continue
                 src_pt = points_store.get_point(trial, frame, inst, src_bp, cam)
                 dst_pt = points_store.get_point(trial, frame, inst, dst_bp, cam)
 

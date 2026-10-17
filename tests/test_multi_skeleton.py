@@ -781,3 +781,142 @@ class TestInitWithNodes:
             available={**no_dorsal, "cam2": {"snout", "left_eye", "dorsal"}},
         )
         assert "dorsal" not in coords
+
+
+# ---------------------------------------------------------------------------
+# Label view (phase 14.5)
+# ---------------------------------------------------------------------------
+
+from PySide6.QtWidgets import QGraphicsScene  # noqa: E402
+
+from label3d.state import ProjectState  # noqa: E402
+from label3d.widgets.bodypart_list import BodypartList  # noqa: E402
+from label3d.widgets.camera_panel import CameraPanel  # noqa: E402
+from label3d.widgets.epipolar_overlay import EpipolarOverlay  # noqa: E402
+from label3d.widgets.skeleton_overlay import SkeletonOverlay  # noqa: E402
+
+THREE_CAMS = ["cam0", "cam1", "cam2"]
+SYNC_EDGE_SK = Skeleton(nodes=["head", "tail"], edges=[("head", "tail")], name="skeleton")
+
+
+def _state(project, trial="t1") -> ProjectState:
+    state = ProjectState()
+    state.points_store = project.points
+    state.set_skeletons(project.skeletons)
+    state.current_trial = trial
+    return state
+
+
+class TestStateAvailability:
+    def test_available_nodes_and_cameras(self, project):
+        project.assign_skeleton(HEAD_ONLY, ["cam1"])
+        state = _state(project)
+        assert state.available_nodes("cam1") == {"head"}
+        assert state.available_nodes("cam0") == set(SYNC_NODES)
+        assert state.node_cameras("tail", SYNC_CAMS) == ["cam0"]
+        assert state.skeleton.nodes == SYNC_NODES
+
+    def test_no_skeletons_means_everything(self):
+        state = ProjectState()
+        assert state.available_nodes("cam0") is None
+        assert state.node_cameras("x", SYNC_CAMS) == SYNC_CAMS
+
+
+class TestBodypartListMarks:
+    def _texts(self, widget):
+        return [widget._list.item(i).text() for i in range(widget._list.count())]
+
+    def test_one_camera_and_partial_marks(self, project):
+        project.assign_skeleton(HEAD_ONLY, ["cam1"])
+        state = _state(project)
+        widget = BodypartList(state)
+        widget.set_skeleton(state.skeleton)
+        # t1 frame 0: head in both cameras; tail only in cam0's skeleton
+        assert self._texts(widget) == ["head  [2/2]", "tail 2D  [1/1]"]
+        assert widget._list.item(1).toolTip() == "Only in cam0 — not triangulated"
+        assert widget._key.isVisibleTo(widget)
+
+    def test_partial_with_three_cameras(self):
+        skeletons = ProjectSkeleton.build(THREE_CAMS, by_camera={
+            "cam0": SYNC_EDGE_SK, "cam1": HEAD_ONLY, "cam2": SYNC_EDGE_SK,
+        })
+        state = ProjectState()
+        state.points_store = PointsStore.create_empty(
+            cameras=THREE_CAMS, bodyparts=[], experiment_name="e"
+        )
+        state.set_skeletons(skeletons)
+        state.current_trial = "t"
+        widget = BodypartList(state)
+        widget.set_skeleton(state.skeleton)
+        assert self._texts(widget) == ["head", "tail ◐"]
+        assert widget._list.item(1).toolTip() == "Only in cam0, cam2"
+
+    def test_full_skeleton_no_marks(self, project):
+        state = _state(project)
+        widget = BodypartList(state)
+        widget.set_skeleton(state.skeleton)
+        assert self._texts(widget) == ["head  [2/2]", "tail  [2/2]"]
+        assert not widget._key.isVisibleTo(widget)
+
+
+class TestOverlays:
+    def test_skeleton_overlay_skips_unavailable(self, project, qapp):
+        overlay = SkeletonOverlay(QGraphicsScene(), "cam1")
+        overlay.update(project.points, project.skeleton, "t1", 0, 0, "head",
+                       available={"head"})
+        assert overlay._active_points == {(0, "head")}
+        assert overlay.hit_test(overlay.get_point_item(0, "head").pos()) == (0, "head")
+        assert not any(item.isVisible() for item in overlay._edge_items)
+        overlay.update(project.points, project.skeleton, "t1", 0, 0, "head")
+        assert overlay._active_points == {(0, "head"), (0, "tail")}
+
+    def test_epipolar_overlay_respects_available(self, project, qapp):
+        class Cache:
+            def get_epipolar_line(self, src, dst, xy):
+                return (0.0, 0.0), (10.0, 10.0)
+
+        overlay = EpipolarOverlay(QGraphicsScene(), "cam1")
+        overlay.update(Cache(), project.points, SYNC_CAMS, "t1", 0, 0, "tail")
+        assert len(overlay.active_lines) == 1
+        lacking = {"cam0": set(SYNC_NODES), "cam1": {"head"}}
+        overlay.update(Cache(), project.points, SYNC_CAMS, "t1", 0, 0, "tail",
+                       available=lacking)
+        assert overlay.active_lines == []
+        # cam0 as target: cam1 lacks tail, so it is no source
+        overlay0 = EpipolarOverlay(QGraphicsScene(), "cam0")
+        overlay0.update(Cache(), project.points, SYNC_CAMS, "t1", 0, 0, "tail",
+                        available=lacking)
+        assert overlay0.active_lines == []
+
+    def test_panel_notice(self, qapp):
+        panel = CameraPanel("cam0")
+        panel.set_notice("<i>tail</i> not in this camera's skeleton")
+        assert "tail" in panel.notice
+        panel.set_notice("")
+        assert panel.notice == ""
+
+
+class TestLabelViewAvailability:
+    def _view(self, project, state):
+        from label3d.widgets.camera_grid import CameraGrid
+        from label3d.widgets.label_view import LabelView
+        grid = CameraGrid()
+        grid.setup_cameras(project.cameras)
+        return LabelView(project, state, grid), grid
+
+    def test_notice_and_guard(self, project):
+        project.assign_skeleton(HEAD_ONLY, ["cam1"])
+        state = _state(project)
+        view, grid = self._view(project, state)
+        state.select(0, "tail")
+        view._update_all_overlays()
+        assert "tail" in grid.get_panel("cam1").notice
+        assert grid.get_panel("cam0").notice == ""
+
+        before = project.points.get_point("t1", 0, 0, "tail", "cam1")
+        view._on_point_dragged("cam1", 0, "tail", 1.0, 2.0)
+        view._on_point_right_clicked("cam1", 0, "tail")
+        after = project.points.get_point("t1", 0, 0, "tail", "cam1")
+        assert (after.x, after.state) == (before.x, before.state)
+        view._on_point_dragged("cam0", 0, "tail", 1.0, 2.0)
+        assert project.points.get_point("t1", 0, 0, "tail", "cam0").x == 1.0
