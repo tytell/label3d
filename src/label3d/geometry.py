@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
     from label3d.points import PointsStore
+    from label3d.skeleton import ProjectSkeleton
 
 logger = logging.getLogger(__name__)
 
@@ -469,18 +470,27 @@ def build_camera_group(cameras: dict[str, "CameraParams"]):
 TRIANGULATED_STATES = ("set", "predicted")
 
 
-def triangulation_mask(df: "pd.DataFrame", cam: str) -> np.ndarray:
-    """Rows where cam's point counts for triangulation: set/predicted, x/y present."""
-    return (
+def triangulation_mask(
+    df: "pd.DataFrame", cam: str, skeletons: "ProjectSkeleton | None" = None
+) -> np.ndarray:
+    """Rows where cam's point counts for triangulation: set/predicted, x/y present.
+
+    With skeletons, the node must also be in cam's skeleton for that row's trial.
+    """
+    mask = (
         df[(cam, "state")].isin(TRIANGULATED_STATES).to_numpy()
         & df[(cam, "x")].notna().to_numpy()
         & df[(cam, "y")].notna().to_numpy()
     )
+    if skeletons is not None and mask.any():
+        mask &= skeletons.available_mask(df.index, cam)
+    return mask
 
 
 def triangulate_rows(
     cameras: dict[str, "CameraParams"],
     df: "pd.DataFrame",
+    skeletons: "ProjectSkeleton | None" = None,
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """Triangulate every row of a points DataFrame in one batch.
 
@@ -488,7 +498,8 @@ def triangulate_rows(
     predicted are undistorted to normalised coordinates and stacked into one
     DLT system per row; all rows are solved with a single batched SVD. This is
     the same DLT as aniposelib's CameraGroup.triangulate, without its per-point
-    Python loop.
+    Python loop. With skeletons, a camera's point counts only where its
+    skeleton has the node (see triangulation_mask).
 
     Returns:
         p3d: (N, 3) world points, NaN for rows seen by fewer than 2 cameras.
@@ -504,7 +515,7 @@ def triangulate_rows(
     A = np.zeros((n, 2 * len(cams), 4))
     n_views = np.zeros(n, dtype=int)
     for i, cam in enumerate(cams):
-        good = triangulation_mask(df, cam)
+        good = triangulation_mask(df, cam, skeletons)
         if not good.any():
             continue
         cp = cameras[cam]
@@ -529,7 +540,9 @@ def triangulate_rows(
 
 
 def mean_reprojection_errors(
-    df: "pd.DataFrame", reproj: dict[str, np.ndarray]
+    df: "pd.DataFrame",
+    reproj: dict[str, np.ndarray],
+    skeletons: "ProjectSkeleton | None" = None,
 ) -> np.ndarray:
     """(N,) mean distance (px) between each row's used points and their reprojections.
 
@@ -543,7 +556,7 @@ def mean_reprojection_errors(
             df[(cam, "x")].to_numpy(dtype=np.float64) - xy_r[:, 0],
             df[(cam, "y")].to_numpy(dtype=np.float64) - xy_r[:, 1],
         )
-        use = triangulation_mask(df, cam) & ~np.isnan(err)
+        use = triangulation_mask(df, cam, skeletons) & ~np.isnan(err)
         total[use] += err[use]
         count[use] += 1
     with np.errstate(invalid="ignore"):
@@ -555,6 +568,7 @@ def triangulate_trial(
     points_store: "PointsStore",
     trial: str,
     frames: list[int] | None = None,
+    skeletons: "ProjectSkeleton | None" = None,
 ) -> int:
     """Triangulate every row of a trial (or of some of its frames) and store the results.
 
@@ -565,7 +579,7 @@ def triangulate_trial(
     rows = points_store.trial_rows(trial, frames)
     if rows.empty:
         return 0
-    p3d, reproj = triangulate_rows(cameras, rows)
+    p3d, reproj = triangulate_rows(cameras, rows, skeletons)
     points_store.set_triangulation(rows.index, p3d, reproj)
     return int((~np.isnan(p3d[:, 0])).sum())
 
@@ -576,6 +590,7 @@ def triangulate_frame(
     trial: str,
     frame: int,
     instance: int,
+    skeletons: "ProjectSkeleton | None" = None,
 ) -> dict[str, float]:
     """Triangulate all bodyparts for one instance in one frame.
 
@@ -589,9 +604,9 @@ def triangulate_frame(
     rows = points_store.instance_rows(trial, frame, instance)
     if rows.empty:
         return {}
-    p3d, reproj = triangulate_rows(cameras, rows)
+    p3d, reproj = triangulate_rows(cameras, rows, skeletons)
     points_store.set_triangulation(rows.index, p3d, reproj)
-    errors = mean_reprojection_errors(rows, reproj)
+    errors = mean_reprojection_errors(rows, reproj, skeletons)
     bodyparts = rows.index.get_level_values("bodypart")
     return {str(bp): float(e) for bp, e in zip(bodyparts, errors)}
 
@@ -601,6 +616,7 @@ def triangulate_all_instances(
     points_store: "PointsStore",
     trial: str,
     frame: int,
+    skeletons: "ProjectSkeleton | None" = None,
 ) -> dict[str, float]:
     """Triangulate all instances in a frame.
 
@@ -609,7 +625,7 @@ def triangulate_all_instances(
     instances = points_store.get_instances(trial, frame)
     all_errors: dict[str, list[float]] = {}
     for inst in instances:
-        errs = triangulate_frame(cameras, points_store, trial, frame, inst)
+        errs = triangulate_frame(cameras, points_store, trial, frame, inst, skeletons)
         for bp, e in errs.items():
             all_errors.setdefault(bp, []).append(e)
 

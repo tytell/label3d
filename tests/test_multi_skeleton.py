@@ -665,3 +665,119 @@ class TestLoadSkeletonDialog:
         assert dialog.skeleton() is None
         assert not dialog._ok.isEnabled()
         assert "Could not read" in dialog._skeleton_label.text()
+
+
+# ---------------------------------------------------------------------------
+# Triangulation and instance init (phase 14.4)
+# ---------------------------------------------------------------------------
+
+from label3d.geometry import (  # noqa: E402
+    load_cameras,
+    mean_reprojection_errors,
+    triangulate_frame,
+    triangulate_rows,
+    triangulate_trial,
+)
+from label3d.instance_init import init_average, init_random, init_reprojected  # noqa: E402
+from tests.conftest import TEST_PROJECT, requires_test_project  # noqa: E402
+
+SYN_EXP = TEST_PROJECT / "experiments" / "exp1"
+SYN_CAMS = ["cam1", "cam2", "cam3"]
+SYN_FULL = Skeleton(nodes=["snout", "left_eye", "dorsal"], name="full")
+SYN_NO_DORSAL = Skeleton(nodes=["snout", "left_eye"], name="no_dorsal")
+
+
+@pytest.fixture
+def syn_cameras():
+    return load_cameras(next((SYN_EXP / "calibrations").glob("*.toml")))
+
+
+@pytest.fixture
+def syn_store(qapp):
+    return PointsStore.from_csv(SYN_EXP / "points.csv")
+
+
+def _syn_skeletons(**by_camera) -> ProjectSkeleton:
+    return ProjectSkeleton.build(SYN_CAMS, by_camera={
+        cam: by_camera.get(cam, SYN_FULL) for cam in SYN_CAMS
+    })
+
+
+@requires_test_project
+class TestTriangulationWithSkeletons:
+    def test_unavailable_point_is_ignored(self, syn_cameras, syn_store):
+        """cam3's dorsal points stay set but don't count: same as clearing them."""
+        skeletons = _syn_skeletons(cam3=SYN_NO_DORSAL)
+        df = syn_store.df
+        p3d, reproj = triangulate_rows(syn_cameras, df, skeletons)
+
+        cleared = df.copy()
+        dorsal = cleared.index.get_level_values("bodypart") == "dorsal"
+        cleared.loc[dorsal, ("cam3", "state")] = "not_set"
+        expected, _ = triangulate_rows(syn_cameras, cleared)
+        np.testing.assert_allclose(p3d, expected, equal_nan=True)
+        # The mean error ignores cam3 for dorsal but still has cam1 and cam2
+        errors = mean_reprojection_errors(df, reproj, skeletons)
+        assert np.isfinite(errors[dorsal]).all()
+
+    def test_node_in_one_camera_is_not_triangulated(self, syn_cameras, syn_store):
+        skeletons = _syn_skeletons(cam1=SYN_NO_DORSAL, cam2=SYN_NO_DORSAL)
+        trial = syn_store.df.index.get_level_values("trial")[0]
+        triangulate_trial(syn_cameras, syn_store, trial, skeletons=skeletons)
+        df = syn_store.df
+        dorsal = df.index.get_level_values("bodypart") == "dorsal"
+        assert df.loc[dorsal, ("3d", "x")].isna().all()
+        assert df.loc[~dorsal, ("3d", "x")].notna().all()
+
+    def test_triangulate_frame_uses_skeletons(self, syn_cameras, syn_store):
+        skeletons = _syn_skeletons(cam1=SYN_NO_DORSAL, cam2=SYN_NO_DORSAL)
+        trial = syn_store.df.index.get_level_values("trial")[0]
+        errors = triangulate_frame(syn_cameras, syn_store, trial, 0, 0, skeletons)
+        assert np.isnan(errors["dorsal"]) and np.isfinite(errors["snout"])
+
+
+class TestInitWithNodes:
+    def test_random_only_available_nodes(self, simple_skeleton):
+        coords = init_random(
+            simple_skeleton, "cam0", None, (100.0, 100.0), (640, 480),
+            nodes={"snout", "dorsal"},
+        )
+        assert set(coords) == {"snout", "dorsal"}
+
+    def test_random_with_offsets_only_available_nodes(self, simple_skeleton, syn_cameras):
+        simple_skeleton.node_offsets_cm = {"snout": [1.0, 0, 0], "left_eye": [0, 1.0, 0]}
+        coords = init_random(
+            simple_skeleton, "cam1", syn_cameras, (600.0, 500.0), (1280, 1024),
+            nodes={"snout", "left_eye"},
+        )
+        assert set(coords) == {"snout", "left_eye"}
+
+    def test_average_anchor_is_first_available_node(self, simple_skeleton):
+        store = PointsStore.create_empty(cameras=["cam0"], bodyparts=[], experiment_name="exp")
+        for trial, (sx, sy) in [("t1", (100.0, 100.0)), ("t2", (200.0, 300.0))]:
+            store.set_point(trial, 0, 0, "left_eye", "cam0", sx, sy, state="set")
+            store.set_point(trial, 0, 0, "dorsal", "cam0", sx, sy + 40, state="set")
+        coords, fallback = init_average(
+            store, "exp", "cam0", simple_skeleton, (50.0, 60.0), (640, 480),
+            nodes={"left_eye", "dorsal"},
+        )
+        assert not fallback
+        assert coords == {"left_eye": (50.0, 60.0), "dorsal": (50.0, 100.0)}
+
+    @requires_test_project
+    def test_reprojected_respects_available(self, syn_cameras, syn_store):
+        trial = syn_store.df.index.get_level_values("trial")[0]
+        all_coords = init_reprojected(syn_store, "exp1", trial, 0, 0, "cam3", syn_cameras)
+        assert set(all_coords) == {"snout", "left_eye", "dorsal"}
+        no_dorsal = {"cam1": {"snout", "left_eye", "dorsal"}, "cam2": {"snout", "left_eye"},
+                     "cam3": {"snout", "left_eye"}}
+        coords = init_reprojected(
+            syn_store, "exp1", trial, 0, 0, "cam3", syn_cameras, available=no_dorsal
+        )
+        assert set(coords) == {"snout", "left_eye"}
+        # Only cam1 has dorsal as a source, so it can't be placed in cam2 either
+        coords = init_reprojected(
+            syn_store, "exp1", trial, 0, 0, "cam2", syn_cameras,
+            available={**no_dorsal, "cam2": {"snout", "left_eye", "dorsal"}},
+        )
+        assert "dorsal" not in coords

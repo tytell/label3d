@@ -11,6 +11,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 from sleap_io.io.slp import read_skeletons
 
 from label3d.slp_sync import Cell
@@ -326,6 +328,23 @@ class ProjectSkeleton:
         if nodes is None:
             nodes = self._nodes[cell] = frozenset(self.skeleton_for(cell).nodes)
         return nodes
+
+    def available_mask(self, index: pd.MultiIndex, camera: str) -> np.ndarray:
+        """Rows of a points index whose node is available in camera.
+
+        The index needs experiment, trial and bodypart levels; each distinct
+        (experiment, trial, bodypart) is looked up once.
+        """
+        keys = pd.MultiIndex.from_arrays([
+            index.get_level_values("experiment"),
+            index.get_level_values("trial"),
+            index.get_level_values("bodypart"),
+        ])
+        allowed = [
+            key for key in keys.unique()
+            if key[2] in self.nodes_for((str(key[0]), str(key[1]), camera))
+        ]
+        return keys.isin(allowed)
 
     def available(self, experiment: str, trial: str) -> dict[str, frozenset[str]]:
         """Camera -> nodes available in that camera for one trial."""

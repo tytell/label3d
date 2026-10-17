@@ -22,6 +22,7 @@ availability — available_strategies() checks which strategies are usable given
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Literal
 
 import cv2
@@ -74,13 +75,15 @@ def init_random(
     center_px: tuple[float, float] | None,
     frame_size: tuple[int, int],
     rng: np.random.Generator | None = None,
+    nodes: Collection[str] | None = None,
 ) -> dict[str, tuple[float, float]]:
     """Return {bodypart: (x, y)} with random placement around center_px.
 
     If skeleton.node_offsets_cm covers all nodes and calibration is provided,
     each bodypart's cm offset is projected through the camera at a nominal depth
     (50 cm) with 10% jitter.  Otherwise uses an isotropic Gaussian with
-    sigma = min(w, h) / 8.
+    sigma = min(w, h) / 8. nodes, if given, limits the result to the nodes
+    the camera has.
     """
     if rng is None:
         rng = np.random.default_rng()
@@ -92,18 +95,19 @@ def init_random(
 
     cam = cameras.get(camera_name) if cameras else None
     node_offsets: dict[str, list[float]] = getattr(skeleton, "node_offsets_cm", {})
+    wanted = [bp for bp in skeleton.nodes if nodes is None or bp in nodes]
 
     if (
         cam is not None
         and node_offsets
-        and all(bp in node_offsets for bp in skeleton.nodes)
+        and all(bp in node_offsets for bp in wanted)
     ):
         try:
             nominal_depth = 50.0  # cm
             world_center = _pixel_to_world_at_depth(cam, cx, cy, nominal_depth)
 
             projected: list[np.ndarray] = []
-            for bp in skeleton.nodes:
+            for bp in wanted:
                 offset = np.array(node_offsets[bp], dtype=float)
                 world_pt = world_center + offset
                 pix = cam.project(world_pt.reshape(1, 3))[0]
@@ -117,7 +121,7 @@ def init_random(
             )
             sigma = span * 0.1
 
-            for bp, pix in zip(skeleton.nodes, projected):
+            for bp, pix in zip(wanted, projected):
                 jitter = rng.normal(0.0, sigma, size=2)
                 x = float(np.clip(pix[0] + jitter[0], 0, w))
                 y = float(np.clip(pix[1] + jitter[1], 0, h))
@@ -128,7 +132,7 @@ def init_random(
 
     # Isotropic Gaussian fallback
     sigma = min(w, h) / 8.0
-    for bp in skeleton.nodes:
+    for bp in wanted:
         x = float(np.clip(rng.normal(cx, sigma), 0, w))
         y = float(np.clip(rng.normal(cy, sigma), 0, h))
         result[bp] = (x, y)
@@ -143,10 +147,12 @@ def init_average(
     skeleton: Skeleton,
     center_px: tuple[float, float] | None,
     frame_size: tuple[int, int],
+    nodes: Collection[str] | None = None,
 ) -> tuple[dict[str, tuple[float, float]], bool]:
     """Return (coords, used_fallback) for average-relative placement.
 
-    The first skeleton node is the anchor.  For every instance in the
+    Only nodes (if given: the nodes the camera has) are placed. The first of
+    them in skeleton order is the anchor.  For every instance in the
     experiment whose anchor is placed (set/predicted) in camera_name, each
     other placed bodypart's offset from the anchor is collected; the offsets
     are averaged per bodypart.  The anchor goes at center_px, or, without one,
@@ -158,8 +164,8 @@ def init_average(
     placement is used instead).
     """
     w, h = frame_size
-    nodes = skeleton.nodes
-    anchor = nodes[0] if nodes else ""
+    wanted = [bp for bp in skeleton.nodes if nodes is None or bp in nodes]
+    anchor = wanted[0] if wanted else ""
 
     mean_offsets = pd.DataFrame(columns=["dx", "dy"], dtype=float)
     anchor_xy = np.empty((0, 2))
@@ -198,12 +204,14 @@ def init_average(
     else:
         cx, cy = _frame_center(frame_size)
 
-    random_coords = init_random(skeleton, camera_name, None, (cx, cy), frame_size)
+    random_coords = init_random(
+        skeleton, camera_name, None, (cx, cy), frame_size, nodes=wanted
+    )
     if n_sources < 2:
         return random_coords, True
 
     result: dict[str, tuple[float, float]] = {}
-    for bp in nodes:
+    for bp in wanted:
         if bp == anchor:
             x, y = cx, cy
         elif bp in mean_offsets.index:
@@ -224,12 +232,14 @@ def init_reprojected(
     instance: int,
     target_camera: str,
     cameras: dict[str, CameraParams],
+    available: dict[str, Collection[str]] | None = None,
 ) -> dict[str, tuple[float, float]] | None:
     """Triangulate instance from other cameras and project into target_camera.
 
     Returns {bodypart: (x, y)} for bodyparts that could be reprojected, or None
     if no bodypart had ≥2 source-camera observations.  Coordinates are clipped
-    to the target camera frame bounds.
+    to the target camera frame bounds. available (camera -> nodes it has) limits
+    both the bodyparts placed in target_camera and the source points used.
     """
     target_cam = cameras.get(target_camera)
     if target_cam is None:
@@ -245,10 +255,15 @@ def init_reprojected(
 
     result: dict[str, tuple[float, float]] = {}
 
+    def has(cam_name: str, bp: str) -> bool:
+        return available is None or bp in available.get(cam_name, ())
+
     for bp in bodyparts:
+        if not has(target_camera, bp):
+            continue
         picks_2d: dict[str, tuple[float, float]] = {}
         for cam_name, cam in cameras.items():
-            if cam_name == target_camera:
+            if cam_name == target_camera or not has(cam_name, bp):
                 continue
             pt = points_store.get_point(trial, frame, instance, bp, cam_name)
             if pt.state in ("set", "predicted") and not np.isnan(pt.x):

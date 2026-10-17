@@ -23,6 +23,7 @@ import pandas as pd
 
 from label3d.geometry import mean_reprojection_errors, triangulation_mask
 from label3d.points import INDEX_NAMES, LABELED_STATES, SOURCE_SLEAP_PRED
+from label3d.skeleton import ProjectSkeleton
 from label3d.slp_sync import MergeResult, video_cells
 
 if TYPE_CHECKING:
@@ -173,7 +174,7 @@ def export_points(project: Project, options: ExportOptions | None = None) -> Exp
         if project.active_calibration_id(name) is None:
             result.two_d_only.append(name)
             calibration = None
-        rows = experiment_rows(df, cameras, starts, calibration, options)
+        rows = experiment_rows(df, cameras, starts, calibration, options, project.skeletons)
         result.counts[name] = state_source_counts(rows, cameras)
         frames.append(rows)
 
@@ -210,6 +211,7 @@ def experiment_rows(
     starts: dict[tuple[str, str, str], int],
     calibration: str | None,
     options: ExportOptions,
+    skeletons: ProjectSkeleton | None = None,
 ) -> pd.DataFrame:
     """Wide-format rows for one experiment's points DataFrame.
 
@@ -264,8 +266,10 @@ def experiment_rows(
         columns[f"{cam}_video_frame"] = pd.array(columns[f"{cam}_video_frame"], dtype="Int64")
 
     if with_3d:
-        n_cameras = np.asarray(sum(triangulation_mask(df, cam).astype(int) for cam in exp_cameras))
-        mean_error = mean_reprojection_errors(df, reproj)
+        n_cameras = np.asarray(sum(
+            triangulation_mask(df, cam, skeletons).astype(int) for cam in exp_cameras
+        ))
+        mean_error = mean_reprojection_errors(df, reproj, skeletons)
     else:
         n_cameras = np.zeros(n, dtype=int)
         mean_error = np.full(n, np.nan)

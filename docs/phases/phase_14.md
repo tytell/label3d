@@ -107,10 +107,10 @@ Today there is one skeleton per project:
 
 ## 14.4 Triangulation and instance init (`geometry.py`, `workers/triangulation_worker.py`, `instance_init.py`)
 
-- [ ] `triangulate_rows`, `triangulate_trial` and `triangulate_frame` take `available: dict[str, set[str]] | None` (camera → nodes for this trial). A camera's point counts only if its state is `set` or `predicted` **and** the node is in that camera's set. With today's data this changes nothing. It keeps leftover points (14.7) out of the 3D point.
-- [ ] Callers pass `project.skeletons` per trial. The workers and the export CLI already have the project.
-- [ ] Reprojections (`xr`/`yr`) are still computed for every camera. The label view does not draw them in cameras where the node is unavailable (14.5). Export leaves those cells out (14.7).
-- [ ] `init_random`, `init_average` and `init_reprojected` take the camera's available nodes and return coordinates only for those. This covers Add instance (one camera and all cameras) and the reprojected fill.
+- [x] `triangulation_mask`, `triangulate_rows`, `mean_reprojection_errors`, `triangulate_trial`, `triangulate_frame` and `triangulate_all_instances` take `skeletons: ProjectSkeleton | None`. A camera's point counts only if its state is `set` or `predicted` **and** the node is in that camera's skeleton for the row's trial (`ProjectSkeleton.available_mask`, so one table can span trials, as the export's does). With today's data this changes nothing. It keeps leftover points (14.7) out of the 3D point.
+- [x] Callers pass `project.skeletons`: both triangulation workers, the label view's frame and trial triangulation, and the export's `n_cameras` / `mean_error`.
+- [x] Reprojections (`xr`/`yr`) are still computed for every camera. The label view does not draw them in cameras where the node is unavailable (14.5). Export leaves those cells out (14.7, not done yet).
+- [x] `init_random` and `init_average` take `nodes`, and `init_reprojected` takes `available` (camera → nodes, used for the target and the source cameras); they return coordinates only for available nodes and return coordinates only for those. This covers Add instance (one camera and all cameras) and the reprojected fill.
 
 ## 14.5 Label view (`widgets/bodypart_list.py`, `skeleton_overlay.py`, `epipolar_overlay.py`, `label_view.py`, `state.py`)
 
@@ -184,8 +184,8 @@ A skeleton can change after labelling: a node is dropped or renamed in SLEAP, a 
 - [ ] Load-skeleton-first workflow on a `--no-slp` synthetic project: the first Sync creates each file with its cameras' assigned skeleton; reloading gives the same availability from the files.
 - [x] Sync is refused when the mapping mixes skeletons.
 - [x] Import from an outside file with the union skeleton drops the points in cells that lack the node, and reports them.
-- [ ] Triangulation with `available` ignores a leftover `set` point in an unavailable cell, and gives NaN for a node in one camera only.
-- [ ] `init_random` / `init_average` return only available nodes.
+- [x] Triangulation with `skeletons` ignores a leftover `set` point in an unavailable cell, and gives NaN for a node in one camera only.
+- [x] `init_random` / `init_average` / `init_reprojected` return only available nodes.
 - [x] `Project.load` migrates an old `skeleton.json` into `project.toml`.
 - [x] Remove-outside-skeletons: counts and deletion across experiments.
 

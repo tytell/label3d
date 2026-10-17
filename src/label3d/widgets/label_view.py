@@ -316,7 +316,9 @@ class LabelView(QWidget):
         instances = store.get_instances(trial, frame)
         logger.debug(f"Triangulating frame {frame} in trial {trial}: instances={instances}")
         for inst in instances:
-            triangulate_frame(self._cameras, store, trial, frame, inst)
+            triangulate_frame(
+                self._cameras, store, trial, frame, inst, self._project.skeletons
+            )
         # Invalidate the frame cache after bulk 3D writes, then redraw directly.
         # Do NOT emit points_changed here — that would re-trigger auto-triangulation.
         store._invalidate_cache(trial, frame)
@@ -336,7 +338,8 @@ class LabelView(QWidget):
 
         from label3d.workers.triangulation_worker import TriangulationWorker
         self._tri_worker = TriangulationWorker(
-            self._cameras, store, self._state.current_trial, parent=self
+            self._cameras, store, self._state.current_trial,
+            skeletons=self._project.skeletons, parent=self,
         )
         self._tri_worker.finished.connect(self._on_batch_done)
         self._tri_worker.start()
@@ -534,6 +537,18 @@ class LabelView(QWidget):
 
         menu.exec(QCursor.pos())
 
+    def _available(self) -> dict[str, frozenset[str]] | None:
+        """Camera -> nodes its skeleton has in the current trial (None: all)."""
+        skeletons = self._project.skeletons
+        store = self._state.points_store
+        if skeletons is None or store is None:
+            return None
+        return skeletons.available(store.experiment_name, self._state.current_trial)
+
+    def _camera_nodes(self, camera: str) -> frozenset[str] | None:
+        available = self._available()
+        return None if available is None else available.get(camera)
+
     def _do_add_instance_single_camera(
         self,
         camera_name: str,
@@ -568,6 +583,7 @@ class LabelView(QWidget):
                 instance,
                 camera_name,
                 self._cameras,
+                available=self._available(),
             )
             if not coords:
                 self._show_status("Reprojected init: insufficient data")
@@ -596,6 +612,7 @@ class LabelView(QWidget):
                 skeleton,
                 center_px,
                 frame_size,
+                nodes=self._camera_nodes(camera_name),
             )
             if used_fallback:
                 self._show_status(
@@ -604,7 +621,8 @@ class LabelView(QWidget):
                 )
         else:
             coords = init_random(
-                skeleton, camera_name, self._cameras, center_px, frame_size
+                skeleton, camera_name, self._cameras, center_px, frame_size,
+                nodes=self._camera_nodes(camera_name),
             )
 
         for bp, (x, y) in coords.items():
@@ -661,12 +679,14 @@ class LabelView(QWidget):
                     skeleton,
                     center_px,
                     frame_size,
+                    nodes=self._camera_nodes(cam_name),
                 )
                 if used_fallback:
                     any_fallback = True
             else:
                 coords = init_random(
-                    skeleton, cam_name, self._cameras, center_px, frame_size
+                    skeleton, cam_name, self._cameras, center_px, frame_size,
+                    nodes=self._camera_nodes(cam_name),
                 )
 
             for bp, (x, y) in coords.items():
@@ -711,6 +731,7 @@ class LabelView(QWidget):
                 instance,
                 cam_name,
                 self._cameras,
+                available=self._available(),
             )
             if not coords:
                 continue

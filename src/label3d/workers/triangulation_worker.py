@@ -7,6 +7,7 @@ import logging
 from PySide6.QtCore import QThread, Signal
 
 from label3d.geometry import CameraParams, triangulate_trial
+from label3d.skeleton import ProjectSkeleton
 from label3d.points import PointsStore
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ class TriangulationWorker(QThread):
         points_store: PointsStore,
         trial: str,
         frames: list[int] | None = None,
+        skeletons: ProjectSkeleton | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -36,10 +38,13 @@ class TriangulationWorker(QThread):
         self._store = points_store
         self._trial = trial
         self._frames = frames  # None = every frame with data
+        self._skeletons = skeletons
 
     def run(self):
         try:
-            triangulate_trial(self._cameras, self._store, self._trial, self._frames)
+            triangulate_trial(
+                self._cameras, self._store, self._trial, self._frames, self._skeletons
+            )
             self.finished.emit()
         except Exception as exc:
             logger.exception("Triangulating trial %s failed", self._trial)
@@ -69,11 +74,13 @@ class AllExperimentsTriangulationWorker(QThread):
         self,
         jobs: list[tuple[str, dict[str, CameraParams], PointsStore]],
         first_trial: str | None = None,
+        skeletons: ProjectSkeleton | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self._jobs = jobs
         self._first_trial = first_trial
+        self._skeletons = skeletons
         self.completed = False
 
     def run(self):
@@ -90,7 +97,7 @@ class AllExperimentsTriangulationWorker(QThread):
             for store, cameras, trial in trials:
                 if self.isInterruptionRequested():
                     break
-                triangulate_trial(cameras, store, trial)
+                triangulate_trial(cameras, store, trial, skeletons=self._skeletons)
                 done += 1
                 self.progress.emit(done, total)
             self.completed = done == total

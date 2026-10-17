@@ -112,12 +112,6 @@ def drop_unavailable(
     become not_set, so a merge ignores them. cameras limits it to those cameras.
     """
     idx = slp_df.index
-    keys = pd.MultiIndex.from_arrays([
-        idx.get_level_values("experiment"),
-        idx.get_level_values("trial"),
-        idx.get_level_values("bodypart"),
-    ])
-    combos = keys.unique()
     cameras = [
         c for c in slp_df.columns.get_level_values("view").unique()
         if c != "3d" and (cameras is None or c in cameras)
@@ -125,14 +119,11 @@ def drop_unavailable(
     df = None
     dropped: dict[str, dict[tuple[str, str], int]] = {}
     for cam in cameras:
-        unavailable = [
-            (e, t, bp) for e, t, bp in combos
-            if bp not in skeletons.nodes_for((e, t, cam))
-        ]
-        if not unavailable:
+        available = skeletons.available_mask(idx, cam)
+        if available.all():
             continue
         state = slp_df[(cam, "state")]
-        mask = keys.isin(unavailable) & state.isin(("set", "predicted", "not_visible")).to_numpy()
+        mask = ~available & state.isin(("set", "predicted", "not_visible")).to_numpy()
         if not mask.any():
             continue
         if df is None:

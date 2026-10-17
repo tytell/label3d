@@ -867,6 +867,7 @@ class MainWindow(QMainWindow):
         worker = AllExperimentsTriangulationWorker(
             [(self._project.active_experiment, cameras, store)],
             first_trial=self._state.current_trial or None,
+            skeletons=self._project.skeletons,
             parent=self,
         )
         progress.canceled.connect(worker.requestInterruption)
@@ -1260,7 +1261,9 @@ class MainWindow(QMainWindow):
             return
 
         progress = self._busy_dialog("Triangulating…", "Triangulate all experiments")
-        self._all_tri_worker = AllExperimentsTriangulationWorker(jobs, parent=self)
+        self._all_tri_worker = AllExperimentsTriangulationWorker(
+            jobs, skeletons=self._project.skeletons, parent=self
+        )
         self._all_tri_worker.progress.connect(
             lambda done, total: progress.setLabelText(f"Triangulating trial {done} of {total}…")
         )
@@ -1464,7 +1467,8 @@ class MainWindow(QMainWindow):
             return
         trial, frames = self._tri_queue.pop(0)
         self._merge_tri_worker = TriangulationWorker(
-            self._label_view._cameras, self._project.points, trial, frames, parent=self
+            self._label_view._cameras, self._project.points, trial, frames,
+            skeletons=self._project.skeletons, parent=self,
         )
         self._merge_tri_worker.finished.connect(self._run_next_triangulation)
         self._merge_tri_worker.error_occurred.connect(self._on_triangulation_error)
