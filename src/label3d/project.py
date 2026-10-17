@@ -103,12 +103,13 @@ class ExperimentInfo:
 
 
 def drop_unavailable(
-    slp_df: pd.DataFrame, skeletons: ProjectSkeleton
+    slp_df: pd.DataFrame, skeletons: ProjectSkeleton, cameras: list[str] | None = None
 ) -> tuple[pd.DataFrame, dict[str, dict[tuple[str, str], int]]]:
-    """Clear SLP points of nodes that their cell's skeleton lacks.
+    """Clear points of nodes that their cell's skeleton lacks.
 
-    Returns the cleared df and, per experiment, (camera, node) -> number of
-    points cleared. Cleared cells become not_set, so the merge ignores them.
+    Returns the cleared df (the same object when nothing is cleared) and, per
+    experiment, (camera, node) -> number of points cleared. Cleared cells
+    become not_set, so a merge ignores them. cameras limits it to those cameras.
     """
     idx = slp_df.index
     keys = pd.MultiIndex.from_arrays([
@@ -117,7 +118,10 @@ def drop_unavailable(
         idx.get_level_values("bodypart"),
     ])
     combos = keys.unique()
-    cameras = [c for c in slp_df.columns.get_level_values("view").unique() if c != "3d"]
+    cameras = [
+        c for c in slp_df.columns.get_level_values("view").unique()
+        if c != "3d" and (cameras is None or c in cameras)
+    ]
     df = None
     dropped: dict[str, dict[tuple[str, str], int]] = {}
     for cam in cameras:
@@ -145,6 +149,18 @@ def drop_unavailable(
             else:
                 df.loc[mask, (cam, coord)] = np.nan
     return (slp_df if df is None else df), dropped
+
+
+@dataclass
+class AssignmentPreview:
+    """What assigning a skeleton to some cameras would do (Project.preview_assignment)."""
+
+    skeletons: ProjectSkeleton | None
+    conflicts: list[str] = field(default_factory=list)
+    # The current mapping's errors under the new skeletons (Sync refuses until fixed)
+    mapping_errors: list[str] = field(default_factory=list)
+    # Labelled points, by node, that would be outside their cell's skeleton
+    outside: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -510,6 +526,72 @@ class Project:
         """Why the .slp files can't be written: skeleton conflicts or mixed files."""
         return list(self.skeleton_conflicts) + self.check_slp_mapping(mapping).errors
 
+    def preview_assignment(self, skeleton: Skeleton, cameras: list[str]) -> AssignmentPreview:
+        """The skeletons, conflicts, mapping errors and outside points after an assignment.
+
+        Changes nothing. Points are counted in the chosen cameras only.
+        """
+        section = assign_in_config(
+            self.config.get("skeleton", {}), skeleton, cameras, self.cameras
+        )
+        by_camera = assigned_skeletons({"skeleton": section}, self.cameras)
+        by_file, cell_files = self._slp_skeletons()
+        preview = AssignmentPreview(skeletons=None)
+        try:
+            preview.skeletons = ProjectSkeleton.build(
+                self.cameras, by_file, by_camera, cell_files
+            )
+        except SkeletonConflict as exc:
+            preview.conflicts = exc.conflicts
+            return preview
+        mapping = self.slp_mapping
+        if mapping.files:
+            preview.mapping_errors = preview.skeletons.mapping_problems(
+                mapping.cell_map(), self.existing_slp_skeletons(mapping)
+            ).errors
+        for name in self.experiments:
+            df = self.experiment_points_df(name)
+            if df.empty:
+                continue
+            _, dropped = drop_unavailable(df, preview.skeletons, cameras)
+            for (_cam, node), n in dropped.get(name, {}).items():
+                preview.outside[node] = preview.outside.get(node, 0) + n
+        return preview
+
+    def remove_points_outside(
+        self, skeletons: ProjectSkeleton | None = None, cameras: list[str] | None = None
+    ) -> int:
+        """Delete labelled points that are outside their cell's skeleton.
+
+        A camera's points are cleared where its skeleton lacks the node; rows
+        of nodes in no skeleton are dropped. Uses the project's skeletons
+        unless others are given; cameras limits the clearing to those cameras.
+        Each changed points.csv of an inactive experiment is backed up first.
+        Returns the number of camera points cleared.
+        """
+        skeletons = self.skeletons if skeletons is None else skeletons
+        if skeletons is None:
+            return 0
+        total = 0
+        for name, exp in self.experiments.items():
+            df = self.experiment_points_df(name)
+            if df.empty:
+                continue
+            cleared, dropped = drop_unavailable(df, skeletons, cameras)
+            total += sum(dropped.get(name, {}).values())
+            known = cleared.index.get_level_values("bodypart").isin(skeletons.union.nodes)
+            if cleared is df and known.all():
+                continue
+            cleared = cleared[known]
+            if name == self.active_experiment and self.points is not None:
+                self.points.replace_df(cleared)
+                self.points.save_if_changed()
+            else:
+                path = exp.root / "points.csv"
+                path.replace(path.with_suffix(".csv.bak"))
+                cleared.to_csv(path)
+        return total
+
     def assign_skeleton(self, skeleton: Skeleton, cameras: list[str]) -> bool:
         """Assign skeleton to cameras in project.toml, then reload the skeletons.
 
@@ -521,55 +603,6 @@ class Project:
         )
         self.save_config_sections({"skeleton": section})
         return self.load_skeletons()
-
-    def skeleton_removals(self, skeleton: Skeleton) -> dict[str, int]:
-        """Labelled points, by node, that set_skeleton(skeleton) would delete.
-
-        Counts (frame, instance) points of nodes missing from skeleton, across
-        all experiments, that are set, predicted or not visible in at least one
-        camera or have 3D coordinates. Rows that hold nothing aren't counted.
-        """
-        keep = set(skeleton.nodes)
-        counts: dict[str, int] = {}
-        for name in self.experiments:
-            df = self.experiment_points_df(name)
-            if df.empty:
-                continue
-            gone = df[~df.index.get_level_values("bodypart").isin(keep)]
-            if gone.empty:
-                continue
-            labelled = pd.Series(False, index=gone.index)
-            for view in gone.columns.get_level_values("view").unique():
-                if view == "3d":
-                    labelled |= gone["3d"].notna().any(axis=1)
-                else:
-                    labelled |= gone[(view, "state")].fillna("not_set") != "not_set"
-            for node, n in gone[labelled].groupby(level="bodypart").size().items():
-                counts[node] = counts.get(node, 0) + int(n)
-        return counts
-
-    def set_skeleton(self, skeleton: Skeleton) -> None:
-        """Assign skeleton to every camera, deleting points of nodes it lacks.
-
-        Points of nodes in both skeletons are kept as they are; new nodes start
-        unlabelled. Points of nodes missing from skeleton are deleted in every
-        experiment (see skeleton_removals), each points.csv backed up first.
-        """
-        keep = set(skeleton.nodes)
-        for name, exp in self.experiments.items():
-            df = self.experiment_points_df(name)
-            drop = ~df.index.get_level_values("bodypart").isin(keep)
-            if df.empty or not drop.any():
-                continue
-            df = df[~drop]
-            if name == self.active_experiment and self.points is not None:
-                self.points.replace_df(df)
-                self.points.save_if_changed()
-            else:
-                path = exp.root / "points.csv"
-                path.replace(path.with_suffix(".csv.bak"))
-                df.to_csv(path)
-        self.assign_skeleton(skeleton, list(self.cameras))
 
     def experiment_points_df(self, experiment: str) -> pd.DataFrame:
         """Points for an experiment: the live store if active, else its points.csv."""
@@ -622,7 +655,7 @@ class Project:
     def _merge_by_experiment(
         self, slp_df: pd.DataFrame, sync_id: int | None
     ) -> dict[str, MergeResult]:
-        # Nodes outside the skeleton (e.g. ones removed by set_skeleton) are
+        # Nodes outside the skeleton (e.g. ones dropped from every skeleton) are
         # left out, so a .slp file still carrying them doesn't bring them back.
         if self.skeleton is not None and not slp_df.empty:
             known = slp_df.index.get_level_values("bodypart").isin(self.skeleton.nodes)

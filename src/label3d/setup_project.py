@@ -67,11 +67,20 @@ class SetupConfig:
     # Skeleton given in the setup file (see skeleton_from_setup); must match
     # the skeleton of any .slp files
     skeleton: Skeleton | None = None
+    # Cameras the setup skeleton is assigned to (the [skeleton] cameras key);
+    # None for all of them
+    skeleton_cameras: list[str] | None = None
 
     def __post_init__(self):
         # Camera folders share calibrations/ with the refinements folder
         if REFINED_DIR in self.camera_names:
             raise ValueError(f"'{REFINED_DIR}' can't be used as a camera name")
+        if self.skeleton_cameras is not None:
+            unknown = [c for c in self.skeleton_cameras if c not in self.camera_names]
+            if unknown:
+                raise ValueError(
+                    f"[skeleton] cameras are not cameras of the project: {', '.join(unknown)}"
+                )
 
     def effective_video_mode(self) -> str:
         """Video handling mode, falling back to the legacy copy_files flag."""
@@ -467,10 +476,11 @@ def skeleton_from_setup(table: dict, base_dir: Path | None = None) -> Skeleton:
 
     The table either names a skeleton.json (``file``, relative to base_dir
     when not absolute) or gives ``nodes``, ``edges``, ``symmetries`` and
-    ``node_offsets_cm`` inline, not both.
+    ``node_offsets_cm`` inline, not both. Its optional ``cameras`` key is read
+    by the caller (SetupConfig.skeleton_cameras).
     """
     if "file" in table:
-        if set(table) - {"file"}:
+        if set(table) - {"file", "cameras"}:
             raise ValueError("[skeleton] takes either 'file' or inline nodes, not both")
         path = Path(table["file"]).expanduser()
         if not path.is_absolute() and base_dir is not None:
@@ -993,8 +1003,9 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     # otherwise the skeletons come from the .slp files themselves.
     skeleton_section = None
     if config.skeleton is not None:
+        cameras = config.skeleton_cameras or list(config.camera_names)
         skeleton_section = assign_in_config(
-            {}, config.skeleton, list(config.camera_names), list(config.camera_names)
+            {}, config.skeleton, list(cameras), list(config.camera_names)
         )
     write_project_toml(
         out,

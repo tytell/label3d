@@ -82,22 +82,22 @@ Today there is one skeleton per project:
   A camera appears in at most one `assigned` entry. An entry left with no cameras is removed.
 - [x] **Offsets:** offsets for nodes not in the union are ignored with a log message, not raised as an error, because nodes can now disappear when a file changes.
 - [x] **Old projects:** if `skeleton.json` exists and `project.toml` has no `[skeleton]` table, `Project.load` copies it once into `project.toml`: its offsets to `node_offsets_cm`, and its nodes, edges and symmetries as an `assigned` entry for every camera. The file itself is left in place and ignored. For a project whose `.slp` files all exist, the assignment changes nothing (rule 1 wins), but it still applies to files created later.
-- [ ] Remove `Project.set_skeleton` (replaced by 14.2). Until then it deletes points of removed nodes and assigns the skeleton to every camera. `Skeleton.to_json` is removed (done); `from_json` and `same_topology` stay.
+- [x] Remove `Project.set_skeleton` and `skeleton_removals` (replaced by 14.2) and `Skeleton.to_json`; `from_json` and `same_topology` stay.
 
 ## 14.2 Load skeleton for chosen cameras (`widgets/load_skeleton_dialog.py`, `project.py`, `main_window.py`)
 
 **File > Load skeleton...** opens a dialog instead of going straight to a file picker:
 
-- [ ] **Source:** a `skeleton.json` or a `.slp` file (whose skeleton is read with `from_slp`).
-- [ ] **Cameras:** a checkbox per camera plus **All cameras**, which is on by default. Next to each camera it shows:
+- [x] **Source:** a `skeleton.json` or a `.slp` file (whose skeleton is read with `from_slp`).
+- [x] **Cameras:** a checkbox per camera plus **All cameras**, which is on by default. Next to each camera it shows:
   - its current skeleton (assigned name, inferred, or none);
   - whether it already has `.slp` files, and if so whether their skeleton differs from the one being loaded. A differing file gets the note "existing .slp files keep their skeleton; this applies to new files only".
-- [ ] **Checks** before OK, shown inline:
+- [x] **Checks** before OK, shown inline (`Project.preview_assignment`):
   - The new union must merge (14.1). A conflict disables OK.
   - Mapped files that don't exist yet and would then hold cells with different skeletons are listed as a warning: "slp/trial1.slp is mapped to cam0 and cam1, which would have different skeletons — change the mapping in Set up Sleap files before the next Sync". OK stays enabled, and Sync refuses until the mapping is fixed (14.6). This allows loading skeletons first and fixing the mapping afterwards.
   - Points that would end up outside their cell's skeleton (cells without an existing file, for the chosen cameras, in nodes not in the new skeleton) are counted by node. If there are any, a **Remove these points now** checkbox is shown, off by default. When it is off they become leftovers (14.7).
-- [ ] `Project.assign_skeleton(skeleton, cameras)` updates `[[skeleton.assigned]]`: the chosen cameras are removed from any other entry, and an entry with the same topology is reused rather than duplicated. Then it calls `load_skeletons()`.
-- [ ] The setup file's `[skeleton]` table (`setup_project.py`) becomes an assignment to all cameras. It takes an optional `cameras = [...]` key to assign it to some cameras only.
+- [x] `Project.assign_skeleton(skeleton, cameras)` updates `[[skeleton.assigned]]`: the chosen cameras are removed from any other entry, and an entry with the same topology is reused rather than duplicated. Then it calls `load_skeletons()`.
+- [x] The setup file's `[skeleton]` table (`setup_project.py`) becomes an assignment to all cameras. It takes an optional `cameras = [...]` key to assign it to some cameras only.
 
 ## 14.3 Reading and writing `.slp` files (`adapters/sleap_adapter.py`, `project.py`)
 
@@ -152,14 +152,16 @@ A skeleton can change after labelling: a node is dropped or renamed in SLEAP, a 
 - the export leaves them out, and `ExportResult` counts them so the dialog and the CLI can report them;
 - on load and after a Sync, the status bar says how many there are.
 
-- [ ] **File > Remove points outside the skeletons...** lists them by node, and by camera for unavailable cells. After confirmation it deletes them in every experiment, backing up `points.csv` as `set_skeleton` does today. `Project.skeleton_removals` is generalised to count both kinds, and `set_skeleton`'s deletion loop moves here. The Load skeleton dialog (14.2) uses the same code.
+- [x] `Project.remove_points_outside(skeletons=None, cameras=None)` clears a camera's points where its skeleton lacks the node and drops rows of nodes in no skeleton, backing up the `points.csv` of inactive experiments. The Load skeleton dialog (14.2) uses it.
+- [ ] **File > Remove points outside the skeletons...** lists them by node, and by camera for unavailable cells, and after confirmation calls `remove_points_outside()`.
 
 ## 14.8 Project setup (`setup_project.py`, `setup_project_cli.py`)
 
 - [ ] Replace both "inconsistent skeletons" checks with `merge_skeletons`. A `SkeletonConflict` aborts setup with the full list of conflicts.
 - [ ] `FileAssignment.skeleton` holds the union, plus the per-file skeletons for the summary.
 - [ ] The setup summary reports the union, then one line per partial node, for example "Skeleton: 12 nodes; tail_tip only in cam0, cam2".
-- [ ] A setup file `[skeleton]` is written as an assignment (14.2). When there are `.slp` files, it must merge with them without conflict, replacing today's exact-match check (`_apply_config_skeleton`). Its `node_offsets_cm` go to `project.toml`.
+- [x] A setup file `[skeleton]` is written as an assignment (14.2), to its `cameras` or all of them.
+- [ ] When there are `.slp` files, a setup file `[skeleton]` must merge with them without conflict, replacing today's exact-match check (`_apply_config_skeleton`). (Its `node_offsets_cm` already go to `project.toml`.)
 - [x] Stop writing `skeleton.json`.
 
 ## 14.9 Synthetic data (`generate_synthetic.py`, `src/synthetic/`, `synthetic_config.toml`)
@@ -171,21 +173,21 @@ A skeleton can change after labelling: a node is dropped or renamed in SLEAP, a 
 
 ## 14.10 Tests
 
-- [ ] `merge_skeletons`: node order; union of edges and symmetries; each of the three conflicts, with every conflict listed.
-- [ ] `Skeleton.from_slp` matches the skeleton from `sio.load_file`.
-- [ ] `ProjectSkeleton.skeleton_for`: each of rules 1–4, including an inferred camera skeleton and cameras whose files disagree (which fall back to the union).
-- [ ] `Project.assign_skeleton`: a camera moves between entries; empty entries are removed; the same topology is reused.
-- [ ] `mapping_problems`: a new file mixing skeletons (error); an existing file against a differing assignment (error); a cell moved into an existing file with another skeleton (warning, with the point count); one file per camera (no problems).
+- [x] `merge_skeletons`: node order; union of edges and symmetries; each of the three conflicts, with every conflict listed.
+- [x] `Skeleton.from_slp` matches the skeleton from `sio.load_file`.
+- [x] `ProjectSkeleton.skeleton_for`: each of rules 1–4, including an inferred camera skeleton and cameras whose files disagree (which fall back to the union).
+- [x] `Project.assign_skeleton`: a camera moves between entries; empty entries are removed; the same topology is reused.
+- [x] `mapping_problems`: a new file mixing skeletons (error); an existing file against a differing assignment (error); a cell moved into an existing file with another skeleton (warning, with the point count); one file per camera (no problems).
 - [ ] Sync round trip on a synthetic project where cam1's file lacks a node:
   - reading gives no cam1 points for that node;
   - writing leaves cam1's file skeleton unchanged and keeps the other cameras' points.
 - [ ] Load-skeleton-first workflow on a `--no-slp` synthetic project: the first Sync creates each file with its cameras' assigned skeleton; reloading gives the same availability from the files.
-- [ ] Sync is refused when the mapping mixes skeletons.
-- [ ] Import from an outside file with the union skeleton drops the points in cells that lack the node, and reports them.
+- [x] Sync is refused when the mapping mixes skeletons.
+- [x] Import from an outside file with the union skeleton drops the points in cells that lack the node, and reports them.
 - [ ] Triangulation with `available` ignores a leftover `set` point in an unavailable cell, and gives NaN for a node in one camera only.
 - [ ] `init_random` / `init_average` return only available nodes.
-- [ ] `Project.load` migrates an old `skeleton.json` into `project.toml`.
-- [ ] Remove-outside-skeletons: counts and deletion across experiments.
+- [x] `Project.load` migrates an old `skeleton.json` into `project.toml`.
+- [x] Remove-outside-skeletons: counts and deletion across experiments.
 
 ## 14.11 Docs
 

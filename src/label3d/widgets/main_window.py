@@ -41,7 +41,6 @@ from label3d.export import describe_slp_changes, format_summary, stale_experimen
 from label3d.geometry import load_cameras
 from label3d.points import PointsStore
 from label3d.project import Project
-from label3d.skeleton import Skeleton
 from label3d.state import ProjectState
 from label3d.video import FrameProvider
 from label3d.widgets.calibration_view import CalibrationView
@@ -51,6 +50,7 @@ from label3d.widgets.frame_controls import FrameControls
 from label3d.widgets.label_view import LabelView
 from label3d.widgets.point_item import ColorMode
 from label3d.widgets.slp_setup_dialog import SlpSetupDialog
+from label3d.widgets.load_skeleton_dialog import LoadSkeletonDialog
 from label3d.widgets.sync_summary_dialog import SyncSummaryDialog, dropped_text
 
 logger = logging.getLogger(__name__)
@@ -257,8 +257,8 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         load_skeleton_action = file_menu.addAction("Load skeleton...")
         load_skeleton_action.setToolTip(
-            "Replace the skeleton from a skeleton.json; points of nodes with the "
-            "same name are kept"
+            "Assign a skeleton (from a skeleton.json or a .slp file) to all cameras "
+            "or chosen ones; existing .slp files keep their own skeleton"
         )
         load_skeleton_action.triggered.connect(self._do_load_skeleton)
         file_menu.addSeparator()
@@ -693,52 +693,35 @@ class MainWindow(QMainWindow):
         return False
 
     def _do_load_skeleton(self) -> None:
-        """Merge a skeleton.json into the project, asking before deleting points."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load skeleton", str(self._project.root), "Skeleton files (*.json)"
-        )
-        if not path:
+        """Assign a skeleton to all cameras or chosen ones (new .slp files only)."""
+        dialog = LoadSkeletonDialog(self._project, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        try:
-            skeleton = Skeleton.from_json(Path(path))
-        except (OSError, ValueError, KeyError) as exc:
-            QMessageBox.warning(self, "Load skeleton", f"Could not read {path}:\n{exc}")
-            return
-
-        removals = self._project.skeleton_removals(skeleton)
-        if removals:
-            lines = "\n".join(
-                f"  {node}: {n} point(s)" for node, n in sorted(removals.items())
-            )
-            reply = QMessageBox.warning(
-                self,
-                "Delete points?",
-                "These nodes have labelled points but are not in the new skeleton:\n\n"
-                f"{lines}\n\n"
-                "Loading it deletes those points in every experiment. "
-                "Delete them and load the skeleton?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Cancel,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                self._status_bar.showMessage("Load skeleton cancelled — nothing changed")
-                return
-
+        skeleton, cameras = dialog.skeleton(), dialog.cameras()
+        if self._project.points is not None:
+            self._project.points.save_if_changed()
         old_nodes = set(self._project.skeleton.nodes) if self._project.skeleton else set()
-        self._project.set_skeleton(skeleton)
+        self._project.assign_skeleton(skeleton, cameras)
+        removed_points = 0
+        if dialog.remove_points():
+            removed_points = self._project.remove_points_outside(cameras=cameras)
         self._state.skeleton = self._project.skeleton
         self._label_view.set_skeleton(self._project.skeleton)
         self._refresh_after_merge()
-        self._show_skeleton_conflicts()
 
-        added = [n for n in skeleton.nodes if n not in old_nodes]
-        removed = sorted(old_nodes - set(skeleton.nodes))
-        parts = [f"Loaded skeleton with {len(skeleton.nodes)} node(s)"]
+        new_nodes = set(self._project.skeleton.nodes) if self._project.skeleton else set()
+        which = "all cameras" if len(cameras) == len(self._project.cameras) else ", ".join(cameras)
+        named = f" {skeleton.name}" if skeleton.name else ""
+        parts = [f"Loaded skeleton{named} for {which}"]
+        added = [n for n in self._project.skeleton.nodes if n not in old_nodes]
         if added:
             parts.append(f"added {', '.join(added)}")
-        if removed:
-            parts.append(f"removed {', '.join(removed)}")
+        if old_nodes - new_nodes:
+            parts.append(f"removed {', '.join(sorted(old_nodes - new_nodes))}")
+        if removed_points:
+            parts.append(f"deleted {removed_points} point(s)")
         self._status_bar.showMessage("; ".join(parts))
+        self._show_skeleton_conflicts()
 
     # -- Experiment switching ------------------------------------------------
 

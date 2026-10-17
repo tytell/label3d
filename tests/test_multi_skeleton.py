@@ -556,3 +556,112 @@ class TestSetupDialogSkeletons:
         item = dialog._file_list.item(1)
         item.setText("renamed.slp  [head_only]")
         assert Path("slp/renamed.slp") in dialog._editor.files
+
+
+# ---------------------------------------------------------------------------
+# Load skeleton for chosen cameras (phase 14.2)
+# ---------------------------------------------------------------------------
+
+from label3d.points import PointsStore  # noqa: E402
+from label3d.widgets.load_skeleton_dialog import LoadSkeletonDialog, read_skeleton  # noqa: E402
+
+def _write_json(path: Path, skeleton: Skeleton) -> Path:
+    import json
+    path.write_text(json.dumps(skeleton.to_dict()))
+    return path
+
+
+class TestPreviewAndRemove:
+    def test_preview_counts_points_in_chosen_cameras(self, project):
+        preview = project.preview_assignment(HEAD_ONLY, ["cam1"])
+        assert preview.conflicts == [] and preview.mapping_errors == []
+        assert preview.outside == {"tail": 2}   # one per trial in cam1
+        assert preview.skeletons.nodes_for((SYNC_EXP, "t1", "cam1")) == {"head"}
+        # Nothing changed
+        assert "cam1" in project.skeletons.by_camera
+        assert project.skeletons.by_camera["cam1"].nodes == SYNC_NODES
+
+    def test_preview_conflict(self, project):
+        preview = project.preview_assignment(Skeleton(nodes=SYNC_NODES), ["cam1"])
+        assert preview.conflicts and preview.skeletons is None
+
+    def test_preview_mapping_error(self, project):
+        project.save_slp_mapping(_one_file())
+        preview = project.preview_assignment(HEAD_ONLY, ["cam1"])
+        assert preview.mapping_errors == [
+            "slp/all.slp: cameras with different skeletons: cam0 (skeleton); cam1 (head_only)"
+        ]
+
+    def test_remove_clears_only_the_camera(self, project):
+        project.assign_skeleton(HEAD_ONLY, ["cam1"])
+        assert project.remove_points_outside(cameras=["cam1"]) == 2
+        df = project.points.df
+        tail = df.xs("tail", level="bodypart")
+        assert (tail[("cam1", "state")] == "not_set").all()
+        assert (tail[("cam0", "state")] == "set").all()
+        on_disk = PointsStore.read_csv_df(project.experiments[SYNC_EXP].root / "points.csv")
+        assert (on_disk.xs("tail", level="bodypart")[("cam1", "state")] == "not_set").all()
+
+    def test_remove_drops_nodes_in_no_skeleton(self, project):
+        project.assign_skeleton(HEAD_ONLY, SYNC_CAMS)
+        assert project.skeleton.nodes == ["head"]
+        assert project.remove_points_outside() == 4
+        assert set(project.points.df.index.get_level_values("bodypart")) == {"head"}
+
+
+class TestLoadSkeletonDialog:
+    def test_read_json_and_slp(self, tmp_path):
+        assert read_skeleton(_write_json(tmp_path / "fish.json", HEAD_ONLY)).nodes == ["head"]
+        slp = write_slp(tmp_path / "model.slp", Skeleton(nodes=["a", "b"]), with_frame=False)
+        sk = read_skeleton(slp)
+        assert sk.nodes == ["a", "b"] and sk.name == "model"
+
+    def test_all_cameras_by_default(self, project, tmp_path):
+        dialog = LoadSkeletonDialog(project, _write_json(tmp_path / "h.json", HEAD_ONLY))
+        assert dialog.cameras() == SYNC_CAMS
+        assert dialog._ok.isEnabled()
+        assert dialog.preview().outside == {"tail": 4}
+        assert dialog._remove_box.isVisibleTo(dialog)
+        assert not dialog.remove_points()   # off by default
+
+    def test_chosen_cameras(self, project, tmp_path):
+        dialog = LoadSkeletonDialog(project, _write_json(tmp_path / "h.json", HEAD_ONLY))
+        dialog._camera_boxes["cam0"].setChecked(False)
+        assert not dialog._all_box.isChecked()
+        assert dialog.cameras() == ["cam1"]
+        assert dialog.preview().outside == {"tail": 2}
+        dialog._camera_boxes["cam1"].setChecked(False)
+        assert not dialog._ok.isEnabled()
+        dialog._all_box.setChecked(True)
+        assert dialog.cameras() == SYNC_CAMS
+
+    def test_conflict_disables_ok(self, project, tmp_path):
+        dialog = LoadSkeletonDialog(
+            project, _write_json(tmp_path / "x.json", Skeleton(nodes=SYNC_NODES))
+        )
+        dialog._camera_boxes["cam0"].setChecked(False)
+        assert not dialog._ok.isEnabled()
+        assert "conflict" in dialog._checks.text()
+
+    def test_mapping_problem_is_a_warning(self, project, tmp_path):
+        project.save_slp_mapping(_one_file())
+        dialog = LoadSkeletonDialog(project, _write_json(tmp_path / "h.json", HEAD_ONLY))
+        dialog._camera_boxes["cam0"].setChecked(False)
+        assert dialog._ok.isEnabled()
+        assert "Set up Sleap files" in dialog._checks.text()
+
+    def test_existing_files_note(self, project, tmp_path):
+        project.write_slp_files()
+        project.load_skeletons()
+        dialog = LoadSkeletonDialog(project, _write_json(tmp_path / "h.json", HEAD_ONLY))
+        assert "keep their skeleton" in dialog._camera_notes["cam1"].text()
+        assert "(from its .slp files)" not in dialog._camera_notes["cam1"].text()
+        assert "(assigned)" in dialog._camera_notes["cam1"].text()
+
+    def test_unreadable_file(self, project, tmp_path):
+        bad = tmp_path / "bad.json"
+        bad.write_text("{}")
+        dialog = LoadSkeletonDialog(project, bad)
+        assert dialog.skeleton() is None
+        assert not dialog._ok.isEnabled()
+        assert "Could not read" in dialog._skeleton_label.text()

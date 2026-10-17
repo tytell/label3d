@@ -558,6 +558,31 @@ class TestExecuteSetup:
         assert entry["nodes"] == ["head", "tail"]
         assert entry["edges"] == [["head", "tail"]]
 
+    def test_setup_skeleton_for_some_cameras(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "left_001.mp4").write_bytes(b"\x00" * 100)
+        (src / "right_001.mp4").write_bytes(b"\x00" * 100)
+        config = SetupConfig(
+            source_dir=src, output_dir=tmp_path / "out",
+            camera_names=["left", "right"], calib_keyword="calib",
+            match_strategy="number",
+            skeleton=Skeleton(["head", "tail"], name="fish"),
+            skeleton_cameras=["right"],
+        )
+        execute_setup(config, classify_files(config))
+        [entry] = toml.load(tmp_path / "out" / "project.toml")["skeleton"]["assigned"]
+        assert entry["cameras"] == ["right"]
+
+    def test_setup_skeleton_unknown_camera(self, tmp_path):
+        with pytest.raises(ValueError, match="not cameras of the project: top"):
+            SetupConfig(
+                source_dir=tmp_path, output_dir=tmp_path / "out",
+                camera_names=["left", "right"], calib_keyword="calib",
+                match_strategy="number",
+                skeleton=Skeleton(["head"]), skeleton_cameras=["top"],
+            )
+
     def test_setup_skeleton_matching_slp_is_used(self, basic_config):
         """A matching setup skeleton is assigned, so its offsets are kept."""
         basic_config.skeleton = Skeleton(
@@ -984,6 +1009,11 @@ class TestSkeletonFromSetup:
         })
         assert sk.symmetries == [("a", "b")]
         assert sk.node_offsets_cm == {"a": [1.0, 0.0, 0.0]}
+
+    def test_file_with_cameras_key(self, tmp_path):
+        (tmp_path / "sk.json").write_text(json.dumps(Skeleton(["a"]).to_dict()))
+        sk = skeleton_from_setup({"file": "sk.json", "cameras": ["c1"]}, base_dir=tmp_path)
+        assert sk.nodes == ["a"]
 
     def test_file_and_inline_rejected(self, tmp_path):
         with pytest.raises(ValueError, match="either"):

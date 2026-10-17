@@ -39,6 +39,7 @@ Config file format (TOML):
     # Either a skeleton.json (relative paths from the working directory) …
     [skeleton]
     file = "/path/to/skeleton.json"
+    # cameras = ["cam1", "cam2"]   # only these cameras (default: all)
     # … or the skeleton inline:
     # nodes = ["snout", "left_eye", "right_eye", "tail"]
     # edges = [["snout", "left_eye"], ["snout", "right_eye"], ["snout", "tail"]]
@@ -593,6 +594,11 @@ def run_from_config(config_path: Path, copy_files: bool = False, dry_run: bool =
         skeleton=(
             skeleton_from_setup(raw["skeleton"], base_dir=Path.cwd())
             if "skeleton" in raw
+            else None
+        ),
+        skeleton_cameras=(
+            [str(c) for c in raw["skeleton"]["cameras"]]
+            if "cameras" in raw.get("skeleton", {})
             else None
         ),
     )

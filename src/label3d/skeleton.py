@@ -298,6 +298,17 @@ class ProjectSkeleton:
             cell_files=dict(cell_files or {}),
         )
 
+    def inferred(self, camera: str) -> Skeleton | None:
+        """The skeleton shared by every existing file of a camera's cells (rule 3)."""
+        return self._inferred.get(camera)
+
+    def camera_files(self, camera: str) -> list[Path]:
+        """Existing files that hold some of a camera's cells, sorted."""
+        return sorted({
+            path for cell, path in self.cell_files.items()
+            if cell[2] == camera and path in self.by_file
+        })
+
     def camera_skeleton(self, camera: str) -> Skeleton:
         """The skeleton a camera's cells get without an existing file (rules 2-4)."""
         if camera in self.by_camera:
