@@ -34,8 +34,7 @@ All projects use the **hierarchical layout**: a shared project root with `experi
 
 ```
 Project
-├── project.toml             # top-level config: name, charuco params (shared)
-├── skeleton.json            # shared skeleton across all experiments
+├── project.toml             # top-level config: name, charuco params, [skeleton] (shared)
 ├── trials.csv               # global: all trials across all experiments (has experiment column)
 ├── slp/                     # optional: imported .slp files (global, not per-experiment)
 ├── sync_history.csv         # one row per trial for each SLEAP read that brought in points
@@ -252,9 +251,38 @@ xyz = df["3d"][["x", "y", "z"]]                         # world coords, shape (n
 
 Missing coordinates are `NaN`. Reprojected coords (`xr`, `yr`) are `NaN` until triangulation has been run.
 
-### Skeleton: `skeleton.json`
+### Skeletons (Phase 14)
 
-At the project root, shared by all experiments: `{nodes, edges, symmetries, node_offsets_cm}`. It comes from the setup file's `[skeleton]` table or the `.slp` files, and can be replaced later with **File > Load skeleton...** (`Project.set_skeleton`). Loading merges by node name: points of nodes in both skeletons are kept, new nodes start unlabelled, and edges, symmetries and offsets come from the new file. Points of nodes missing from the new skeleton are deleted in every experiment, after a warning listing how many labelled points each node has (`Project.skeleton_removals`); cancelling changes nothing. The old file is kept as `skeleton.json.bak`. SLP reads ignore nodes that aren't in the skeleton, so a `.slp` file that still has a removed node doesn't bring it back.
+Cameras can have different skeletons: a node a camera never sees is often left out of that camera's SLEAP model. Nodes are matched across skeletons by exact name. There is no `skeleton.json`; the skeletons come from the `.slp` files and from `[skeleton]` in `project.toml` (`Project.load_skeletons()`, which reads only the files' headers).
+
+Each **cell** — an (experiment, trial, camera), i.e. one video — has one skeleton, the first of:
+
+1. the skeleton of its mapped `.slp` file, if that file exists;
+2. the skeleton **assigned** to its camera in `project.toml` (by **File > Load skeleton...** or the setup file's `[skeleton]`);
+3. the skeleton shared by every existing `.slp` file of its camera, if they all agree;
+4. the union.
+
+A node is **available** in a cell when it is in the cell's skeleton. Existing `.slp` files always keep their own skeleton when written; a new file is created with its cells' skeleton, so an assigned skeleton only affects files not created yet. All the cells mapped to one file must have the same skeleton (checked by **Set up Sleap files**, Sync and export).
+
+The **project skeleton** (`Project.skeleton`, shown in the points list) is the union of the files' and the assigned skeletons: nodes in the order of the files, then the assigned skeletons; edges and symmetries are the union. The skeletons **conflict**, and Sync is refused until it is fixed, when two skeletons that both have nodes `a` and `b` disagree on whether `a`–`b` is an edge or a symmetry, or a node ends up with two symmetry partners.
+
+`project.toml`:
+
+```toml
+[skeleton.node_offsets_cm]      # used by random instance placement
+snout = [10.0, 0.0, 0.0]
+
+[[skeleton.assigned]]           # one per loaded skeleton
+name = "full"
+cameras = ["cam0", "cam2"]      # a camera is in at most one entry
+nodes = ["snout", "left_eye", "tail_tip"]
+edges = [["snout", "left_eye"]]
+symmetries = []
+```
+
+An older project's `skeleton.json` is copied once into `project.toml` (assigned to every camera) and then ignored.
+
+A node available in fewer than 2 cameras of a trial is never triangulated (it can still be labelled in 2D): triangulation counts a camera's point only where its skeleton has the node. Points left in a cell whose skeleton lacks the node (after a skeleton changed) are kept in `points.csv` but hidden, not triangulated, not written to `.slp` and left out of the export; **File > Remove points outside the skeletons...** deletes them (`Project.remove_points_outside`). SLP points of nodes a cell's skeleton lacks are dropped on import and counted in the sync summary.
 
 ### Sync history: `sync_history.csv`
 
@@ -389,6 +417,6 @@ Files are **moved** (not copied). Creates:
 - `experiments/{name}/videos/` for video files
 - `experiments/{name}/points.csv` placeholder (correct 5-level row index)
 - `trials.csv` (global) at project root with `experiment` column
-- `project.toml`, `skeleton.json`, `slp/` at project root (`skeleton.json` from the setup file's `[skeleton]` table, else from the `.slp` files)
+- `project.toml` and `slp/` at project root; a setup file `[skeleton]` is written to `project.toml` as an assignment (to its `cameras`, or all of them); otherwise the skeletons come from the `.slp` files
 
 Core module: `label3d/setup_project.py` — `SetupConfig`, `ExperimentAssignment`, `FileAssignment`, `classify_files()`, `preview_assignment()`, `execute_setup()`.

@@ -225,7 +225,8 @@ Before labeling, user must either:
   - Set up Sleap files...
   - Import predictions...   read .slp files from anywhere (e.g. sleap-nn track output)
   - Last sync summary...
-  - Load skeleton...        merge a skeleton.json into the project (see data_model.md)
+  - Load skeleton...        assign a skeleton (.json or .slp) to all cameras or chosen ones
+  - Remove points outside the skeletons...   delete points a camera's skeleton lacks
   - Export points...       wide-format CSV + SLP write; greyed while any experiment's 3D is stale
 
 > Navigate
@@ -259,9 +260,17 @@ Choosing another entry:
 
 When it finishes, `[calibration.triangulated_with]` records the calibration used. If the 3D points come from another calibration than the active one (a cancelled run, a switch made in the Calibration tab, or a project from before the registry), the status bar shows **3D points are from <label>; re-triangulate**. The link re-triangulates the experiment. **Instances > Triangulate all experiments** does every experiment and also clears the warning.
 
+### Skeletons per camera
+
+Cameras can have different skeletons (rules in [data_model.md](data_model.md#skeletons-phase-14)).
+
+- **Load skeleton...** opens a dialog: choose a `skeleton.json` or a `.slp` file, and the cameras (**All cameras** by default). Each camera shows its current skeleton and whether it has `.slp` files, which keep their own skeleton — the new one applies only to files not created yet. A conflict with the other skeletons disables OK. A mapping that would then put different skeletons in one file is a warning; Sync refuses until it is fixed in **Set up Sleap files**. Points that would no longer be in their camera's skeleton are counted, with an option to delete them now.
+- **Set up Sleap files...** checks after every edit that each file holds one skeleton. When the project has more than one skeleton, each file is listed as `name.slp  [skeleton]` (or `[mixed]`, in red, which disables Apply), and the preset starts at *one file per camera per experiment*.
+- **Remove points outside the skeletons...** lists the labelled points, by node and camera, whose camera's skeleton lacks the node (left over after a skeleton changed) and deletes them after confirmation. Until then they are hidden, not triangulated and not exported; the status bar mentions them on load and after a Sync.
+
 ### Skeleton overlay
 
-The **full skeleton is always drawn** on every camera panel for every frame:
+The **skeleton is drawn** on every camera panel for every frame, except nodes the camera's skeleton lacks:
 - **Edges** (bones): lines between connected nodes
 - **Nodes** (points): circles at each labeled position
 - **Node name labels**: text beside each node (toggled with `Ctrl+Tab`)

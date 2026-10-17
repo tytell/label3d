@@ -1,6 +1,6 @@
 # label3d — Synthetic Data Generator
 
-`generate_synthetic.py` creates a complete test project with known-correct ground truth: cameras, videos with rendered skeleton keypoints, a ground-truth calibration registry entry, `points.csv`, `skeleton.json`, and `.slp` files.
+`generate_synthetic.py` creates a complete test project with known-correct ground truth: cameras, videos with rendered skeleton keypoints, a ground-truth calibration registry entry, `points.csv`, `project.toml`, and `.slp` files (one per camera, whose skeletons can differ; see below).
 
 ```bash
 uv run python generate_synthetic.py synthetic_config.toml
@@ -19,7 +19,7 @@ synthetic/
 ├── projection.py            # project_points(), project_all_frames()
 ├── rendering.py             # render_frame(), write_videos()
 ├── writers.py               # write_calibration_toml(), write_trials_csv(), write_points_csv(),
-│                            #   write_skeleton_json(), write_slp_files()
+│                            #   camera_skeleton(), write_slp_files(), write_project_toml()
 ├── checks.py                # _dlt_triangulate(), _epipolar_error(), run_sanity_checks()
 └── charuco.py               # generate_charuco_images()
 ```
@@ -29,8 +29,7 @@ synthetic/
 ```
 test_project/
 ├── trials.csv                    # global trials table (experiment column)
-├── skeleton.json
-├── project.toml
+├── project.toml                  # [skeleton.node_offsets_cm]; [[skeleton.assigned]] with --no-slp
 ├── slp/
 └── experiments/
     └── default/
@@ -39,6 +38,19 @@ test_project/
         ├── points.csv            # ground-truth points (5-level row index)
         └── videos/               # rendered trial videos
 ```
+
+## Per-camera skeletons
+
+A camera's `missing_nodes` leaves those nodes out of its skeleton, to test Phase 14:
+
+```toml
+[cameras.cam3]
+missing_nodes = ["dorsal"]
+```
+
+That camera's `.slp` file gets a skeleton without them, named `synthetic_without_dorsal`, and no points for them; its cells in `points.csv` are `not_set`. Edges touching a missing node are dropped from its skeleton.
+
+`--no-slp` writes no `.slp` files. Each distinct camera skeleton goes to `project.toml` as a `[[skeleton.assigned]]` entry instead, as after **File > Load skeleton...**, for testing the workflow where the first Sync creates the files.
 
 ## Charuco image generation config (`synthetic_config.toml`)
 

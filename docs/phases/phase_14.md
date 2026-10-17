@@ -7,7 +7,7 @@ There are two ways a project gets its skeletons:
 - **From `.slp` files**: the project is set up from existing `.slp` files, and each file's skeleton is used.
 - **Loaded before any `.slp` file exists**: the user loads a skeleton (**File > Load skeleton...**), for all cameras or for chosen ones, labels in label3d, and the first Sync creates the `.slp` files with those skeletons.
 
-**Status**: Planned.
+**Status**: Implemented (steps 1–9); to be checked in the app. Left: turning on `missing_nodes` in `synthetic_config.toml` and regenerating the test project (14.9), and the round-trip and load-skeleton-first tests in 14.10.
 
 ---
 
@@ -193,11 +193,11 @@ A skeleton can change after labelling: a node is dropped or renamed in SLEAP, a 
 
 ## 14.11 Docs
 
-- [ ] `CLAUDE.md` and `docs/data_model.md`: drop `skeleton.json`; describe `[skeleton]` in `project.toml`, the four rules for a cell's skeleton, and the union.
-- [ ] `docs/quick_setup_from_slp.md`, `docs/project_setup_from_sleap.md`: skeletons may differ between files; the conflict rules; the optional `cameras` key in `[skeleton]`.
-- [ ] `docs/workflows.md`: the new **Load skeleton...** dialog, the one-skeleton-per-file rule in **Set up Sleap files**, and **Remove points outside the skeletons...**.
-- [ ] `docs/user_workflow.md`: the load-skeleton-first workflow, the points-list markers, and what an unavailable node looks like in a panel.
-- [ ] `docs/synthetic_data.md`: `missing_nodes` and `--no-slp`.
+- [x] `CLAUDE.md` and `docs/data_model.md`: drop `skeleton.json`; describe `[skeleton]` in `project.toml`, the four rules for a cell's skeleton, and the union.
+- [x] `docs/quick_setup_from_slp.md`, `docs/project_setup_from_sleap.md`: skeletons may differ between files; the conflict rules; the optional `cameras` key in `[skeleton]`.
+- [x] `docs/workflows.md`: the new **Load skeleton...** dialog, the one-skeleton-per-file rule in **Set up Sleap files**, and **Remove points outside the skeletons...**.
+- [x] `docs/user_workflow.md`: the load-skeleton-first workflow, the points-list markers, and what an unavailable node looks like in a panel.
+- [x] `docs/synthetic_data.md`: `missing_nodes` and `--no-slp`.
 
 ## Order of work
 

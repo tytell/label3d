@@ -24,6 +24,8 @@ Open the project with `uv run label3d <project folder>`.
 
 The first time you open it, assign videos to SLEAP files with **File > Set up Sleap files...**. The preset *one file per camera* works for most projects.
 
+**Skeletons.** The skeletons come from the `.slp` files, and cameras may have different ones (a node a camera never sees can be left out of its model). Starting without `.slp` files, load one with **File > Load skeleton...** — a `skeleton.json` or any `.slp` file — for all cameras or, to give some cameras a smaller skeleton, for chosen ones. The first **Sync** then creates each `.slp` file with its cameras' skeleton. A file must hold cameras with the same skeleton, so with several skeletons use *one file per camera per experiment*.
+
 ## 2. Calibrate
 
 In the **Calibrate** tab, detect the charuco board in each calibration take and run the calibration. If an experiment has a take before and after the trials, label3d compares them and warns you if a camera seems to have moved in between.
@@ -50,7 +52,8 @@ The details of every option are in [workflows.md](workflows.md#refining-with-lab
 
 In the **Label** tab:
 
-- **Pick a point:** click a bodypart in the list on the left, or use `↑` / `↓`.
+- **Pick a point:** click a bodypart in the list on the left, or use `↑` / `↓`. A point in only some cameras' skeletons is marked ◐ (hover to see which), and one in a single camera `2D` — it is never triangulated. Its count `[n/k]` is out of the cameras that have it.
+- **Cameras without the point:** a panel whose skeleton lacks the selected point shows nothing for it and says "*point* not in this camera's skeleton"; you can't place it there.
 - **Place it:** click in each camera view. After the first camera, epipolar lines show where the point should be in the others.
 - **Not visible:** right-click a point to mark it not visible in that camera.
 - **Navigate:** `→` / `←` step frames, and `]` / `[` jump between labelled frames.

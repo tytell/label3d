@@ -89,8 +89,10 @@ dict_size = 50
 
 Field by field:
 
-- **`slp_files`** — a `.slp` file or a folder containing one or more; every `.slp`
-  found must share the same skeleton.
+- **`slp_files`** — a `.slp` file or a folder containing one or more. Their
+  skeletons may differ (a camera's model can leave out nodes it never sees); nodes
+  are matched by name. Setup stops only if they conflict: two skeletons with the
+  same two nodes that disagree on an edge or a symmetry between them.
 - **`output_dir`** — where the new project is created. Must not already exist.
 - **`camera_names`** — matched against each video's filename, then its parent
   folder name, to tell cameras apart. Here: `left`, `right`.
@@ -126,10 +128,11 @@ Field by field:
   cm, ArUco dictionary), used when you calibrate in the app.
 - **`[skeleton]`** — optional. Either `file = "path/to/skeleton.json"` (relative
   to the working directory) or `nodes`, `edges`, `symmetries` and
-  `node_offsets_cm` inline. It must match the `.slp` files' skeleton (same
-  nodes, edges and symmetries) or setup stops with an error; a matching one wins,
-  so its node order and offsets are kept. Needed for a flat folder with no
-  `.slp` files, or add one later with **File > Load skeleton...**.
+  `node_offsets_cm` inline, and optionally `cameras = [...]` to give it to some
+  cameras only. It must not conflict with the `.slp` files' skeletons. It is
+  assigned to its cameras in `project.toml`, which matters for `.slp` files not
+  created yet; existing files keep their own skeleton. Needed for a flat folder
+  with no `.slp` files, or add one later with **File > Load skeleton...**.
 
 ## 4. Run it
 

@@ -25,7 +25,7 @@ references the videos in place.
 ```
 .slp files ──► resolve video paths ──► identify cameras ──► group into trials
                       │                                            │
-                      ├──► skeleton ──► skeleton.json              ├──► trials.csv (path cells)
+                      ├──► skeletons ─► (union)                    ├──► trials.csv (path cells)
                       │                                            └──► project.toml [video_roots]
                       └──► labels ───────────────────────────────► points.csv
 calibration.toml or calibration videos ────────────────────────────► experiments/{exp}/calibrations/ (registry)
@@ -132,9 +132,12 @@ trials and their `trials.csv` cells are left blank, which `Project.load()` alrea
 
 ### Skeleton
 
-Unchanged in substance: nodes, edges, and symmetries are read from `labels.skeleton`, and
-`.slp` files with inconsistent node sets are an error. `skeleton.json` is written by
-`execute_setup` as it is today.
+Nodes, edges and symmetries are read from each file's `labels.skeleton` into
+`FileAssignment.slp_skeletons`. Since Phase 14 the files may have different skeletons;
+`merge_skeletons` builds their union, and only a conflict (shared nodes that disagree on an
+edge or a symmetry) is an error. Nothing is written for them: the project reads the
+skeletons from the `.slp` files. A setup file `[skeleton]` must merge with them and is
+written to `project.toml` as an assignment.
 
 ### Cameras and trials
 
@@ -207,7 +210,7 @@ and multi-instance handling match what the in-app import produces. No merge logi
 
 Order of operations in `execute_setup()`:
 
-1. Write `trials.csv`, `project.toml` (including `[video_roots]`), `skeleton.json`.
+1. Write `trials.csv`, `project.toml` (including `[video_roots]`; `[skeleton]` only from a setup file).
 2. Copy the `.slp` files into `slp/`. These are small, and the project format expects them
    there; only videos are referenced in place.
 3. Build an `SlpMapping` from `assignment.slp_files` via `SlpMapping.from_cell_map()`, with paths

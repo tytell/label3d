@@ -26,7 +26,7 @@ A cross-platform desktop app for:
 | [docs/phases/phase_11.md](docs/phases/phase_11.md) | Phase 11 — Calibration registry and switching calibrations (completed) |
 | [docs/phases/phase_12.md](docs/phases/phase_12.md) | Phase 12 — Refining the calibration with labelled points (complete) |
 | [docs/phases/phase_13.md](docs/phases/phase_13.md) | Phase 13 — Batch triangulation and export |
-| [docs/phases/phase_14.md](docs/phases/phase_14.md) | Phase 14 — Per-camera skeletons (planned) |
+| [docs/phases/phase_14.md](docs/phases/phase_14.md) | Phase 14 — Per-camera skeletons (implemented; to be checked in the app) |
 | [docs/phases/phase_15.md](docs/phases/phase_15.md) | Phase 15 — Axis alignment (deferred; partially implemented) |
 | [docs/phases/phase_16_17.md](docs/phases/phase_16_17.md) | Phases 16–17: Export to other pose formats, Polish and robustness (deferred) |
 | [docs/phases/phase_18.md](docs/phases/phase_18.md) | Phase 18 — Multi-instance support and cross-camera matching (deferred) |
