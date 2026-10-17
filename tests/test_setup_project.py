@@ -26,7 +26,7 @@ from label3d.setup_project import (
     _extract_trial_prefix,
 )
 from label3d.project import Project
-from label3d.skeleton import Skeleton
+from label3d.skeleton import Skeleton, SkeletonConflict
 
 
 # --- Helpers ---
@@ -36,6 +36,7 @@ def _make_slp_file(
     path: Path,
     video_filenames: list[str],
     node_names: list[str] | None = None,
+    edges: list[tuple[str, str]] | None = None,
 ) -> None:
     """Write a minimal valid .slp file referencing the given video filenames."""
     import sleap_io as sio
@@ -46,6 +47,8 @@ def _make_slp_file(
     skeleton = sio.Skeleton(name="test")
     for name in node_names:
         skeleton.add_node(name)
+    for a, b in edges or []:
+        skeleton.add_edge(a, b)
 
     labeled_frames = []
     for vf in video_filenames:
@@ -596,9 +599,14 @@ class TestExecuteSetup:
         project = Project.load(basic_config.output_dir)
         assert project.skeleton.node_offsets_cm == {"nose": [1.0, 0.0, 0.0]}
 
-    def test_setup_skeleton_mismatching_slp_raises(self, basic_config):
+    def test_setup_skeleton_with_more_nodes_is_merged(self, basic_config):
         basic_config.skeleton = Skeleton(["nose", "tail", "fin"])
-        with pytest.raises(ValueError, match="does not match"):
+        assignment = classify_files(basic_config)
+        assert assignment.skeleton["nodes"] == ["nose", "tail", "fin"]
+
+    def test_setup_skeleton_conflicting_with_slp_raises(self, basic_config):
+        basic_config.skeleton = Skeleton(["nose", "tail"], edges=[("nose", "tail")])
+        with pytest.raises(SkeletonConflict, match="in the setup file but not in"):
             classify_files(basic_config)
 
     def test_output_exists_error(self, basic_config):
@@ -909,23 +917,36 @@ class TestSlpMatching:
         assert assignment.skeleton is not None
         assert assignment.skeleton["nodes"] == ["nose", "tail"]
 
-    def test_inconsistent_skeletons_error(self, tmp_path):
-        """Two SLP files with different skeletons must raise ValueError."""
+    def _two_slp_config(self, tmp_path, left_nodes, right_nodes, left_edges=None):
         src = tmp_path / "src"
         src.mkdir()
         (src / "left_001.mp4").write_bytes(b"\x00" * 100)
         (src / "right_001.mp4").write_bytes(b"\x00" * 100)
-        _make_slp_file(src / "left.slp", ["left_001.mp4"], node_names=["nose", "tail"])
-        _make_slp_file(src / "right.slp", ["right_001.mp4"], node_names=["head", "body"])
-
-        config = SetupConfig(
+        _make_slp_file(src / "left.slp", ["left_001.mp4"], left_nodes, left_edges)
+        _make_slp_file(src / "right.slp", ["right_001.mp4"], right_nodes)
+        return SetupConfig(
             source_dir=src,
             output_dir=tmp_path / "out",
             camera_names=["left", "right"],
             calib_keyword="calib",
             match_strategy="number",
         )
-        with pytest.raises(ValueError, match="inconsistent skeletons"):
+
+    def test_different_skeletons_are_merged(self, tmp_path):
+        """SLP files may have different skeletons: the project gets their union."""
+        config = self._two_slp_config(tmp_path, ["nose", "tail"], ["nose", "fin"])
+        assignment = classify_files(config)
+        assert assignment.skeleton["nodes"] == ["nose", "tail", "fin"]
+        summary = preview_assignment(config, assignment)
+        assert "left.slp (test) has no fin" in summary
+        assert "right.slp (test) has no tail" in summary
+
+    def test_conflicting_skeletons_error(self, tmp_path):
+        """Skeletons that disagree on an edge between shared nodes can't be merged."""
+        config = self._two_slp_config(
+            tmp_path, ["nose", "tail"], ["nose", "tail"], left_edges=[("nose", "tail")]
+        )
+        with pytest.raises(SkeletonConflict, match="edge nose - tail is in left.slp"):
             classify_files(config)
 
     def test_single_slp_covers_multiple_cameras(self, tmp_path):

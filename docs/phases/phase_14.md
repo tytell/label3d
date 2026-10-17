@@ -159,11 +159,11 @@ A skeleton can change after labelling: a node is dropped or renamed in SLEAP, a 
 
 ## 14.8 Project setup (`setup_project.py`, `setup_project_cli.py`)
 
-- [ ] Replace both "inconsistent skeletons" checks with `merge_skeletons`. A `SkeletonConflict` aborts setup with the full list of conflicts.
-- [ ] `FileAssignment.skeleton` holds the union, plus the per-file skeletons for the summary.
-- [ ] The setup summary reports the union, then one line per partial node, for example "Skeleton: 12 nodes; tail_tip only in cam0, cam2".
+- [x] Replace both "inconsistent skeletons" checks with `merge_skeletons`. A `SkeletonConflict` aborts setup with the full list of conflicts.
+- [x] `FileAssignment.skeleton` holds the union, and `FileAssignment.slp_skeletons` the per-file skeletons.
+- [x] The setup summary (`preview_assignment`) reports the union, then one line per `.slp` file that lacks some of its nodes, for example "cam3.slp (no_tail) has no tail_tip". (By file rather than by camera: the setup-from-videos path only learns which camera a file covers late, and one file per camera is the usual layout.)
 - [x] A setup file `[skeleton]` is written as an assignment (14.2), to its `cameras` or all of them.
-- [ ] When there are `.slp` files, a setup file `[skeleton]` must merge with them without conflict, replacing today's exact-match check (`_apply_config_skeleton`). (Its `node_offsets_cm` already go to `project.toml`.)
+- [x] When there are `.slp` files, a setup file `[skeleton]` must merge with them without conflict, replacing today's exact-match check (`_apply_config_skeleton`). (Its `node_offsets_cm` already go to `project.toml`.)
 - [x] Stop writing `skeleton.json`.
 
 ## 14.9 Synthetic data (`generate_synthetic.py`, `src/synthetic/`, `synthetic_config.toml`)

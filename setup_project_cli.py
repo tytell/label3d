@@ -35,7 +35,8 @@ Config file format (TOML):
     [project]
     name = "my_experiment"
 
-    # Optional; must match the .slp files' skeleton if they have one.
+    # Optional; must not conflict with the .slp files' skeletons (shared nodes
+    # must agree on edges and symmetries).
     # Either a skeleton.json (relative paths from the working directory) …
     [skeleton]
     file = "/path/to/skeleton.json"

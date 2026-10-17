@@ -15,7 +15,7 @@ from aniposelib.cameras import CameraGroup
 
 from label3d.calibration_registry import REFINED_DIR, camera_dir, save_calibration
 from label3d.project import Project, check_trial_videos, write_trials_csv
-from label3d.skeleton import Skeleton, assign_in_config
+from label3d.skeleton import Skeleton, assign_in_config, merge_skeletons
 from label3d.slp_sync import SlpMapping
 
 logger = logging.getLogger(__name__)
@@ -64,8 +64,8 @@ class SetupConfig:
     # Set up the project from the videos that could be located, leaving the
     # cameras whose videos are missing blank in trials.csv
     allow_missing_videos: bool = False
-    # Skeleton given in the setup file (see skeleton_from_setup); must match
-    # the skeleton of any .slp files
+    # Skeleton given in the setup file (see skeleton_from_setup); must not
+    # conflict with the skeletons of the .slp files
     skeleton: Skeleton | None = None
     # Cameras the setup skeleton is assigned to (the [skeleton] cameras key);
     # None for all of them
@@ -115,8 +115,11 @@ class FileAssignment:
     unmatched: list[Path] = field(default_factory=list)
     # warnings generated during classification
     warnings: list[str] = field(default_factory=list)
-    # skeleton extracted from .slp files (nodes/edges/symmetries); None if no SLP files present
+    # union of the .slp files' skeletons (nodes/edges/symmetries) and the setup
+    # file's; None if there is neither
     skeleton: dict | None = None
+    # each readable .slp file's skeleton
+    slp_skeletons: dict[Path, Skeleton] = field(default_factory=dict)
     # split detection: True when multiple calibration groups (prefixes) are found
     needs_split: bool = False
     # prefix -> {camera_name: [calib files]}
@@ -221,7 +224,6 @@ def classify_files(config: SetupConfig) -> FileAssignment:
                 video_to_trial_cam[fp.name] = (trial_name, cam)
 
         covered: set[tuple[str, str]] = set()
-        skeleton_dicts: list[dict] = []
 
         logger.debug("Trial video lookup: %s", sorted(video_to_trial_cam))
 
@@ -238,7 +240,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
                 "SLP '%s' contains videos: %s", slp_path.name, sorted(video_basenames)
             )
 
-            skeleton_dicts.append(skeleton_dict)
+            assignment.slp_skeletons[slp_path] = _skeleton_from_dict(skeleton_dict, slp_path)
 
             if not video_basenames:
                 assignment.warnings.append(
@@ -266,16 +268,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
                         f" (trial '{trial_name}', camera '{cam}')"
                     )
 
-        # Check skeleton consistency; error on mismatch
-        if skeleton_dicts:
-            first = set(skeleton_dicts[0]['nodes'])
-            for sd in skeleton_dicts[1:]:
-                if set(sd['nodes']) != first:
-                    raise ValueError(
-                        "SLP files have inconsistent skeletons — "
-                        "all .slp files must share the same skeleton."
-                    )
-            assignment.skeleton = skeleton_dicts[0]
+        _merge_slp_skeletons(assignment)
 
     # Warn about incomplete trials
     for trial_name, cam_files in assignment.trials.items():
@@ -377,7 +370,6 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
     search_dirs = [Path(d) for d in config.video_search_dirs]
     data_videos: list[tuple[str, Path]] = []
     video_sources: dict[Path, list[Path]] = {}  # resolved video -> .slp files
-    skeleton_dicts: list[dict] = []
     seen: set[Path] = set()
 
     for slp_path in slp_paths:
@@ -389,7 +381,7 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
             )
             continue
 
-        skeleton_dicts.append(skeleton_dict)
+        assignment.slp_skeletons[slp_path] = _skeleton_from_dict(skeleton_dict, slp_path)
         if n_frames == 0:
             assignment.warnings.append(
                 f"SLP file '{slp_path.name}' has no labeled frames"
@@ -426,15 +418,7 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
                 continue
             data_videos.append((camera, resolved))
 
-    if skeleton_dicts:
-        first = set(skeleton_dicts[0]["nodes"])
-        for sd in skeleton_dicts[1:]:
-            if set(sd["nodes"]) != first:
-                raise ValueError(
-                    "SLP files have inconsistent skeletons — "
-                    "all .slp files must share the same skeleton."
-                )
-        assignment.skeleton = skeleton_dicts[0]
+    _merge_slp_skeletons(assignment)
 
     assignment.trials = _run_match_strategy(
         config.match_strategy, data_videos, config
@@ -491,19 +475,40 @@ def skeleton_from_setup(table: dict, base_dir: Path | None = None) -> Skeleton:
     return Skeleton.from_dict(table)
 
 
+def _skeleton_from_dict(data: dict, slp_path: Path) -> Skeleton:
+    """A .slp file's skeleton, named after the file when SLEAP gave it no name."""
+    return Skeleton(
+        nodes=list(data["nodes"]),
+        edges=[tuple(e) for e in data["edges"]],
+        symmetries=[tuple(sym) for sym in data["symmetries"]],
+        name=data.get("name") or slp_path.stem,
+    )
+
+
+def _merge_slp_skeletons(assignment: FileAssignment) -> None:
+    """Set assignment.skeleton to the union of the .slp files' skeletons.
+
+    Raises SkeletonConflict (a ValueError) listing every conflict.
+    """
+    if assignment.slp_skeletons:
+        union = merge_skeletons(
+            {path.name: sk for path, sk in assignment.slp_skeletons.items()}
+        )
+        assignment.skeleton = union.to_dict()
+
+
 def _apply_config_skeleton(config: SetupConfig, assignment: FileAssignment) -> None:
-    """Use the setup file's skeleton, after checking it against the .slp one."""
+    """Add the setup file's skeleton to the union, checking it against the .slp files.
+
+    It is assigned to its cameras in project.toml (execute_setup). With .slp
+    files it must merge with their skeletons without conflict; raises
+    SkeletonConflict otherwise.
+    """
     if config.skeleton is None:
         return
-    if assignment.skeleton is not None:
-        from_slp = Skeleton.from_dict(assignment.skeleton)
-        if not config.skeleton.same_topology(from_slp):
-            raise ValueError(
-                "The skeleton in the setup file does not match the .slp files' skeleton "
-                f"(setup: {', '.join(config.skeleton.nodes)}; "
-                f".slp: {', '.join(from_slp.nodes)})"
-            )
-    assignment.skeleton = config.skeleton.to_dict()
+    skeletons = {"the setup file": config.skeleton}
+    skeletons.update({path.name: sk for path, sk in assignment.slp_skeletons.items()})
+    assignment.skeleton = merge_skeletons(skeletons).to_dict()
 
 
 def _expand_slp_paths(paths: list[Path]) -> list[Path]:
@@ -636,7 +641,14 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
     lines.append(f"Cameras: {', '.join(config.camera_names)}")
     if assignment.skeleton:
         source = "setup file" if config.skeleton is not None else ".slp files"
-        lines.append(f"Skeleton: {', '.join(assignment.skeleton['nodes'])} (from {source})")
+        if config.skeleton is not None and assignment.slp_skeletons:
+            source = "setup file and .slp files"
+        nodes = assignment.skeleton["nodes"]
+        lines.append(f"Skeleton: {', '.join(nodes)} (from {source})")
+        for path, sk in assignment.slp_skeletons.items():
+            lacking = [n for n in nodes if n not in sk.nodes]
+            if lacking:
+                lines.append(f"  {path.name} ({sk.name}) has no {', '.join(lacking)}")
     else:
         lines.append("Skeleton: none (add one later with File > Load skeleton...)")
     strategy_str = config.match_strategy
@@ -1092,6 +1104,7 @@ def split_project_groups(
             exp_calibration={"default": sub_calibration},
             unmatched=list(assignment.unmatched),
             skeleton=assignment.skeleton,
+            slp_skeletons=dict(assignment.slp_skeletons),
         )
 
         result[prefix] = (sub_config, sub_assignment)
@@ -1141,6 +1154,7 @@ def _skeleton_dict(labels) -> dict:
     """Extract nodes / edges / symmetries from a loaded Labels object."""
     sk = labels.skeleton
     return {
+        "name": sk.name,
         "nodes": [n.name for n in sk.nodes],
         "edges": [(e.source.name, e.destination.name) for e in sk.edges],
         "symmetries": [(s[0].name, s[1].name) for s in sk.symmetries],

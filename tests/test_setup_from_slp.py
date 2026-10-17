@@ -140,15 +140,16 @@ class TestClassify:
         assert len(assignment.missing_videos) == 1
         assert "not found" in " ".join(assignment.warnings)
 
-    def test_inconsistent_skeletons_raise(self, source, tmp_path):
+    def test_different_skeletons_are_merged(self, source, tmp_path):
         other = _make_video(tmp_path / "rig2" / "cam1_Trial9.mp4")
         skeleton = sio.Skeleton(["nose", "fin"])
         video = sio.Video.from_filename(str(other))
         labels = sio.Labels(labeled_frames=[], videos=[video], skeletons=[skeleton])
         odd = tmp_path / "labels" / "odd.slp"
         sio.save_file(labels, str(odd))
-        with pytest.raises(ValueError, match="inconsistent skeletons"):
-            classify_slp_files(_config(source, slp_paths=[*source["slps"], odd]))
+        assignment = classify_slp_files(_config(source, slp_paths=[*source["slps"], odd]))
+        assert assignment.skeleton["nodes"] == [*NODES, "nose", "fin"]
+        assert assignment.slp_skeletons[odd].nodes == ["nose", "fin"]
 
 
 class TestExecute:
