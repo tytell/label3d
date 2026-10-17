@@ -7,7 +7,7 @@ There are two ways a project gets its skeletons:
 - **From `.slp` files**: the project is set up from existing `.slp` files, and each file's skeleton is used.
 - **Loaded before any `.slp` file exists**: the user loads a skeleton (**File > Load skeleton...**), for all cameras or for chosen ones, labels in label3d, and the first Sync creates the `.slp` files with those skeletons.
 
-**Status**: Implemented (steps 1–9); to be checked in the app. Left: turning on `missing_nodes` in `synthetic_config.toml` and regenerating the test project (14.9), and the round-trip and load-skeleton-first tests in 14.10.
+**Status**: Implemented (steps 1–9); to be checked in the app. Left: turning on `missing_nodes` in `synthetic_config.toml` and regenerating the test project (14.9).
 
 ---
 
@@ -180,10 +180,10 @@ A skeleton can change after labelling: a node is dropped or renamed in SLEAP, a 
 - [x] `ProjectSkeleton.skeleton_for`: each of rules 1–4, including an inferred camera skeleton and cameras whose files disagree (which fall back to the union).
 - [x] `Project.assign_skeleton`: a camera moves between entries; empty entries are removed; the same topology is reused.
 - [x] `mapping_problems`: a new file mixing skeletons (error); an existing file against a differing assignment (error); a cell moved into an existing file with another skeleton (warning, with the point count); one file per camera (no problems).
-- [ ] Sync round trip on a synthetic project where cam1's file lacks a node:
+- [x] Sync round trip where cam1's file lacks a node (on the small sync fixture):
   - reading gives no cam1 points for that node;
   - writing leaves cam1's file skeleton unchanged and keeps the other cameras' points.
-- [ ] Load-skeleton-first workflow on a `--no-slp` synthetic project: the first Sync creates each file with its cameras' assigned skeleton; reloading gives the same availability from the files.
+- [x] Load-skeleton-first workflow (on the small sync fixture; `--no-slp` was checked by hand): the first Sync creates each file with its cameras' assigned skeleton; reloading gives the same availability from the files.
 - [x] Sync is refused when the mapping mixes skeletons.
 - [x] Import from an outside file with the union skeleton drops the points in cells that lack the node, and reports them.
 - [x] Triangulation with `skeletons` ignores a leftover `set` point in an unavailable cell, and gives NaN for a node in one camera only.

@@ -949,3 +949,41 @@ class TestPointsOutside:
         assert tail["cam1_state"].isna().all()
         assert (tail["cam0_state"] == "set").all()
         assert "Left out 2 point(s)" in format_summary(result)
+
+
+# ---------------------------------------------------------------------------
+# Round trips (phase 14.10)
+# ---------------------------------------------------------------------------
+
+class TestRoundTrips:
+    def test_load_skeleton_first_then_sync_creates_files(self, project):
+        """No .slp files yet: the first Sync creates each with its cameras' skeleton."""
+        project.assign_skeleton(HEAD_ONLY, ["cam1"])
+        project.remove_points_outside(cameras=["cam1"])
+        before = {cam: project.skeletons.nodes_for((SYNC_EXP, "t1", cam)) for cam in SYNC_CAMS}
+        assert project.slp_write_problems() == []
+        project.write_slp_files()
+        assert Skeleton.from_slp(project.root / "slp/cam1.slp").nodes == ["head"]
+        assert Skeleton.from_slp(project.root / "slp/cam0.slp").nodes == SYNC_NODES
+
+        reloaded = Project.load(project.root)
+        assert reloaded.skeletons.by_file   # now from the files
+        after = {cam: reloaded.skeletons.nodes_for((SYNC_EXP, "t1", cam)) for cam in SYNC_CAMS}
+        assert after == before
+
+    def test_sync_round_trip_with_smaller_file_skeleton(self, project):
+        """cam1's file lacks tail: reading brings no cam1 tail; writing keeps the file's skeleton."""
+        write_slp(project.root / "slp/cam1.slp", HEAD_ONLY, with_frame=False)
+        _set_config(project, skeleton=None)
+        write_slp(project.root / "slp/cam0.slp", SYNC_EDGE_SK, with_frame=False)
+        project.load_skeletons()
+        project.remove_points_outside()
+        project.write_slp_files()
+        assert Skeleton.from_slp(project.root / "slp/cam1.slp").nodes == ["head"]
+
+        results = project.read_slp_for_sync()
+        assert results[SYNC_EXP].n_new == 0 and results[SYNC_EXP].conflicts == []
+        df = results[SYNC_EXP].df
+        tail = df.xs("tail", level="bodypart")
+        assert (tail[("cam1", "state")] == "not_set").all()
+        assert (tail[("cam0", "state")] == "set").all()
