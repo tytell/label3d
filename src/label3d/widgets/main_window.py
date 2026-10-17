@@ -261,6 +261,12 @@ class MainWindow(QMainWindow):
             "or chosen ones; existing .slp files keep their own skeleton"
         )
         load_skeleton_action.triggered.connect(self._do_load_skeleton)
+        remove_outside_action = file_menu.addAction("Remove points outside the skeletons...")
+        remove_outside_action.setToolTip(
+            "Delete labelled points whose camera's skeleton lacks the node; they are "
+            "hidden, not triangulated and not written to the SLP files"
+        )
+        remove_outside_action.triggered.connect(self._do_remove_points_outside)
         file_menu.addSeparator()
         self._export_action = file_menu.addAction("Export points...")
         self._export_action.triggered.connect(self._do_export)
@@ -673,6 +679,46 @@ class MainWindow(QMainWindow):
             self._status_bar.showMessage(
                 f"The skeletons conflict ({len(conflicts)} problem(s)): {conflicts[0]}"
             )
+
+    def _show_points_outside(self) -> None:
+        """Status bar note when the active experiment has points outside the skeletons."""
+        outside = self._project.points_outside(self._project.active_experiment)
+        if outside:
+            self._status_bar.showMessage(
+                f"{sum(outside.values())} point(s) are outside their camera's skeleton "
+                "and hidden — File > Remove points outside the skeletons..."
+            )
+
+    def _do_remove_points_outside(self) -> None:
+        """List the points outside their camera's skeleton, then delete them."""
+        if self._project.points is not None:
+            self._project.points.save_if_changed()
+        outside: dict[tuple[str, str], int] = {}
+        for name in self._project.experiments:
+            for key, n in self._project.points_outside(name).items():
+                outside[key] = outside.get(key, 0) + n
+        title = "Remove points outside the skeletons"
+        if not outside:
+            QMessageBox.information(
+                self, title, "Every labelled point is in its camera's skeleton."
+            )
+            return
+        by_node: dict[str, list[str]] = {}
+        for (cam, node), n in sorted(outside.items()):
+            by_node.setdefault(node, []).append(f"{cam} ({n})")
+        lines = "\n".join(f"  {node}: {', '.join(cams)}" for node, cams in by_node.items())
+        reply = QMessageBox.warning(
+            self, title,
+            f"{sum(outside.values())} labelled point(s), in all experiments, are in "
+            f"cameras whose skeleton lacks the node:\n\n{lines}\n\nDelete them?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        n = self._project.remove_points_outside()
+        self._refresh_after_merge()
+        self._status_bar.showMessage(f"Deleted {n} point(s) outside the skeletons")
 
     def _check_slp_skeletons(self, title: str) -> bool:
         """False, after explaining, when the .slp files can't be written as mapped."""
@@ -1433,6 +1479,7 @@ class MainWindow(QMainWindow):
             f"Synced — read {n_new} new, {n_predictions} predictions; "
             f"wrote {n} SLP file(s)"
         )
+        self._show_points_outside()
         # Triangulation runs after the write so the two never touch the
         # DataFrame at the same time; 3D coordinates are not written to SLP.
         self._retriangulate(results, overwrite)
@@ -1661,6 +1708,7 @@ class MainWindow(QMainWindow):
         dialog's event loop would stack the next one under it."""
         if self._project.video_warnings:
             self._warn_changed_videos()
+        self._show_points_outside()
         self._show_skeleton_conflicts()
         self._read_slp_on_open()
 

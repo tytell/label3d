@@ -71,6 +71,9 @@ class ExportResult:
     slp_files_written: int | None = None  # None when the SLP files were not written
     # Why the SLP files could not be written (skeleton conflicts, mixed files)
     slp_problems: list[str] = field(default_factory=list)
+    # Points left out because their camera's skeleton lacks the node:
+    # (camera, node) -> count
+    outside: dict[tuple[str, str], int] = field(default_factory=dict)
 
 
 # -- Pre-flight checks ----------------------------------------------------------
@@ -175,6 +178,9 @@ def export_points(project: Project, options: ExportOptions | None = None) -> Exp
             result.two_d_only.append(name)
             calibration = None
         rows = experiment_rows(df, cameras, starts, calibration, options, project.skeletons)
+        if project.skeletons is not None:
+            for key, n in project.points_outside(name, project.skeletons).items():
+                result.outside[key] = result.outside.get(key, 0) + n
         result.counts[name] = state_source_counts(rows, cameras)
         frames.append(rows)
 
@@ -218,8 +224,10 @@ def experiment_rows(
     cameras gives the column order. calibration is the id of the calibration
     the 3D points came from, or None for an experiment without one: then the
     3D and reprojection columns are blank. A camera's cells are blank where it
-    has no point (or a prediction, without include_predictions); a row is
-    dropped when no camera has a point and there is no 3D point.
+    has no point (or a prediction, without include_predictions) or, with
+    skeletons, where its skeleton lacks the node; a row is dropped when no
+    camera has a point and there is no 3D point. A 3D point counts only when
+    at least 2 cameras' points count for it, as in triangulation.
     """
     exp_cameras = [c for c in df.columns.get_level_values(0).unique() if c != VIEW_3D]
     keys = df.index.to_frame(index=False)
@@ -245,6 +253,8 @@ def experiment_rows(
         state = df[(cam, "state")]
         source = df[(cam, "source")]
         keep = state.isin(LABELED_STATES).to_numpy().copy()
+        if skeletons is not None:
+            keep &= skeletons.available_mask(df.index, cam)
         if not options.include_predictions:
             keep &= (source != SOURCE_SLEAP_PRED).to_numpy()
         any_camera |= keep
@@ -270,6 +280,7 @@ def experiment_rows(
             triangulation_mask(df, cam, skeletons).astype(int) for cam in exp_cameras
         ))
         mean_error = mean_reprojection_errors(df, reproj, skeletons)
+        has_3d &= n_cameras >= 2
     else:
         n_cameras = np.zeros(n, dtype=int)
         mean_error = np.full(n, np.nan)
@@ -294,6 +305,14 @@ def format_summary(result: ExportResult) -> str:
         lines.append(f"  {name}: {', '.join(parts) or 'no points'}")
     if result.two_d_only:
         lines.append(f"2D only (no active calibration): {', '.join(result.two_d_only)}")
+    if result.outside:
+        parts = ", ".join(
+            f"{node} in {cam} ({n})" for (cam, node), n in sorted(result.outside.items())
+        )
+        lines.append(
+            f"Left out {sum(result.outside.values())} point(s) whose camera's skeleton "
+            f"lacks the node: {parts}"
+        )
     if result.slp_problems:
         lines.append("SLP files were not written: the skeletons need fixing first")
         lines.extend(f"  {problem}" for problem in result.slp_problems)

@@ -549,6 +549,21 @@ class Project:
                 preview.outside[node] = preview.outside.get(node, 0) + n
         return preview
 
+    def points_outside(
+        self, experiment: str, skeletons: ProjectSkeleton | None = None
+    ) -> dict[tuple[str, str], int]:
+        """Labelled points of an experiment outside their cell's skeleton.
+
+        Returns (camera, node) -> count. Nodes in no skeleton count in every
+        camera that has a point for them.
+        """
+        skeletons = self.skeletons if skeletons is None else skeletons
+        df = self.experiment_points_df(experiment)
+        if skeletons is None or df.empty:
+            return {}
+        _, dropped = drop_unavailable(df, skeletons)
+        return dropped.get(experiment, {})
+
     def remove_points_outside(
         self, skeletons: ProjectSkeleton | None = None, cameras: list[str] | None = None
     ) -> int:

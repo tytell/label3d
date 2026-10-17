@@ -109,7 +109,7 @@ Today there is one skeleton per project:
 
 - [x] `triangulation_mask`, `triangulate_rows`, `mean_reprojection_errors`, `triangulate_trial`, `triangulate_frame` and `triangulate_all_instances` take `skeletons: ProjectSkeleton | None`. A camera's point counts only if its state is `set` or `predicted` **and** the node is in that camera's skeleton for the row's trial (`ProjectSkeleton.available_mask`, so one table can span trials, as the export's does). With today's data this changes nothing. It keeps leftover points (14.7) out of the 3D point.
 - [x] Callers pass `project.skeletons`: both triangulation workers, the label view's frame and trial triangulation, and the export's `n_cameras` / `mean_error`.
-- [x] Reprojections (`xr`/`yr`) are still computed for every camera. The label view does not draw them in cameras where the node is unavailable (14.5). Export leaves those cells out (14.7, not done yet).
+- [x] Reprojections (`xr`/`yr`) are still computed for every camera. The label view does not draw them in cameras where the node is unavailable (14.5). Export leaves those cells out (14.7).
 - [x] `init_random` and `init_average` take `nodes`, and `init_reprojected` takes `available` (camera → nodes, used for the target and the source cameras); they return coordinates only for available nodes and return coordinates only for those. This covers Add instance (one camera and all cameras) and the reprojected fill.
 
 ## 14.5 Label view (`widgets/bodypart_list.py`, `skeleton_overlay.py`, `epipolar_overlay.py`, `label_view.py`, `state.py`)
@@ -153,7 +153,9 @@ A skeleton can change after labelling: a node is dropped or renamed in SLEAP, a 
 - on load and after a Sync, the status bar says how many there are.
 
 - [x] `Project.remove_points_outside(skeletons=None, cameras=None)` clears a camera's points where its skeleton lacks the node and drops rows of nodes in no skeleton, backing up the `points.csv` of inactive experiments. The Load skeleton dialog (14.2) uses it.
-- [ ] **File > Remove points outside the skeletons...** lists them by node, and by camera for unavailable cells, and after confirmation calls `remove_points_outside()`.
+- [x] **File > Remove points outside the skeletons...** lists them by node and camera, across experiments (`Project.points_outside`), and after confirmation calls `remove_points_outside()`.
+- [x] The export leaves them out and counts them in `ExportResult.outside`, shown by `format_summary` (dialog and CLI). It also drops a stored 3D point that fewer than 2 cameras' points now count for, as triangulation would.
+- [x] On load and after a Sync, the status bar gives the active experiment's count.
 
 ## 14.8 Project setup (`setup_project.py`, `setup_project_cli.py`)
 

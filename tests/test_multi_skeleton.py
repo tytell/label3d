@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import sleap_io as sio
 
@@ -920,3 +921,31 @@ class TestLabelViewAvailability:
         assert (after.x, after.state) == (before.x, before.state)
         view._on_point_dragged("cam0", 0, "tail", 1.0, 2.0)
         assert project.points.get_point("t1", 0, 0, "tail", "cam0").x == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Points that no longer fit (phase 14.7)
+# ---------------------------------------------------------------------------
+
+from label3d.export import format_summary  # noqa: E402
+
+
+class TestPointsOutside:
+    def test_counts_by_camera_and_node(self, project):
+        assert project.points_outside(SYNC_EXP) == {}
+        project.assign_skeleton(HEAD_ONLY, ["cam1"])
+        assert project.points_outside(SYNC_EXP) == {("cam1", "tail"): 2}
+
+    def test_nodes_in_no_skeleton_count_in_every_camera(self, project):
+        project.assign_skeleton(HEAD_ONLY, SYNC_CAMS)
+        assert project.points_outside(SYNC_EXP) == {("cam0", "tail"): 2, ("cam1", "tail"): 2}
+
+    def test_export_leaves_them_out(self, project, tmp_path):
+        project.assign_skeleton(HEAD_ONLY, ["cam1"])
+        result = export_points(project, ExportOptions(output=tmp_path / "out.csv"))
+        assert result.outside == {("cam1", "tail"): 2}
+        rows = pd.read_csv(tmp_path / "out.csv")
+        tail = rows[rows["bodypart"] == "tail"]
+        assert tail["cam1_state"].isna().all()
+        assert (tail["cam0_state"] == "set").all()
+        assert "Left out 2 point(s)" in format_summary(result)
