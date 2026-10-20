@@ -206,7 +206,7 @@ class LabelView(QWidget):
         bodypart = self._state.selected_bodypart
         panel.skeleton_overlay.update(
             self._state.points_store,
-            self._state.skeleton,
+            self._state.skeleton_for_camera(panel.camera_name),
             self._state.current_trial,
             self._state.current_frame,
             self._state.selected_instance,

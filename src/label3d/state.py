@@ -76,6 +76,12 @@ class ProjectState(QObject):
             return None
         return self._skeletons.nodes_for((self._experiment(), self._current_trial, camera))
 
+    def skeleton_for_camera(self, camera: str) -> Skeleton | None:
+        """camera's skeleton in the current trial, whose edges its panel draws."""
+        if self._skeletons is None:
+            return self._skeleton
+        return self._skeletons.skeleton_for((self._experiment(), self._current_trial, camera))
+
     def node_cameras(self, bodypart: str, cameras: list[str]) -> list[str]:
         """The cameras (of cameras, in order) whose skeleton has bodypart this trial."""
         if self._skeletons is None:

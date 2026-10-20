@@ -825,6 +825,21 @@ class TestStateAvailability:
         assert state.node_cameras("tail", SYNC_CAMS) == ["cam0"]
         assert state.skeleton.nodes == SYNC_NODES
 
+    def test_each_camera_gets_its_own_edges(self, project):
+        eye_star = Skeleton(nodes=["head", "tail"], edges=[("tail", "head")], name="star")
+        project.assign_skeleton(eye_star, ["cam1"])
+        state = _state(project)
+        # cam1's file exists, so its skeleton wins over the assignment (rule 1)
+        assert state.skeleton_for_camera("cam1") == project.skeletons.skeleton_for(
+            (project.points.experiment_name, "t1", "cam1")
+        )
+        unmapped = ProjectSkeleton.build(SYNC_CAMS, by_camera={
+            "cam0": SYNC_EDGE_SK, "cam1": eye_star,
+        })
+        state.set_skeletons(unmapped)
+        assert state.skeleton_for_camera("cam1").name == "star"
+        assert state.skeleton_for_camera("cam0").name == "skeleton"
+
     def test_no_skeletons_means_everything(self):
         state = ProjectState()
         assert state.available_nodes("cam0") is None
@@ -878,6 +893,14 @@ class TestOverlays:
         assert not any(item.isVisible() for item in overlay._edge_items)
         overlay.update(project.points, project.skeleton, "t1", 0, 0, "head")
         assert overlay._active_points == {(0, "head"), (0, "tail")}
+
+    def test_skeleton_overlay_draws_given_edges(self, project, qapp):
+        overlay = SkeletonOverlay(QGraphicsScene(), "cam1")
+        no_edges = Skeleton(nodes=SYNC_NODES, name="bare")
+        overlay.update(project.points, no_edges, "t1", 0, 0, "head")
+        assert not any(item.isVisible() for item in overlay._edge_items)
+        overlay.update(project.points, SYNC_EDGE_SK, "t1", 0, 0, "head")
+        assert any(item.isVisible() for item in overlay._edge_items)
 
     def test_epipolar_overlay_respects_available(self, project, qapp):
         class Cache:
