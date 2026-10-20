@@ -140,6 +140,24 @@ class TestClassify:
         assert len(assignment.missing_videos) == 1
         assert "not found" in " ".join(assignment.warnings)
 
+    def test_every_video_reference_is_recorded(self, source, tmp_path):
+        gone = tmp_path / "gone"
+        gone.mkdir()
+        video = _make_video(gone / "cam1_Trial3.mp4")
+        stray = _make_video(tmp_path / "rig" / "other_Trial1.mp4")
+        slp = _make_slp(tmp_path / "labels" / "extra.slp", [video, stray])
+        video.unlink()
+        assignment = classify_slp_files(
+            _config(source, slp_paths=[*source["slps"], slp])
+        )
+        refs = [r for r in assignment.video_refs if r.slp_path == slp]
+        assert [r.recorded.name for r in refs] == ["cam1_Trial3.mp4", "other_Trial1.mp4"]
+        assert refs[0].resolution.path is None
+        assert refs[1].resolution.rule == "recorded"
+        assert refs[1].camera is None
+        found = [r for r in assignment.video_refs if r.slp_path == source["slps"][0]]
+        assert {r.camera for r in found} == {"cam1"}
+
     def test_different_skeletons_are_merged(self, source, tmp_path):
         other = _make_video(tmp_path / "rig2" / "cam1_Trial9.mp4")
         skeleton = sio.Skeleton(["nose", "fin"])

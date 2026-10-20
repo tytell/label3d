@@ -96,6 +96,17 @@ class SetupConfig:
 
 
 @dataclass
+class VideoReference:
+    """One video a .slp file refers to, and what setup made of it."""
+
+    slp_path: Path
+    recorded: Path
+    resolution: ResolvedVideo
+    # None when the video was not found or matches no camera name
+    camera: str | None = None
+
+
+@dataclass
 class FileAssignment:
     """Result of classifying and matching files."""
 
@@ -136,6 +147,8 @@ class FileAssignment:
     calibration_toml: dict[str, Path] = field(default_factory=dict)
     # (recorded prefix, replacement root) -> number of videos remapped that way
     video_remaps: dict[tuple[str, str], int] = field(default_factory=dict)
+    # SLP-first setup: every video reference in every .slp file, in reading order
+    video_refs: list[VideoReference] = field(default_factory=list)
 
 
 def classify_files(config: SetupConfig) -> FileAssignment:
@@ -389,6 +402,12 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
 
         for ref in recorded:
             outcome = _resolve_video_reference(ref, slp_path.parent, search_dirs)
+            camera = (
+                _identify_camera_from_path(outcome.path, config.camera_names)
+                if outcome.path is not None
+                else None
+            )
+            assignment.video_refs.append(VideoReference(slp_path, ref, outcome, camera))
             if outcome.path is None:
                 assignment.missing_videos.append((ref, slp_path.name))
                 if outcome.rule == "ambiguous":
@@ -409,7 +428,6 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
                 continue
             seen.add(resolved)
 
-            camera = _identify_camera_from_path(resolved, config.camera_names)
             if camera is None:
                 assignment.unmatched.append(resolved)
                 assignment.warnings.append(
