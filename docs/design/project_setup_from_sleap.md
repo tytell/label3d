@@ -1,5 +1,7 @@
 # Project Setup from SLEAP Files
 
+> **Outdated.** This is the original design, written before the implementation. For how setup works now, see [setup_from_slp.md](../setup_from_slp.md).
+
 **Goal**: Build a label3d project from one or more existing `.slp` files instead of a flat
 folder of videos. The videos stay wherever they already live — the project references them by
 path rather than copying them in. The skeleton and the labels come out of the `.slp` files;

@@ -1,0 +1,55 @@
+# Setup from several .slp files with different skeletons, cameras that were
+# named differently in older recordings, and calibration videos in another folder.
+#
+#   BGvPS_flat/
+#   ├── BGvPS_setup.toml                              (this file)
+#   ├── BGvPS_Lateral.v002.slp                        (LateralOrtho and LateralOffAxis)
+#   ├── BGPS_Ventral.v002.slp                         (Ventral; fewer nodes)
+#   └── PS37_Trial7_Ventral.mp4, ...                  (videos no .slp file refers to)
+#
+#   /Volumes/Lab/.../Charuco/
+#   ├── Pre-Cal_PS21_Charuco_LateralOrtho.mp4         ({take}_{experiment}_..._{camera})
+#   ├── Post-Cal_PS21_Charuco_LateralOrtho.mp4
+#   └── ...
+#
+#   uv run python inspect_slp_cli.py BGvPS_flat/BGvPS_setup.toml
+#   uv run python setup_project_cli.py -n BGvPS_flat/BGvPS_setup.toml
+#   uv run python setup_project_cli.py BGvPS_flat/BGvPS_setup.toml
+
+[setup]
+# source_dir instead of slp_files: uses every .slp file in it, and also makes
+# trials of the videos there that no .slp file refers to
+source_dir = "BGvPS_flat"
+output_dir = "BGvPS"
+camera_names = ["LateralOrtho", "LateralOffAxis", "Ventral"]
+# Other names a camera has in filenames; the longest matching name or alias wins
+camera_aliases = { LateralOrtho = ["Lateral"], LateralOffAxis = ["OffAxisLateral", "OffAxis Lateral"] }
+experiment_keywords = ["PS21", "BG75"]   # videos naming neither are left out
+match_strategy = "keyword"
+trial_keyword = "Trial"
+calib_keywords = ["Pre-Cal", "Post-Cal"]  # one keyword per calibration take
+
+video_mode = "reference"
+video_search_dirs = ["/Volumes/Lab/NewData/BluegillVPumpkinseed/RawData/VideoConversions"]
+calibration_dir = "/Volumes/Lab/NewData/BluegillVPumpkinseed/RawData/VideoConversions/CALIBRATION VIDEOS/Charuco"
+# or, for a calibration you already have:
+# calibration_toml = "/path/to/calibration.toml"
+allow_missing_videos = true
+import_labels = true
+
+[project]
+name = "BGvPS"
+
+[charuco]
+squares_x = 6
+squares_y = 8
+square_length = 30.0
+marker_length = 22.0
+marker_bits = 4
+dict_size = 50
+
+# Optional. The .slp files' skeletons are used and merged by node name; give a
+# skeleton here only for cameras with no .slp file yet.
+# [skeleton]
+# file = "skeleton.json"
+# cameras = ["Ventral"]

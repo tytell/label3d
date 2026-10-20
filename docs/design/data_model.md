@@ -367,7 +367,7 @@ R_align = [[r00, r01, r02], [r10, r11, r12], [r20, r21, r22]]
 
 Before using label3d, users organize raw video files into the expected project structure.
 To start from existing SLEAP labels instead, with the videos left where they are, see
-[project_setup_from_sleap.md](project_setup_from_sleap.md).
+[setup_from_slp.md](../setup_from_slp.md).
  The **setup utility** (`label3d/setup_project.py`) takes a flat folder of videos + optional `.slp` files and reorganizes them.
 
 ```bash

@@ -18,7 +18,7 @@ A cross-platform desktop app for:
 | [docs/design/workflows.md](docs/design/workflows.md) | Calibration UI, axis alignment, labeling UI, export UI, keyboard shortcuts, key features |
 | [docs/design/architecture.md](docs/design/architecture.md) | Package layout, build order, technology stack, risks, design decisions |
 | [docs/design/testing.md](docs/design/testing.md) | Test modules and testing conventions |
-| [docs/design/project_setup_from_sleap.md](docs/design/project_setup_from_sleap.md) | Building a project from existing `.slp` files: referenced (not copied) videos, skeleton and label import, calibration discovery |
+| [docs/design/project_setup_from_sleap.md](docs/design/project_setup_from_sleap.md) | Building a project from existing `.slp` files: referenced (not copied) videos, skeleton and label import, calibration discovery (original design; outdated, see [docs/setup_from_slp.md](docs/setup_from_slp.md)) |
 | [docs/design/synthetic_data.md](docs/design/synthetic_data.md) | Synthetic data generator: module layout, output structure, charuco image generation |
 | [docs/design/phases/phase_8.md](docs/design/phases/phase_8.md) | Phase 8 — SLP write-back (completed) |
 | [docs/design/phases/phase_9.md](docs/design/phases/phase_9.md) | Phase 9 — Calibration Takes (completed) |

@@ -6,7 +6,7 @@ Usage:
     uv run python setup_project_cli.py config.toml      # config file mode
 
     # from existing .slp files, videos referenced where they already live
-    # (see docs/design/project_setup_from_sleap.md)
+    # (see docs/setup_from_slp.md)
     uv run python setup_project_cli.py --from-slp labels/ \
         --output /path/to/project --cameras left,right,bottom
 

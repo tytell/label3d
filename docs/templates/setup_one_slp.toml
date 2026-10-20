@@ -1,0 +1,42 @@
+# Setup from one .slp file, with the calibration videos beside it.
+#
+#   OMR_flat/
+#   ├── OMR_setup.toml                                (this file)
+#   ├── zebrafish-single-LR.v001.slp                  (labels for both cameras)
+#   ├── 20260619-cal01-left-GX010457.mp4              (calibration videos:
+#   ├── 20260619-cal01-right-GX010391.mp4              {experiment}-{take}-{camera})
+#   └── ...
+#
+# The trial videos stay where the .slp file says they are.
+#
+#   uv run python inspect_slp_cli.py OMR_flat/OMR_setup.toml
+#   uv run python setup_project_cli.py -n OMR_flat/OMR_setup.toml
+#   uv run python setup_project_cli.py OMR_flat/OMR_setup.toml
+#
+# Relative paths are relative to the folder you run the command from.
+
+[setup]
+slp_files = ["OMR_flat"]                  # .slp files, or folders holding them
+output_dir = "OMR"                        # must not exist yet
+camera_names = ["left", "right"]
+experiment_keywords = ["20260619", "20260721", "20260807"]
+match_strategy = "keyword"
+trial_keyword = "trial"
+calib_regex = "cal\\d+"                   # each distinct match (cal01, cal02, ...) is one take
+
+video_mode = "reference"                  # leave trial videos in place
+# Where the recorded video paths have moved to, e.g. a different drive letter or mount
+video_search_dirs = ["/Volumes/Lab/NewData/VerticalOMR/3_edited_fish_videos"]
+allow_missing_videos = true               # set up without the videos that can't be found
+import_labels = true                      # .slp labels go into points.csv
+
+[project]
+name = "OMR"
+
+[charuco]
+squares_x = 8
+squares_y = 10
+square_length = 10
+marker_length = 7
+marker_bits = 6
+dict_size = 50

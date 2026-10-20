@@ -1,17 +1,10 @@
-# Quick Setup: New Project from an Existing SLP File
+# Setting up a project from SLEAP files
 
-How to install label3d and turn an existing `.slp` file plus a folder of calibration
-videos into a label3d project, using a setup TOML file. This is the fast path for
-the common case: you already labeled in SLEAP, the videos it references are still
-where they were recorded, and you have separate calibration recordings (one or more
-takes) sitting next to it. For all the options this supports, see
-[project_setup_from_sleap.md](design/project_setup_from_sleap.md).
+Builds a label3d project from existing `.slp` files. The skeletons and labels come from the `.slp` files. The trial videos stay where they are, and the project records their paths. Calibration comes from calibration videos or from an existing aniposelib `calibration.toml`.
 
-Worked example throughout: `projects/OMR_flat/`.
+After setup, continue with [user_workflow.md](user_workflow.md#2-calibrate).
 
-## 1. Install
-
-Requires `uv` (already installed).
+## Install
 
 ```bash
 git clone <repo-url> label3d
@@ -19,227 +12,127 @@ cd label3d
 uv sync
 ```
 
-That creates `.venv/` and installs everything from `pyproject.toml` (PySide6,
-aniposelib, sleap-io, etc.). Nothing further to build — `uv run` picks up the venv
-automatically from here on.
+## Steps
 
-## 2. Lay out your inputs
+1. Copy a template next to your `.slp` files and edit it:
+   - [templates/setup_one_slp.toml](templates/setup_one_slp.toml): one `.slp` file, with the calibration videos in the same folder.
+   - [templates/setup_many_slp.toml](templates/setup_many_slp.toml): several `.slp` files with different skeletons, camera aliases, and calibration videos in another folder.
+2. Check it with `inspect_slp_cli.py` ([below](#checking-with-inspect_slp_clipy)) until every `.slp` file has trials in each experiment and nothing unexpected is missing.
+3. Preview without writing anything: `uv run python setup_project_cli.py -n setup.toml`
+4. Create the project: `uv run python setup_project_cli.py setup.toml`
+5. Open it: `uv run label3d <output_dir>`
 
-Setup doesn't require any particular folder structure for the inputs — it reads
-paths recorded inside the `.slp` file to find the trial videos, wherever they
-live, and separately looks for calibration videos in a folder you point it at.
-`projects/OMR_flat/` keeps everything in one flat folder for convenience:
+Relative paths in the setup file are relative to the folder you run the command from.
 
-```
-projects/OMR_flat/
-├── OMR_setup.toml
-├── zebrafish-single-LR.v001.slp
-├── 20260619-cal01-left-GX010457_reencoded.mp4
-├── 20260619-cal01-right-GX010391_reencoded.mp4
-├── 20260721-cal01-left-GX010553_reencoded.mp4
-├── 20260721-cal01-right-GX010486_reencoded.mp4
-├── 20260721-cal03-left-GX010597_reencoded.mp4
-├── 20260721-cal03-right-GX010530_reencoded.mp4
-├── 20260807-cal01-left-GX010698_reencoded.mp4
-├── 20260807-cal01-right-GX010630_reencoded.mp4
-├── 20260807-cal02-left-GX010740_reencoded.mp4
-└── 20260807-cal02-right-GX010672_reencoded.mp4
-```
+## Setup file keys
 
-- The `.slp` file (`zebrafish-single-LR.v001.slp`) carries the skeleton, the labels,
-  and the recorded path of every trial video — those videos are **not** in this
-  folder; they stay wherever they were recorded. Setup only needs to be able to
-  find them (see `video_search_dirs` below).
-- The calibration videos **are** here, one per camera per take. The `-cal01-`,
-  `-cal02-`, `-cal03-` tokens each name a separate calibration take (e.g. one
-  recorded per experiment day), and `-left-`/`-right-` name the camera.
+All keys go under `[setup]` unless noted otherwise.
 
-## 3. Write the setup TOML
-
-`OMR_setup.toml`:
-
-```toml
-[setup]
-slp_files = ["projects/OMR_flat"]          # .slp files or folders holding them
-output_dir = "projects/OMR"
-camera_names = ["left", "right"]
-calib_regex = "cal\\d+"                 # alternative: regex with a "take" group
-experiment_keywords = ["20260619", "20260721", "20260807"]   # omit or [] for single experiment named "default"
-match_strategy = "keyword"   # "keyword" | "regex" | "number" | "datestamp" | "mtime"
-trial_keyword = "trial"      # only for keyword strategy
-
-# SLP-first setup: give slp_files instead of source_dir
-video_mode = "reference"                 # "reference" | "copy" | "move"
-video_search_dirs = ["/Volumes/TytellLab$/NewData/VerticalOMR/3_edited_fish_videos"]      # searched when a recorded path moved
-calibration_dir = "projects/OMR_flat"   # or calibration_dir to search
-import_labels = true                     # import SLP labels into points.csv
-allow_missing_videos = true
-
-[project]
-name = "OMR"
-
-[charuco]
-squares_x = 8
-squares_y = 10
-square_length = 10
-marker_length = 7
-marker_bits = 6
-dict_size = 50
-```
-
-Field by field:
-
-- **`slp_files`** — a `.slp` file or a folder containing one or more. Their
-  skeletons may differ (a camera's model can leave out nodes it never sees); nodes
-  are matched by name. Setup stops only if they conflict: two skeletons with the
-  same two nodes that disagree on a symmetry between them. Different edges are
-  fine; each camera draws its own skeleton's edges. Without `slp_files`, the `.slp`
-  files in `source_dir` are used, together with the videos there that no `.slp`
-  file refers to.
-- **`output_dir`** — where the new project is created. Must not already exist.
-- **`camera_names`** — matched against each video's filename, then its parent
-  folder name, to tell cameras apart. Here: `left`, `right`. If older recordings
-  name a camera differently, give its other names in `camera_aliases`, e.g.
-  `camera_aliases = { LateralOrtho = ["Lateral"], LateralOffAxis = ["OffAxisLateral"] }`;
-  the longest matching name or alias wins.
-- **`experiment_keywords`** — one label3d "experiment" per acquisition day here
-  (`20260619`, `20260721`, `20260807`), matched against filenames. Videos that
-  name none of them are left out, and the setup summary counts them. Leave this
-  out (or `[]`) if everything belongs to one experiment, named `default`.
-- **`match_strategy`** / **`trial_keyword`** — how *trial* videos are grouped
-  into left/right pairs. This project's trial videos happen to be named with the
-  word "trial" in them, so `keyword` + `trial_keyword = "trial"` is enough; other
-  strategies (`regex`, `number`, `datestamp`, `mtime`) exist for other naming
-  schemes.
-- **`calib_regex`** — how *calibration* videos are told apart from trial videos
-  and grouped into takes. `"cal\\d+"` matches `cal01`, `cal02`, `cal03` in the
-  filenames above, and each distinct match becomes one calibration take.
-- **`video_mode = "reference"`** — trial videos are **not** copied or moved; the
-  project just records their real path. (Calibration videos are always copied
-  into the project, since they're small and the project should own its
-  calibration inputs.)
-- **`video_search_dirs`** — extra folders to search when a path recorded inside
-  the `.slp` no longer exists (e.g. the drive was remounted elsewhere). Setup
-  tries to match as much of the recorded folder structure as it can under each
-  search directory.
-- **`calibration_dir`** — where to look for calibration videos (here, the same
-  flat folder). Without it, setup looks in `source_dir` and beside the `.slp`
-  files. Could instead be `calibration_toml` pointing straight at an
-  existing aniposelib `calibration.toml`, if you already have one. It's imported
-  into the project's calibration registry and made active.
-- **`allow_missing_videos = true`** — proceed even if some trial videos can't be
-  located; the affected camera is left blank in `trials.csv` rather than
-  aborting setup.
-- **`import_labels = true`** — after the project is created, import the `.slp`
-  labels straight into `points.csv`, so the project opens already labeled.
-- **`[charuco]`** — your calibration board's parameters (squares, marker size in
-  cm, ArUco dictionary), used when you calibrate in the app.
-- **`[skeleton]`** — optional. Either `file = "path/to/skeleton.json"` (relative
-  to the working directory) or `nodes`, `edges`, `symmetries` and
-  `node_offsets_cm` inline, and optionally `cameras = [...]` to give it to some
-  cameras only. It must not conflict with the `.slp` files' skeletons. It is
-  assigned to its cameras in `project.toml`, which matters for `.slp` files not
-  created yet; existing files keep their own skeleton. Needed for a flat folder
-  with no `.slp` files, or add one later with **File > Load skeleton...**.
-
-## 4. Run it
-
-```bash
-uv run python setup_project_cli.py projects/OMR_flat/OMR_setup.toml
-```
-
-This prints a preview (trials found, calibration takes found, any warnings about
-unresolved videos) and writes the project to `output_dir`. Add `-n`/`--dry-run`
-first to see the preview without writing anything.
-
-## 5. Open the project
-
-```bash
-uv run label3d projects/OMR
-```
-
-If any trial videos were left unresolved (reported in the preview / warnings),
-re-run setup after widening `video_search_dirs`, or fix them later by editing
-`trials.csv` directly.
-
-## 6. Using the app
-
-The app has three tabs, used in order: **Calibrate → Label → Export**.
-
-### Calibrating
-
-If the setup TOML already found a `calibration.toml` (as in `OMR`, via
-`calibration_dir`), it was imported as the active calibration and you can skip
-straight to Label. To calibrate a take from scratch:
-
-1. Open the Calibrate tab; pick the experiment/take to calibrate.
-2. The app steps through the calibration video for each camera, detecting
-   Charuco board corners every Nth frame (Charuco parameters come from your
-   `[charuco]` settings, or a settings panel if you didn't set them at setup).
-   Green dots mark detected corners.
-3. Click **Run Calibration** to bundle-adjust all cameras together
-   (`aniposelib`). The panel reports per-camera and overall reprojection error;
-   red crosses are the reprojected corners overlaid on the detections — tight
-   overlap means a good calibration.
-4. Every run is saved to the experiment's calibration registry
-   (`experiments/{exp}/calibrations/`), one solution per take plus the joint
-   one, and the joint solution becomes active. **Use selected take** switches to
-   a single take's solution; the **Saved calibrations** list holds them all.
-   Set **Repeat calibration** above 1 to keep the best of several runs if the
-   error is high.
-5. (Optional) **Axis alignment** — a separate step, run after calibration, to
-   re-orient the arbitrary board-defined axes to something physically
-   meaningful (e.g. tank walls). Pick an origin plus two axis points in the
-   trial videos; doesn't touch the camera calibration itself.
-
-### Labeling
-
-Each camera's video appears in its own panel, with the full skeleton drawn on
-top.
-
-**Adding an instance** (one animal/object to label in the current frame):
-
-- `Ctrl+I` — add an instance, positioned by averaging nearby frames when
-  possible, otherwise at a random position.
-- `Ctrl+Shift+I` — add an instance at a random position unconditionally.
-- Once added, the instance's bodyparts are selectable in turn (`↑`/`↓`, or
-  `` ` `` to cycle whole instances, `1`–`9` to jump to one by index); click in
-  any camera panel to place the active bodypart there. Points already placed
-  in other views show epipolar lines for the selected bodypart, so you can
-  click the same physical point precisely.
-- `Ctrl+Backspace` deletes the selected instance; `Ctrl+C`/`Ctrl+V` copies one
-  to another frame.
-- `T` triangulates the current frame (also happens automatically after each
-  point edit); `Ctrl+Shift+T` triangulates the whole trial.
-
-**Zooming and panning** (per camera panel):
-
-- Scroll wheel zooms in/out, clamped so you can't zoom out past the full frame.
-- Drag on empty space (or middle-click drag) to pan while zoomed in.
-- Double-click resets the view to fit the whole frame.
-- `+` / `-` to zoom the camera under the mouse in and out (keypad keys work too).
-- `I` to zoom to the instance, including points estimated by reprojection from the other cameras.
-- `P` to zoom to a small area around the selected point.
-- `=` to zoom to the whole frame.
-
-**Other useful shortcuts:**
-
-| Key | Action |
+| Key | Meaning |
 |---|---|
-| `→` / `←` | Next / previous frame |
-| `]` / `[` | Next / previous labeled frame |
-| `Ctrl+→` / `Ctrl+←` | ±4 frames |
-| `H` | Toggle showing all instances |
-| `Ctrl+Tab` | Toggle node name labels |
-| `Backspace` | Delete the selected point |
-| Right-click a point | Mark it occluded |
+| `slp_files` | `.slp` files, or folders holding them. |
+| `source_dir` | Use in place of `slp_files`: every `.slp` file in the folder is used, and the videos there that no `.slp` file refers to become trials too. |
+| `output_dir` | The new project folder. It must not exist yet. |
+| `camera_names` | Each video is matched to a camera by its filename, then by its parent folder's name. |
+| `camera_aliases` | `{ camera = ["other name", ...] }`. Other names a camera has in filenames. The longest matching name or alias wins. |
+| `experiment_keywords` | One experiment per keyword, matched in filenames. Videos that name none of them are left out. Leave this out to put everything in one experiment, `default`. |
+| `match_strategy` | How videos are grouped into trials: `keyword` (with `trial_keyword`; the filename up to the keyword and its number, e.g. `PS21_Trial7`, names the trial), `regex` (with `trial_regex`; group 1 is the trial), `number`, `datestamp` (with `datestamp_window_sec`), or `mtime` (with `mtime_window_sec`). |
+| `calib_keywords` | One keyword per calibration take, e.g. `["Pre-Cal", "Post-Cal"]`. |
+| `calib_regex` | Alternative to `calib_keywords`: each distinct match is a take, named by the `take` group if there is one. |
+| `video_mode` | `reference` (leave videos in place), `copy`, or `move`. Calibration videos are always copied into the project. |
+| `video_search_dirs` | Folders to search when a recorded video path no longer exists. |
+| `calibration_dir` | Folder to search for calibration videos or a `calibration.toml`. Without it, setup searches `source_dir` and the `.slp` files' folders. |
+| `calibration_toml` | An existing aniposelib calibration. It is imported and made active, so you can skip calibrating. |
+| `allow_missing_videos` | `true` sets the project up with the videos that were found, and leaves the missing ones blank in `trials.csv`. |
+| `import_labels` | `true` (the default) imports the `.slp` labels into `points.csv`. |
+| `[project] name` | Defaults to the name of the output folder. |
+| `[charuco]` | The calibration board: `squares_x`, `squares_y`, `square_length`, `marker_length`, `marker_bits`, `dict_size`. |
+| `[skeleton]` | Optional: `file = "skeleton.json"`, or inline `nodes`, `edges`, `symmetries` and `node_offsets_cm`, plus optional `cameras = [...]`. It is only needed for cameras that have no `.slp` file yet. |
 
-Full list in [workflows.md](design/workflows.md).
+### How the videos are found
 
-### Exporting
+A `.slp` file records each video's path from when it was labelled. If that path no longer exists (another drive letter, another mount, Windows to Mac), setup looks under each `video_search_dirs` entry for:
 
-**File > Sync with Sleap** writes your labels into the `.slp` files in `slp/`
-for SLEAP training. To close the loop: train in SLEAP, run inference, and bring
-the predictions back with **Sync** (if saved into `slp/`) or **File > Import
-predictions...**. When you're done, **File > Export points...** writes every
-2D and 3D point to one CSV; see [user_workflow.md](user_workflow.md#7-export).
+1. A folder with the same name as the search directory somewhere in the recorded path. Everything below that folder is kept.
+2. Failing that, the longest end of the recorded path that exists under the search directory.
+3. Failing that, the same filename beside the `.slp` file or in a search directory.
+
+If two search directories match equally well, the video is left unresolved. Narrow `video_search_dirs` to pick one of them.
+
+### Calibration
+
+For each experiment, setup uses the first of these it finds:
+
+1. `calibration_toml`.
+2. A `calibration.toml` in the searched folders whose camera names match the project's.
+3. Calibration videos in the searched folders, found by `calib_keywords` or `calib_regex`. With `experiment_keywords` set, a calibration video's filename must also name its experiment, e.g. `Pre-Cal_PS21_Charuco_Ventral.mp4`.
+
+An experiment with none of these is set up without a calibration.
+
+### Skeletons
+
+Each `.slp` file keeps its own skeleton, and the project skeleton is the union of the skeletons, matched by node name. A camera can't label a node its skeleton lacks. Setup stops only when two skeletons disagree about a symmetry between two nodes they share. With `experiment_keywords` set, each `.slp` file must have at least one video in a trial of a listed experiment.
+
+## Checking with `inspect_slp_cli.py`
+
+This command reads the `.slp` files and shows what setup would do. It writes nothing. It takes the same setup file as setup does (`output_dir` is optional):
+
+```bash
+uv run python inspect_slp_cli.py BGvPS_flat/BGvPS_setup.toml
+```
+
+```
+SLP files (2):
+  .../BGvPS_flat/BGPS_Ventral.v002.slp
+    226 video(s), 226 found
+    BG75: 26 trial(s)
+    PS21: 30 trial(s)
+    170 video(s) in an experiment not listed
+  ...
+
+Recorded video folders (4):
+  D:/Olivia/BluegillVsPumpkinseed/VideoConversions/VENTRAL VIDEOS  [NOT FOUND]  226 video(s), 226 located
+    -> /Volumes/Lab/.../VideoConversions/VENTRAL VIDEOS  (226 video(s))
+  ...
+
+------------------------------------------------------------
+What setup would do:
+Project, cameras, skeleton (and the nodes each .slp file lacks), strategy,
+trials per experiment, calibration, and what was left out
+```
+
+The output has three sections:
+
+- **SLP files**: for each file, the number of videos found, the trials per experiment, and a count of each problem: `not found`, `ambiguous`, `no camera match`, `in an experiment not listed`, or `not in a trial of a listed experiment`.
+- **Recorded video folders**: each folder the `.slp` files recorded, whether it exists, and where its videos were found instead (`->`). This shows whether `video_search_dirs` points at the right tree.
+- **What setup would do**: the same preview as `setup_project_cli.py -n`.
+
+To see more, add `-v` for the trials that are missing cameras, `-vv` for each placed video and short problem lists, and `-vvv` for everything.
+
+Flags override the file, so you can try other settings without editing it:
+
+```bash
+uv run python inspect_slp_cli.py setup.toml --match-strategy regex --trial-regex '(Trial\d+)'
+uv run python inspect_slp_cli.py setup.toml --experiments PS21,BG75,PS37
+uv run python inspect_slp_cli.py setup.toml --camera-alias LateralOrtho=Lateral
+uv run python inspect_slp_cli.py setup.toml --video-search-dir /Volumes/Lab/NewData
+```
+
+You can also run it without a setup file, before writing one:
+
+```bash
+uv run python inspect_slp_cli.py BGvPS_flat/ --cameras LateralOrtho,LateralOffAxis,Ventral
+```
+
+The other flags are `--trial-keyword`, `--mtime-window`, `--datestamp-window` and `--calib-keywords`.
+
+### Reading the problems
+
+| Problem | Fix |
+|---|---|
+| `not found`; folder `[NOT FOUND]` with no `->` | Add the folder that now holds the videos, or a parent of it, to `video_search_dirs`. |
+| `ambiguous` | Two search directories match. Remove one or make it more specific. |
+| `no camera match` | Add the name used in the filename or folder to `camera_aliases`. |
+| `in an experiment not listed` | Expected for experiments you are leaving out. Otherwise add the keyword to `experiment_keywords`. |
+| `not in a trial of a listed experiment` | The match strategy didn't pair the video with the other cameras. Try another `match_strategy` or `trial_regex`, and use `-v` to see the trials that are missing cameras. |
+| Calibration incomplete for an experiment | Check `calibration_dir` and the take keywords, and check that the calibration filenames name the experiment. |
