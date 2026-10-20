@@ -20,6 +20,7 @@ from label3d.setup_project import (
     _compute_video_roots,
     _identify_camera_from_path,
     classify_slp_files,
+    config_from_toml,
     execute_setup,
     import_labels,
 )
@@ -168,6 +169,35 @@ class TestClassify:
         assignment = classify_slp_files(_config(source, slp_paths=[*source["slps"], odd]))
         assert assignment.skeleton["nodes"] == [*NODES, "nose", "fin"]
         assert assignment.slp_skeletons[odd].nodes == ["nose", "fin"]
+
+
+class TestConfigFromToml:
+    def _write(self, source, setup: dict) -> Path:
+        path = source["tmp"] / "setup.toml"
+        base = {
+            "camera_names": CAMERAS,
+            "slp_files": [str(p) for p in source["slps"]],
+            "match_strategy": "regex",
+            "trial_regex": "(Trial\\d+)",
+        }
+        path.write_text(toml.dumps({"setup": {**base, **setup}}))
+        return path
+
+    def test_reads_slp_settings(self, source):
+        path = self._write(source, {"output_dir": str(source["tmp"] / "proj")})
+        config = config_from_toml(path)
+        assert config.slp_paths == [p.resolve() for p in source["slps"]]
+        assert config.video_mode == "reference"
+        assert config.trial_regex == "(Trial\\d+)"
+        assert config.output_dir == (source["tmp"] / "proj").resolve()
+
+    def test_output_dir_required_by_default(self, source):
+        with pytest.raises(KeyError):
+            config_from_toml(self._write(source, {}))
+
+    def test_output_dir_optional_for_inspection(self, source):
+        config = config_from_toml(self._write(source, {}), require_output=False)
+        assert sorted(classify_slp_files(config).trials) == ["Trial1", "Trial2"]
 
 
 class TestExecute:

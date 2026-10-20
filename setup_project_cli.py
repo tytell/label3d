@@ -66,24 +66,15 @@ from pathlib import Path
 import toml
 
 from label3d.setup_project import (
+    CHARUCO_DEFAULTS,
     SetupConfig,
     classify_files,
     classify_slp_files,
+    config_from_toml,
     execute_setup,
     import_labels,
     preview_assignment,
-    skeleton_from_setup,
 )
-
-# Default charuco board parameters (from DESIGN.md)
-CHARUCO_DEFAULTS = {
-    "squares_x": 6,
-    "squares_y": 8,
-    "square_length": 30.0,
-    "marker_length": 22.0,
-    "marker_bits": 4,
-    "dict_size": 50,
-}
 
 
 def prompt_path(label: str, must_exist: bool = False) -> Path:
@@ -548,63 +539,10 @@ def slp_config_from_args(args) -> SetupConfig:
 
 def run_from_config(config_path: Path, copy_files: bool = False, dry_run: bool = False) -> None:
     """Run the setup utility from a TOML config file."""
-    raw = toml.load(config_path)
-    setup = raw.get("setup", {})
+    config = config_from_toml(config_path, copy_files=copy_files)
+    setup = toml.load(config_path).get("setup", {})
 
-    slp_files = [Path(p).expanduser().resolve() for p in setup.get("slp_files", [])]
-    output_dir = Path(setup["output_dir"]).expanduser().resolve()
-    source_dir = (
-        Path(setup["source_dir"]).expanduser().resolve()
-        if setup.get("source_dir")
-        else slp_files[0].parent
-    )
-
-    config = SetupConfig(
-        source_dir=source_dir,
-        output_dir=output_dir,
-        camera_names=setup["camera_names"],
-        calib_keyword=setup.get("calib_keyword", "calib"),
-        calib_keywords=setup.get("calib_keywords", []),
-        calib_regex=setup.get("calib_regex", ""),
-        calib_match_strategy=setup.get("calib_match_strategy", ""),
-        experiment_keywords=setup.get("experiment_keywords", []),
-        match_strategy=setup.get("match_strategy", "keyword"),
-        trial_keyword=setup.get("trial_keyword", "Trial"),
-        trial_regex=setup.get("trial_regex", ""),
-        mtime_window_sec=setup.get("mtime_window_sec", 60.0),
-        datestamp_window_sec=setup.get("datestamp_window_sec", 0.0),
-        charuco=raw.get("charuco", CHARUCO_DEFAULTS),
-        project_name=raw.get("project", {}).get("name", output_dir.name),
-        copy_files=copy_files,
-        slp_paths=slp_files,
-        video_mode=setup.get("video_mode", "reference" if slp_files else ""),
-        video_search_dirs=[
-            Path(d).expanduser().resolve() for d in setup.get("video_search_dirs", [])
-        ],
-        allow_missing_videos=setup.get("allow_missing_videos", False),
-        calibration_toml=(
-            Path(setup["calibration_toml"]).expanduser().resolve()
-            if setup.get("calibration_toml")
-            else None
-        ),
-        calibration_dir=(
-            Path(setup["calibration_dir"]).expanduser().resolve()
-            if setup.get("calibration_dir")
-            else None
-        ),
-        skeleton=(
-            skeleton_from_setup(raw["skeleton"], base_dir=Path.cwd())
-            if "skeleton" in raw
-            else None
-        ),
-        skeleton_cameras=(
-            [str(c) for c in raw["skeleton"]["cameras"]]
-            if "cameras" in raw.get("skeleton", {})
-            else None
-        ),
-    )
-
-    if slp_files:
+    if config.slp_paths:
         run_slp_setup(config, dry_run=dry_run, do_import=setup.get("import_labels", True))
         return
 
