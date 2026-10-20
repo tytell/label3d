@@ -134,8 +134,8 @@ trials and their `trials.csv` cells are left blank, which `Project.load()` alrea
 
 Nodes, edges and symmetries are read from each file's `labels.skeleton` into
 `FileAssignment.slp_skeletons`. Since Phase 14 the files may have different skeletons;
-`merge_skeletons` builds their union, and only a conflict (shared nodes that disagree on an
-edge or a symmetry) is an error. Nothing is written for them: the project reads the
+`merge_skeletons` builds their union, and only a conflict (shared nodes that disagree on a
+symmetry) is an error; edges may differ, since each camera draws its own skeleton's edges. Nothing is written for them: the project reads the
 skeletons from the `.slp` files. A setup file `[skeleton]` must merge with them and is
 written to `project.toml` as an assignment.
 
@@ -174,8 +174,8 @@ and `mtime` all work against external paths as-is. Experiment assignment likewis
 
 `.slp` files carry no calibration, so setup looks for it in this order, per experiment:
 
-1. **An existing `calibration.toml`** — in the directory containing the `.slp` files, or in
-   `calibration_dir` if given. Recognized by parsing it as an aniposelib `CameraGroup.dump()`
+1. **An existing `calibration.toml`** — in `source_dir` and the directories containing the
+   `.slp` files, or only in `calibration_dir` if given. Recognized by parsing it as an aniposelib `CameraGroup.dump()`
    and checking that its camera names match the project's. Saved as an `imported` entry in the
    experiment's calibration registry (`experiments/{exp}/calibrations/`), with
    `metadata.source_path` set to the original file, and made active. The calibrate step is then
@@ -252,7 +252,14 @@ uv run python setup_project_cli.py slp_config.toml
   source folder layout.
 
 Config-file mode grows `slp_files`, `video_mode`, `video_search_dirs`, `allow_missing_videos`, `calibration_toml`,
-`calibration_dir` under `[setup]`, and `save_config_toml()` round-trips them.
+`calibration_dir` under `[setup]`, and `save_config_toml()` round-trips them. Without
+`slp_files`, the `.slp` files in `source_dir` make the setup SLP-first (`config_from_toml`):
+`source_dir` is also a video search directory, and its videos that no `.slp` file refers to
+are added as trials (`SetupConfig.include_source_videos`).
+
+`inspect_slp_cli.py` takes the same setup file (or `.slp` files and the matching flags) and
+reports, without writing anything, each `.slp` file's video references (found where, by which
+rule), the recorded video folders, and the setup preview.
 
 ### Preview additions
 

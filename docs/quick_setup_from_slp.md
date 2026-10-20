@@ -92,7 +92,10 @@ Field by field:
 - **`slp_files`** — a `.slp` file or a folder containing one or more. Their
   skeletons may differ (a camera's model can leave out nodes it never sees); nodes
   are matched by name. Setup stops only if they conflict: two skeletons with the
-  same two nodes that disagree on an edge or a symmetry between them.
+  same two nodes that disagree on a symmetry between them. Different edges are
+  fine; each camera draws its own skeleton's edges. Without `slp_files`, the `.slp`
+  files in `source_dir` are used, together with the videos there that no `.slp`
+  file refers to.
 - **`output_dir`** — where the new project is created. Must not already exist.
 - **`camera_names`** — matched against each video's filename, then its parent
   folder name, to tell cameras apart. Here: `left`, `right`.
@@ -116,7 +119,8 @@ Field by field:
   tries to match as much of the recorded folder structure as it can under each
   search directory.
 - **`calibration_dir`** — where to look for calibration videos (here, the same
-  flat folder). Could instead be `calibration_toml` pointing straight at an
+  flat folder). Without it, setup looks in `source_dir` and beside the `.slp`
+  files. Could instead be `calibration_toml` pointing straight at an
   existing aniposelib `calibration.toml`, if you already have one. It's imported
   into the project's calibration registry and made active.
 - **`allow_missing_videos = true`** — proceed even if some trial videos can't be

@@ -264,7 +264,7 @@ Each **cell** — an (experiment, trial, camera), i.e. one video — has one ske
 
 A node is **available** in a cell when it is in the cell's skeleton. Existing `.slp` files always keep their own skeleton when written; a new file is created with its cells' skeleton, so an assigned skeleton only affects files not created yet. All the cells mapped to one file must have the same skeleton (checked by **Set up Sleap files**, Sync and export).
 
-The **project skeleton** (`Project.skeleton`, shown in the points list) is the union of the files' and the assigned skeletons: nodes in the order of the files, then the assigned skeletons; edges and symmetries are the union. The skeletons **conflict**, and Sync is refused until it is fixed, when two skeletons that both have nodes `a` and `b` disagree on whether `a`–`b` is an edge or a symmetry, or a node ends up with two symmetry partners.
+The **project skeleton** (`Project.skeleton`, shown in the points list) is the union of the files' and the assigned skeletons: nodes in the order of the files, then the assigned skeletons; edges and symmetries are the union. Skeletons may disagree on edges, which only affect drawing: each camera panel draws its own skeleton's edges, and the union's are used only for a camera that falls back to the union. The skeletons **conflict**, and Sync is refused until it is fixed, when two skeletons that both have nodes `a` and `b` disagree on whether `a`–`b` is a symmetry, or a node ends up with two symmetry partners.
 
 `project.toml`:
 

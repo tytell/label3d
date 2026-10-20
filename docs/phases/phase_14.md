@@ -33,7 +33,7 @@ Today there is one skeleton per project:
   A node is **available** in a cell when it is in the cell's skeleton.
 - **Existing `.slp` files win.** A file keeps its own skeleton when written. A new file is created with its cells' skeleton (rules 2–4). An assigned skeleton therefore affects only cells whose file does not exist yet.
 - **One skeleton per file.** All the cells mapped to one `.slp` file must have the same skeleton. **Set up Sleap files** checks this, and so does Sync (14.6).
-- **The project skeleton is the union** of the existing files' skeletons and the assigned ones. Nodes are matched by exact name. Edges and symmetries are the union, and a conflict is an error (14.1). `skeleton.json` is no longer written or read.
+- **The project skeleton is the union** of the existing files' skeletons and the assigned ones. Nodes are matched by exact name. Edges and symmetries are the union, and a conflict is an error (14.1). Edges may differ between skeletons; each camera panel draws its own skeleton's edges. `skeleton.json` is no longer written or read.
 - A node available in fewer than 2 cameras of a trial is never triangulated. It can still be labelled in 2D.
 
 ---
@@ -46,9 +46,10 @@ Today there is one skeleton per project:
   - **Node order:** existing files in mapping order, then assigned skeletons in `project.toml` order. The first skeleton's nodes come first, in its order. Each later skeleton's new nodes are appended in that skeleton's order.
   - **Edges and symmetries:** union; direction is ignored when comparing.
   - **Conflicts** raise `SkeletonConflict(ValueError)`, which lists every conflict with the skeletons involved, not just the first:
-    1. Two skeletons that both contain nodes `a` and `b` disagree on whether `a–b` is an edge.
-    2. Two skeletons that both contain nodes `a` and `b` disagree on whether `a ↔ b` is a symmetry.
-    3. In the union, a node has more than one symmetry partner.
+    1. Two skeletons that both contain nodes `a` and `b` disagree on whether `a ↔ b` is a symmetry.
+    2. In the union, a node has more than one symmetry partner.
+
+    Disagreeing on an edge is not a conflict (changed after 14.10): SLEAP's default star skeletons centre on different nodes, so files for different cameras rarely share edges. Edges only affect drawing.
 - [x] `ProjectSkeleton` holds the skeletons:
   - `union: Skeleton`
   - `by_file: dict[Path, Skeleton]`: existing mapped files (paths relative to the project root, as in `SlpMapping`)
@@ -122,6 +123,7 @@ Today there is one skeleton per project:
   - A one-line key under the list ("◐ some cameras · 2D one camera") appears only when the trial has partial nodes.
   - The list also refreshes on `trial_changed`, since availability is per trial.
 - [x] **Camera panels:**
+  - Each panel draws its own skeleton's edges (`ProjectState.skeleton_for_camera`), not the union's.
   - `SkeletonOverlay.update` takes the panel's available nodes. It draws no points, reprojections or edges for unavailable nodes, so they can't be clicked, dragged or toggled to not visible.
   - `EpipolarOverlay` draws no lines in a panel that lacks the selected node. Points in cameras that lack the node are not used as line sources either; they can only exist as leftovers (14.7).
   - When the selected node is unavailable in a panel, a note at the top of the panel (`CameraPanel.set_notice`) reads "*tail_tip* not in this camera's skeleton" so the empty panel is explained.
@@ -175,7 +177,7 @@ A skeleton can change after labelling: a node is dropped or renamed in SLEAP, a 
 
 ## 14.10 Tests
 
-- [x] `merge_skeletons`: node order; union of edges and symmetries; each of the three conflicts, with every conflict listed.
+- [x] `merge_skeletons`: node order; union of edges and symmetries; differing edges merge; each of the two conflicts, with every conflict listed.
 - [x] `Skeleton.from_slp` matches the skeleton from `sio.load_file`.
 - [x] `ProjectSkeleton.skeleton_for`: each of rules 1–4, including an inferred camera skeleton and cameras whose files disagree (which fall back to the union).
 - [x] `Project.assign_skeleton`: a camera moves between entries; empty entries are removed; the same topology is reused.
