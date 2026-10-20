@@ -139,6 +139,8 @@ class FileAssignment:
     unmatched: list[Path] = field(default_factory=list)
     # warnings generated during classification
     warnings: list[str] = field(default_factory=list)
+    # problems that stop execute_setup
+    errors: list[str] = field(default_factory=list)
     # union of the .slp files' skeletons (nodes/edges/symmetries) and the setup
     # file's; None if there is neither
     skeleton: dict | None = None
@@ -478,6 +480,8 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
     assignment.video_roots = _compute_video_roots(
         assignment.trials, assignment.trial_experiment
     )
+    if config.experiment_keywords:
+        _check_slp_experiments(config, assignment)
 
     for ref, slp_name in assignment.missing_videos:
         assignment.warnings.append(
@@ -565,6 +569,31 @@ def config_from_toml(
             else None
         ),
     )
+
+
+def _check_slp_experiments(config: SetupConfig, assignment: FileAssignment) -> None:
+    """Error for each .slp file with no found video in a trial of a listed experiment.
+
+    Such a file would contribute nothing, and its camera's cells would fall back
+    to another skeleton without saying so.
+    """
+    used = {
+        slp_path
+        for trial, cam_slps in assignment.slp_files.items()
+        if assignment.trial_experiment.get(trial) in config.experiment_keywords
+        for slp_path in cam_slps.values()
+    }
+    for slp_path in assignment.slp_skeletons:
+        if slp_path in used:
+            continue
+        refs = [r for r in assignment.video_refs if r.slp_path == slp_path]
+        found = sum(r.resolution.path is not None for r in refs)
+        assignment.errors.append(
+            f"SLP file '{slp_path.name}' has no video in a trial of experiments "
+            f"{', '.join(config.experiment_keywords)} ({len(refs)} video reference(s), "
+            f"{found} found) — add the folder holding its videos to video_search_dirs, "
+            "or its experiments to experiment_keywords, or remove the file"
+        )
 
 
 def _unreferenced_source_videos(
@@ -804,6 +833,11 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
     lines.append(f"Strategy: {strategy_str}")
     lines.append("")
 
+    if assignment.errors:
+        lines.append("Errors (setup can't go ahead):")
+        lines += [f"  !! {e}" for e in assignment.errors]
+        lines.append("")
+
     # Trials — grouped by experiment when experiment_keywords are set
     if assignment.trials:
         if assignment.trial_experiment:
@@ -1041,6 +1075,9 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     out = config.output_dir
     if out.exists():
         raise FileExistsError(f"Output directory already exists: {out}")
+
+    if assignment.errors:
+        raise ValueError("Setup can't go ahead:\n  " + "\n  ".join(assignment.errors))
 
     if assignment.missing_videos and not config.allow_missing_videos:
         names = ", ".join(str(ref) for ref, _ in assignment.missing_videos[:5])

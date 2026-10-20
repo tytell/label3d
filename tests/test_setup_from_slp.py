@@ -23,6 +23,7 @@ from label3d.setup_project import (
     config_from_toml,
     execute_setup,
     import_labels,
+    preview_assignment,
 )
 
 CAMERAS = ["cam1", "cam2"]
@@ -158,6 +159,27 @@ class TestClassify:
         assert refs[1].camera is None
         found = [r for r in assignment.video_refs if r.slp_path == source["slps"][0]]
         assert {r.camera for r in found} == {"cam1"}
+
+    def test_slp_outside_listed_experiments_is_an_error(self, source, tmp_path):
+        gone = tmp_path / "gone"
+        gone.mkdir()
+        video = _make_video(gone / "cam1_Trial3.mp4")
+        stray = _make_slp(tmp_path / "labels" / "stray.slp", [video])
+        video.unlink()
+        config = _config(
+            source, slp_paths=[*source["slps"], stray], experiment_keywords=["cam"],
+            allow_missing_videos=True,
+        )
+        assignment = classify_slp_files(config)
+        assert len(assignment.errors) == 1
+        assert "'stray.slp' has no video in a trial of experiments cam" in assignment.errors[0]
+        assert "Errors (setup can't go ahead)" in preview_assignment(config, assignment)
+        with pytest.raises(ValueError, match="stray.slp"):
+            execute_setup(config, assignment)
+
+    def test_slp_files_in_listed_experiments_pass(self, source):
+        assignment = classify_slp_files(_config(source, experiment_keywords=["cam"]))
+        assert assignment.errors == []
 
     def test_different_skeletons_are_merged(self, source, tmp_path):
         other = _make_video(tmp_path / "rig2" / "cam1_Trial9.mp4")

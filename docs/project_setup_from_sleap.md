@@ -139,6 +139,11 @@ symmetry) is an error; edges may differ, since each camera draws its own skeleto
 skeletons from the `.slp` files. A setup file `[skeleton]` must merge with them and is
 written to `project.toml` as an assignment.
 
+With `experiment_keywords` set, every `.slp` file must have at least one video that was
+found and placed in a trial of a listed experiment. Otherwise it is an error
+(`FileAssignment.errors`, shown at the top of the preview) and `execute_setup` refuses: the
+file would contribute nothing, and its camera would fall back to another skeleton silently.
+
 ### Cameras and trials
 
 Camera names come from the user's list, as in the folder-based path. Each resolved video path is

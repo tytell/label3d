@@ -326,6 +326,10 @@ def run_interactive_slp(dry_run: bool = False, do_import: bool = True) -> None:
         print("\nDry run — nothing was written.")
         return
 
+    if assignment.errors:
+        print("\nSetup can't go ahead; see Errors above.")
+        return
+
     if assignment.missing_videos and not config.allow_missing_videos:
         print(
             f"\n{len(assignment.missing_videos)} video reference(s) could not be "
@@ -485,6 +489,10 @@ def run_slp_setup(
     if dry_run:
         print("Dry run — nothing was written.")
         return
+
+    if assignment.errors:
+        print("Setup can't go ahead; see Errors above.", file=sys.stderr)
+        sys.exit(1)
 
     result_dir = execute_setup(config, assignment)
     print(f"Project created at: {result_dir}")
