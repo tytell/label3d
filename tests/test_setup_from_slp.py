@@ -195,6 +195,20 @@ class TestConfigFromToml:
         with pytest.raises(KeyError):
             config_from_toml(self._write(source, {}))
 
+    def test_empty_skeleton_table_uses_slp_skeletons(self, source):
+        path = self._write(source, {"output_dir": str(source["tmp"] / "proj")})
+        path.write_text(path.read_text() + "\n[skeleton]\n# file = 'skeleton.json'\n")
+        config = config_from_toml(path)
+        assert config.skeleton is None
+        assert config.skeleton_cameras is None
+        assert classify_slp_files(config).skeleton["nodes"] == NODES
+
+    def test_skeleton_table_without_nodes_is_an_error(self, source):
+        path = self._write(source, {"output_dir": str(source["tmp"] / "proj")})
+        path.write_text(path.read_text() + "\n[skeleton]\ncameras = ['cam1']\n")
+        with pytest.raises(ValueError, match="needs 'file' or 'nodes'"):
+            config_from_toml(path)
+
     def test_output_dir_optional_for_inspection(self, source):
         config = config_from_toml(self._write(source, {}), require_output=False)
         assert sorted(classify_slp_files(config).trials) == ["Trial1", "Trial2"]

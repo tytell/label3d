@@ -538,14 +538,16 @@ def config_from_toml(
             if setup.get("calibration_dir")
             else None
         ),
+        # An empty [skeleton] table (e.g. its lines commented out) gives no
+        # setup skeleton; the .slp files' skeletons are used.
         skeleton=(
             skeleton_from_setup(raw["skeleton"], base_dir=Path.cwd())
-            if "skeleton" in raw
+            if raw.get("skeleton")
             else None
         ),
         skeleton_cameras=(
             [str(c) for c in raw["skeleton"]["cameras"]]
-            if "cameras" in raw.get("skeleton", {})
+            if raw.get("skeleton") and "cameras" in raw["skeleton"]
             else None
         ),
     )
@@ -568,6 +570,10 @@ def skeleton_from_setup(table: dict, base_dir: Path | None = None) -> Skeleton:
         if not path.exists():
             raise FileNotFoundError(f"Skeleton file not found: {path}")
         return Skeleton.from_json(path)
+    if "nodes" not in table:
+        raise ValueError(
+            "[skeleton] needs 'file' or 'nodes'; leave it out to use the .slp files' skeletons"
+        )
     return Skeleton.from_dict(table)
 
 
