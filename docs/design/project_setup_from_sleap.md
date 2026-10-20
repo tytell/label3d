@@ -71,10 +71,10 @@ behavior byte for byte.
       `video_root: Path | None` field).
 - [x] New helper `_resolve_video(cell: str, video_root: Path | None, videos_dir: Path, root: Path) -> Path`
       implementing the three-way rule; unit-test each branch.
-- [x] `Project.video_path()` ([project.py:178](../src/label3d/project.py#L178)) — use the helper.
+- [x] `Project.video_path()` ([project.py:178](../../src/label3d/project.py#L178)) — use the helper.
       Calibration takes keep their `calibration/{camera}/` location unless their cell is
       path-valued, in which case the same helper applies.
-- [x] `_resolve_trial_length()` ([project.py:435](../src/label3d/project.py#L435)) — use the
+- [x] `_resolve_trial_length()` ([project.py:435](../../src/label3d/project.py#L435)) — use the
       helper; it currently takes `videos_dir` and joins the filename directly.
 - [x] A referenced video that does not exist raises a clear load-time error naming the trial,
       camera, and attempted path, rather than failing later inside OpenCV.
@@ -85,7 +85,7 @@ behavior byte for byte.
 
 ### Video references
 
-`_read_slp_info()` ([setup_project.py:630](../src/label3d/setup_project.py#L630)) currently
+`_read_slp_info()` ([setup_project.py:630](../../src/label3d/setup_project.py#L630)) currently
 returns basenames taken from `labels.labeled_frames`. It changes to return resolved full paths
 taken from `labels.videos`, so a video that is present in the file but has no labeled frames
 still becomes part of the project.

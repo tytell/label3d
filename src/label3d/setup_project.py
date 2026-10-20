@@ -64,7 +64,7 @@ class SetupConfig:
     calib_regex: str = ""
     # Strategy used to separate takes when keywords/regex cannot; "" → match_strategy
     calib_match_strategy: str = ""
-    # --- SLP-first setup (see docs/project_setup_from_sleap.md) ---
+    # --- SLP-first setup (see docs/design/project_setup_from_sleap.md) ---
     # Source .slp files; when set, classify_slp_files() replaces classify_files()
     # and source_dir is unused.
     slp_paths: list[Path] = field(default_factory=list)

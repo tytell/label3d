@@ -1,6 +1,6 @@
 """Skeleton: node names, edges, and symmetry pairs.
 
-Cameras can have different skeletons (docs/phases/phase_14.md). Nodes are
+Cameras can have different skeletons (docs/design/phases/phase_14.md). Nodes are
 matched across skeletons by name; merge_skeletons() builds their union and
 ProjectSkeleton says which skeleton each (experiment, trial, camera) cell has.
 """

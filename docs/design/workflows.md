@@ -336,7 +336,7 @@ Each camera has a row of ticks: black for frames with user labels, light blue fo
 
 ### Reviewing new points
 
-After every SLEAP read that brings in points, a summary dialog lists new SLEAP labels, new and updated predictions, and conflicts per trial. **Go to first new frame** jumps there. Step through new frames with `Shift+]` / `Shift+[`, then correct points or accept them. See [user_workflow.md](user_workflow.md).
+After every SLEAP read that brings in points, a summary dialog lists new SLEAP labels, new and updated predictions, and conflicts per trial. **Go to first new frame** jumps there. Step through new frames with `Shift+]` / `Shift+[`, then correct points or accept them. See [user_workflow.md](../user_workflow.md).
 
 ### Keyboard shortcuts
 
@@ -401,7 +401,7 @@ After every SLEAP read that brings in points, a summary dialog lists new SLEAP l
 
 ## Export Workflow (Step 3)
 
-The user-facing steps and the column reference are in [user_workflow.md](user_workflow.md#7-export). Code: `export.py` (no Qt), `widgets/export_dialog.py`, `workers/export_worker.py`, `export_cli.py`.
+The user-facing steps and the column reference are in [user_workflow.md](../user_workflow.md#7-export). Code: `export.py` (no Qt), `widgets/export_dialog.py`, `workers/export_worker.py`, `export_cli.py`.
 
 ### File > Export points...
 
@@ -459,7 +459,7 @@ Sync summary → step through new frames (Shift+]) → correct or accept (A / Sh
 Sync again → retrain  (repeat)
 ```
 
-The full user-facing guide is [user_workflow.md](user_workflow.md).
+The full user-facing guide is [user_workflow.md](../user_workflow.md).
 
 ---
 

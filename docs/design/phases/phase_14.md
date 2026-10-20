@@ -195,11 +195,11 @@ A skeleton can change after labelling: a node is dropped or renamed in SLEAP, a 
 
 ## 14.11 Docs
 
-- [x] `CLAUDE.md` and `docs/data_model.md`: drop `skeleton.json`; describe `[skeleton]` in `project.toml`, the four rules for a cell's skeleton, and the union.
-- [x] `docs/quick_setup_from_slp.md`, `docs/project_setup_from_sleap.md`: skeletons may differ between files; the conflict rules; the optional `cameras` key in `[skeleton]`.
-- [x] `docs/workflows.md`: the new **Load skeleton...** dialog, the one-skeleton-per-file rule in **Set up Sleap files**, and **Remove points outside the skeletons...**.
+- [x] `CLAUDE.md` and `docs/design/data_model.md`: drop `skeleton.json`; describe `[skeleton]` in `project.toml`, the four rules for a cell's skeleton, and the union.
+- [x] `docs/setup_from_slp.md`, `docs/design/project_setup_from_sleap.md`: skeletons may differ between files; the conflict rules; the optional `cameras` key in `[skeleton]`.
+- [x] `docs/design/workflows.md`: the new **Load skeleton...** dialog, the one-skeleton-per-file rule in **Set up Sleap files**, and **Remove points outside the skeletons...**.
 - [x] `docs/user_workflow.md`: the load-skeleton-first workflow, the points-list markers, and what an unavailable node looks like in a panel.
-- [x] `docs/synthetic_data.md`: `missing_nodes` and `--no-slp`.
+- [x] `docs/design/synthetic_data.md`: `missing_nodes` and `--no-slp`.
 
 ## Order of work
 

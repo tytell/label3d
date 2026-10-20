@@ -17,7 +17,7 @@ label3d keeps your labels in each experiment's `points.csv`. The `.slp` files in
 
 There are two ways to start:
 
-- **From existing SLEAP files:** if you already have `.slp` files with labels, follow [quick_setup_from_slp.md](quick_setup_from_slp.md). The videos stay where they are.
+- **From existing SLEAP files:** if you already have `.slp` files with labels, follow [setup_from_slp.md](setup_from_slp.md). The videos stay where they are.
 - **From videos:** run `uv run python setup_project_cli.py` and answer the prompts. It groups your videos into experiments and trials and creates the project folder.
 
 Open the project with `uv run label3d <project folder>`.
@@ -46,7 +46,7 @@ Once you have points labelled in several cameras, they can improve the calibrati
 - Judge the result by the **held-out points** error: it's measured on frames the fit never saw, and it should go down. The **charuco corner** error should not get much worse.
 - **Save and make active** keeps it. As with any calibration made active in the Calibrate tab, re-triangulate afterwards.
 
-The details of every option are in [workflows.md](workflows.md#refining-with-labelled-points).
+The details of every option are in [workflows.md](design/workflows.md#refining-with-labelled-points).
 
 ## 3. Label
 
@@ -180,4 +180,4 @@ A camera's columns are empty where it has no point. The 3D columns are empty for
 | `Ctrl+S` | Sync with Sleap |
 | `T` | Triangulate the current frame |
 
-The full shortcut list is in [workflows.md](workflows.md#keyboard-shortcuts).
+The full shortcut list is in [workflows.md](design/workflows.md#keyboard-shortcuts).

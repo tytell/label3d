@@ -111,7 +111,7 @@ def delete_calibration(exp_dir, entry) -> list[CalibrationEntry]   # also delete
 
 ## 11.4 Writers
 
-**Calibration tab: calibrating** ([calibration_view.py](../../src/label3d/widgets/calibration_view.py), `_save_take_calibrations`)
+**Calibration tab: calibrating** ([calibration_view.py](../../../src/label3d/widgets/calibration_view.py), `_save_take_calibrations`)
 - When a run finishes, one `charuco` entry is saved per result: one per take with `charuco_takes = [take]`, and the joint solution with all the takes used. Every run's entries are kept.
 - The joint entry becomes active by default.
 - If the active entry is a `refine` entry, Calibrate first warns that the new joint solution will replace it as the active calibration. On confirmation it proceeds. The refined entry stays in the registry.
@@ -128,7 +128,7 @@ def delete_calibration(exp_dir, entry) -> list[CalibrationEntry]   # also delete
 - Every `charuco` entry records the takes, board, frame skip, take ranges and `detected` timestamp (11.1). Together with the corners file, that's enough to rerun the solve. If a take is re-detected later, a mismatched `detected` timestamp shows that the entry used older corners.
 - On load, the Calibration tab computes reprojection errors from the corners of the active entry's `charuco_takes`. For a `refine` entry, the takes are its parent's.
 
-**Project setup** ([setup_project.py:878](../../src/label3d/setup_project.py#L878))
+**Project setup** ([setup_project.py:878](../../../src/label3d/setup_project.py#L878))
 - When setup from SLP files finds an existing aniposelib calibration (`assignment.calibration_toml`), it currently copies it to `experiments/{exp}/calibration.toml`. Instead it saves an `imported` entry with `metadata.source_path` set to the original path, and sets the pointer.
 - `setup_project_cli.py`'s help text and the summary lines in `setup_project.py` are updated to match.
 
@@ -179,13 +179,13 @@ def delete_calibration(exp_dir, entry) -> list[CalibrationEntry]   # also delete
 
 ## 11.7 Reference docs
 
-- **`docs/data_model.md`:**
+- **`docs/design/data_model.md`:**
   - The registry layout (including `refined/`), the `[metadata]` fields, `[calibration.active]` and `[calibration.triangulated_with]`.
   - The new `corners.csv` columns.
   - Remove `calibration.toml`, `calibration_takes/` and `corners_{take}.csv`.
-- **`docs/workflows.md`:** the Label tab calibration combo and the Calibration tab registry list.
+- **`docs/design/workflows.md`:** the Label tab calibration combo and the Calibration tab registry list.
 - **CLAUDE.md:** the `calibration.toml` line under "Data files".
-- **`docs/project_setup_from_sleap.md`:** calibration discovery now creates an `imported` registry entry.
+- **`docs/design/project_setup_from_sleap.md`:** calibration discovery now creates an `imported` registry entry.
 
 ## Implementation order
 

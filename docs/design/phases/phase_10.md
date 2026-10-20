@@ -119,7 +119,7 @@ Accepting clears `sync` without changing x/y, `state` or `source`. It's how the 
 
 A first draft of the user-facing guide, written once 10.4–10.8 exist so it names real menus. It's finished in Phase 13.6.
 
-1. **Set up a project:** from SLEAP files ([quick_setup_from_slp.md](../quick_setup_from_slp.md)) or from videos.
+1. **Set up a project:** from SLEAP files ([setup_from_slp.md](../../setup_from_slp.md)) or from videos.
 2. **Calibrate:** charuco takes, checking for drift between takes.
 3. **Label in label3d,** then **File > Sync with Sleap**.
 4. **Train and infer in SLEAP.** There are two routes:
@@ -155,8 +155,8 @@ Link it from the README and the DESIGN.md index.
 ## 10.11 Reference docs
 
 Update the docs that describe current behaviour once the steps above are built:
-- **`docs/data_model.md`:** the `points.csv` camera columns (`source`, `score`, `sync`) and `sync_history.csv`.
-- **`docs/workflows.md`:**
+- **`docs/design/data_model.md`:** the `points.csv` camera columns (`source`, `score`, `sync`) and `sync_history.csv`.
+- **`docs/design/workflows.md`:**
   - The keyboard shortcut tables: `Shift+[` / `Shift+]`, `A` / `Shift+A`.
   - **File > Import predictions...** and **File > Last sync summary...**.
   - **View > Color points by**.

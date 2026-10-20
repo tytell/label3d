@@ -2,7 +2,7 @@
 
 ## What this project is
 
-A PySide6 desktop app for 3D point labeling across multiple synchronized calibrated video streams. It interfaces with sleap.ai but lives in a separate repository. Design index in [DESIGN.md](DESIGN.md); detailed docs in [docs/](docs/).
+A PySide6 desktop app for 3D point labeling across multiple synchronized calibrated video streams. It interfaces with sleap.ai but lives in a separate repository. Design index in [DESIGN.md](DESIGN.md); design docs in [docs/design/](docs/design), user docs in [docs/](docs).
 
 ## Iterative Workflow
 
@@ -36,7 +36,7 @@ project/
 - `experiments/{name}/videos/` — video files for that experiment's trials (no trials.csv here)
 - `experiments/{name}/points.csv` — pandas MultiIndex CSV; row index `(experiment, trial, frame, instance, bodypart)` (5-level); column MultiIndex `(view, coord)` where cameras have `{x, y, xr, yr, state, source, score, sync}` and `"3d"` pseudo-camera has `{x, y, z}`; `state` ∈ `{set, predicted, not_set, not_visible}`; `source` ∈ `{label3d, sleap_user, sleap_pred}`; `sync` is the id of the sync that brought a point in (a point is new when it equals the latest id)
 - `sync_history.csv` — at project root; one row per (sync, experiment, trial) for each SLEAP read that brought in points
-- **Skeletons** — no `skeleton.json`: each camera's skeleton comes from its `.slp` files or from `[[skeleton.assigned]]` in `project.toml` (File > Load skeleton...), with `[skeleton.node_offsets_cm]`; nodes are matched by name and the project skeleton is their union. A node a camera's skeleton lacks can't be labelled there and doesn't count for triangulation. Rules in [docs/data_model.md](docs/data_model.md#skeletons-phase-14)
+- **Skeletons** — no `skeleton.json`: each camera's skeleton comes from its `.slp` files or from `[[skeleton.assigned]]` in `project.toml` (File > Load skeleton...), with `[skeleton.node_offsets_cm]`; nodes are matched by name and the project skeleton is their union. A node a camera's skeleton lacks can't be labelled there and doesn't count for triangulation. Rules in [docs/design/data_model.md](docs/design/data_model.md#skeletons-phase-14)
 - `slp/` — imported `.slp` files (global, at project root)
 - `exports/` — wide-format point CSVs from **File > Export points...** / `label3d-export` (`export.py`; columns in [docs/user_workflow.md](docs/user_workflow.md#export-columns))
 
@@ -47,7 +47,7 @@ project/
 
 ## Synthetic test data
 
-See [docs/synthetic_data.md](docs/synthetic_data.md). Quick start:
+See [docs/design/synthetic_data.md](docs/design/synthetic_data.md). Quick start:
 
 ```
 uv run python generate_synthetic.py synthetic_config.toml
@@ -63,4 +63,4 @@ uv run python <script>  # run any script in the project venv
 
 ## Implementation phases
 
-Phases 1–12 complete. Phase 13, batch triangulation and export ([phase_13.md](docs/phases/phase_13.md)), is implemented and awaiting a check in the app. Phase 14, per-camera skeletons ([phase_14.md](docs/phases/phase_14.md)), is implemented and awaiting a check in the app. Deferred: axis alignment ([phase_15.md](docs/phases/phase_15.md); geometry helpers and CameraPanel pick mode exist, the UI widget does not), export to other pose formats and polish ([phase_16_17.md](docs/phases/phase_16_17.md)), multi-instance support ([phase_18.md](docs/phases/phase_18.md)). [docs/phases/phase_12.md](docs/phases/phase_12.md) covers the finished calibration refinement with labelled points, [phase_11.md](docs/phases/phase_11.md) the finished calibration registry, [phase_10.md](docs/phases/phase_10.md) the finished point provenance and review work, [phase_9.md](docs/phases/phase_9.md) the finished calibration-take work, [phase_8.md](docs/phases/phase_8.md) the finished SLP sync work.
+Phases 1–12 complete. Phase 13, batch triangulation and export ([phase_13.md](docs/design/phases/phase_13.md)), is implemented and awaiting a check in the app. Phase 14, per-camera skeletons ([phase_14.md](docs/design/phases/phase_14.md)), is implemented and awaiting a check in the app. Deferred: axis alignment ([phase_15.md](docs/design/phases/phase_15.md); geometry helpers and CameraPanel pick mode exist, the UI widget does not), export to other pose formats and polish ([phase_16_17.md](docs/design/phases/phase_16_17.md)), multi-instance support ([phase_18.md](docs/design/phases/phase_18.md)). [docs/design/phases/phase_12.md](docs/design/phases/phase_12.md) covers the finished calibration refinement with labelled points, [phase_11.md](docs/design/phases/phase_11.md) the finished calibration registry, [phase_10.md](docs/design/phases/phase_10.md) the finished point provenance and review work, [phase_9.md](docs/design/phases/phase_9.md) the finished calibration-take work, [phase_8.md](docs/design/phases/phase_8.md) the finished SLP sync work.

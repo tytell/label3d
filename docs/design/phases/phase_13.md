@@ -106,9 +106,9 @@ Finish the Phase 10.9 draft:
 
 ## 13.6 Reference docs
 
-- **Done.** `docs/workflows.md` links to the column table in the user guide rather than repeating it.
-- **`docs/workflows.md`:** replace the *Export Workflow (Step 3)* section, which describes the Export tab, with **File > Export points...**: when it's enabled, the pre-flight checks, the SLP write, the CLI, and the export column reference. Remove the Export tab from the window layout diagrams.
-- **`docs/data_model.md` and `CLAUDE.md`:** add `exports/` to the project layout.
+- **Done.** `docs/design/workflows.md` links to the column table in the user guide rather than repeating it.
+- **`docs/design/workflows.md`:** replace the *Export Workflow (Step 3)* section, which describes the Export tab, with **File > Export points...**: when it's enabled, the pre-flight checks, the SLP write, the CLI, and the export column reference. Remove the Export tab from the window layout diagrams.
+- **`docs/design/data_model.md` and `CLAUDE.md`:** add `exports/` to the project layout.
 - **README:** the `label3d-export` entry point.
 
 ## Implementation order

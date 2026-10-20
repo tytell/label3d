@@ -5,7 +5,7 @@ videos into a label3d project, using a setup TOML file. This is the fast path fo
 the common case: you already labeled in SLEAP, the videos it references are still
 where they were recorded, and you have separate calibration recordings (one or more
 takes) sitting next to it. For all the options this supports, see
-[project_setup_from_sleap.md](project_setup_from_sleap.md).
+[project_setup_from_sleap.md](design/project_setup_from_sleap.md).
 
 Worked example throughout: `projects/OMR_flat/`.
 
@@ -234,7 +234,7 @@ top.
 | `Backspace` | Delete the selected point |
 | Right-click a point | Mark it occluded |
 
-Full list in [workflows.md](workflows.md).
+Full list in [workflows.md](design/workflows.md).
 
 ### Exporting
 

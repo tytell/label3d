@@ -18,7 +18,7 @@ Calibration from image folders is retired. The code stays in place but must not 
 - [x] `workers/calibration_worker.DetectionWorker.run` — raise at the top of the `if image_files:` branch, leaving the `detect_images` call below it intact but unreachable
 - [x] `widgets/calibration_view._scan_raw_media` — same guard; the `_media_is_images` helper becomes the error check rather than a UI toggle
 - [x] Error message directs the user to the video workflow
-- [x] Remove the image path from `docs/workflows.md` and `docs/data_model.md`, noting it is deprecated rather than deleting the description
+- [x] Remove the image path from `docs/design/workflows.md` and `docs/design/data_model.md`, noting it is deprecated rather than deleting the description
 - [x] *(added during implementation)* The synthetic generator emitted calibration images and so had nothing valid left to produce. `generate_charuco_videos()` renders the same board poses into one video per (camera, take), holding each pose for `frames_per_pose` frames so the default stride samples every pose. `generate_charuco_images()` is left in place, unused.
 
 ---

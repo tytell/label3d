@@ -1,6 +1,6 @@
 """Setting up a project from existing .slp files, with videos referenced in place.
 
-See docs/project_setup_from_sleap.md. The videos in these tests always live
+See docs/design/project_setup_from_sleap.md. The videos in these tests always live
 outside the project tree, which is the case the feature exists for.
 """
 

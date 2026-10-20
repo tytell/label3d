@@ -34,4 +34,4 @@ uv run pytest tests/test_skeleton.py   # single module
 uv run pytest -k "spaces"  # tests whose name contains "spaces"
 ```
 
-See [docs/synthetic_data.md](synthetic_data.md) for the synthetic data generator.
+See [docs/design/synthetic_data.md](synthetic_data.md) for the synthetic data generator.

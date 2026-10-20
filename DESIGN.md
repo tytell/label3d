@@ -14,23 +14,23 @@ A cross-platform desktop app for:
 | Document | Contents |
 |---|---|
 | [docs/user_workflow.md](docs/user_workflow.md) | **User guide**: the label → train → review loop, step by step (draft) |
-| [docs/data_model.md](docs/data_model.md) | Project layout, `points.csv` schema, `project.toml`, `trials.csv`, calibration registry, adapter interface, project setup utility |
-| [docs/workflows.md](docs/workflows.md) | Calibration UI, axis alignment, labeling UI, export UI, keyboard shortcuts, key features |
-| [docs/architecture.md](docs/architecture.md) | Package layout, build order, technology stack, risks, design decisions |
-| [docs/testing.md](docs/testing.md) | Test modules and testing conventions |
-| [docs/project_setup_from_sleap.md](docs/project_setup_from_sleap.md) | Building a project from existing `.slp` files: referenced (not copied) videos, skeleton and label import, calibration discovery |
-| [docs/synthetic_data.md](docs/synthetic_data.md) | Synthetic data generator: module layout, output structure, charuco image generation |
-| [docs/phases/phase_8.md](docs/phases/phase_8.md) | Phase 8 — SLP write-back (completed) |
-| [docs/phases/phase_9.md](docs/phases/phase_9.md) | Phase 9 — Calibration Takes (completed) |
-| [docs/phases/phase_10.md](docs/phases/phase_10.md) | Phase 10 — Point provenance and reviewing new points (completed) |
-| [docs/phases/phase_11.md](docs/phases/phase_11.md) | Phase 11 — Calibration registry and switching calibrations (completed) |
-| [docs/phases/phase_12.md](docs/phases/phase_12.md) | Phase 12 — Refining the calibration with labelled points (complete) |
-| [docs/phases/phase_13.md](docs/phases/phase_13.md) | Phase 13 — Batch triangulation and export |
-| [docs/phases/phase_14.md](docs/phases/phase_14.md) | Phase 14 — Per-camera skeletons (implemented; to be checked in the app) |
-| [docs/phases/phase_15.md](docs/phases/phase_15.md) | Phase 15 — Axis alignment (deferred; partially implemented) |
-| [docs/phases/phase_16_17.md](docs/phases/phase_16_17.md) | Phases 16–17: Export to other pose formats, Polish and robustness (deferred) |
-| [docs/phases/phase_18.md](docs/phases/phase_18.md) | Phase 18 — Multi-instance support and cross-camera matching (deferred) |
-| [docs/phases/archive/phases_1_7.md](docs/phases/archive/phases_1_7.md) | Phases 1–7 (completed; archived for reference) |
+| [docs/design/data_model.md](docs/design/data_model.md) | Project layout, `points.csv` schema, `project.toml`, `trials.csv`, calibration registry, adapter interface, project setup utility |
+| [docs/design/workflows.md](docs/design/workflows.md) | Calibration UI, axis alignment, labeling UI, export UI, keyboard shortcuts, key features |
+| [docs/design/architecture.md](docs/design/architecture.md) | Package layout, build order, technology stack, risks, design decisions |
+| [docs/design/testing.md](docs/design/testing.md) | Test modules and testing conventions |
+| [docs/design/project_setup_from_sleap.md](docs/design/project_setup_from_sleap.md) | Building a project from existing `.slp` files: referenced (not copied) videos, skeleton and label import, calibration discovery |
+| [docs/design/synthetic_data.md](docs/design/synthetic_data.md) | Synthetic data generator: module layout, output structure, charuco image generation |
+| [docs/design/phases/phase_8.md](docs/design/phases/phase_8.md) | Phase 8 — SLP write-back (completed) |
+| [docs/design/phases/phase_9.md](docs/design/phases/phase_9.md) | Phase 9 — Calibration Takes (completed) |
+| [docs/design/phases/phase_10.md](docs/design/phases/phase_10.md) | Phase 10 — Point provenance and reviewing new points (completed) |
+| [docs/design/phases/phase_11.md](docs/design/phases/phase_11.md) | Phase 11 — Calibration registry and switching calibrations (completed) |
+| [docs/design/phases/phase_12.md](docs/design/phases/phase_12.md) | Phase 12 — Refining the calibration with labelled points (complete) |
+| [docs/design/phases/phase_13.md](docs/design/phases/phase_13.md) | Phase 13 — Batch triangulation and export |
+| [docs/design/phases/phase_14.md](docs/design/phases/phase_14.md) | Phase 14 — Per-camera skeletons (implemented; to be checked in the app) |
+| [docs/design/phases/phase_15.md](docs/design/phases/phase_15.md) | Phase 15 — Axis alignment (deferred; partially implemented) |
+| [docs/design/phases/phase_16_17.md](docs/design/phases/phase_16_17.md) | Phases 16–17: Export to other pose formats, Polish and robustness (deferred) |
+| [docs/design/phases/phase_18.md](docs/design/phases/phase_18.md) | Phase 18 — Multi-instance support and cross-camera matching (deferred) |
+| [docs/design/phases/archive/phases_1_7.md](docs/design/phases/archive/phases_1_7.md) | Phases 1–7 (completed; archived for reference) |
 
 ---
 

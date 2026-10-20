@@ -138,9 +138,9 @@ Uses the synthetic generator: a known rig, charuco takes and a moving animal.
 
 ## 12.6 Reference docs
 
-- **`docs/workflows.md`:** the Refine dialog, its options, and how to read the before and after errors.
-- **`docs/data_model.md`:** the `_points.csv` columns and the `refine` keys in `[metadata.errors]` and `[metadata.options]`.
-- **`docs/architecture.md`:** `calibration_refine.py` and `widgets/refine_dialog.py`.
+- **`docs/design/workflows.md`:** the Refine dialog, its options, and how to read the before and after errors.
+- **`docs/design/data_model.md`:** the `_points.csv` columns and the `refine` keys in `[metadata.errors]` and `[metadata.options]`.
+- **`docs/design/architecture.md`:** `calibration_refine.py` and `widgets/refine_dialog.py`.
 - **`DESIGN.md`** and **CLAUDE.md:** the phase status.
 
 ## Implementation order
