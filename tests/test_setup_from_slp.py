@@ -186,7 +186,7 @@ class TestClassify:
             v.unlink()
         config = _config(source, slp_paths=[*source["slps"], extra])
         assignment = classify_slp_files(config)
-        brief = preview_assignment(config, assignment, verbosity=1)
+        brief = preview_assignment(config, assignment, verbosity=2)
         assert "  2 from extra.slp" in brief
         assert "cam1_Trial3.mp4" not in brief
         full = preview_assignment(config, assignment)
@@ -207,7 +207,11 @@ class TestClassify:
         assert "SLP files (" not in summary
         assert "is missing cameras" not in summary  # the warnings repeat the group
         assert "Calibration: none found" in summary
-        assert "Trial3:" in preview_assignment(config, assignment, verbosity=1)
+        named = preview_assignment(config, assignment, verbosity=1)
+        assert "    2 trial(s) missing cam2\n      Trial3, Trial4\n" in named
+        assert "Trial3:" not in named
+        assert "Trial3, Trial4" not in summary
+        assert "Trial3:" in preview_assignment(config, assignment, verbosity=2)
 
     def test_unlisted_experiment_videos_left_out(self, source, tmp_path):
         other = [_make_video(tmp_path / "rig" / f"{c}_other_Trial5.mp4") for c in CAMERAS]

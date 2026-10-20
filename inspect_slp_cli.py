@@ -9,8 +9,8 @@ Usage:
     # the same setup TOML as setup_project_cli.py (output_dir is not needed)
     uv run python inspect_slp_cli.py setup.toml
 
-    # more detail: -v (or --verbose=1), everything: -vv (or --verbose=2)
-    uv run python inspect_slp_cli.py -vv setup.toml
+    # more detail: -v / -vv (or --verbose=1 / 2), everything: -vvv (or --verbose=3)
+    uv run python inspect_slp_cli.py -v setup.toml
 
     # flags override the TOML, or stand alone with .slp files or folders
     uv run python inspect_slp_cli.py setup.toml --match-strategy number
@@ -151,9 +151,9 @@ def _ref_lines(ref, placement) -> list[str]:
 def report_slp_files(assignment: FileAssignment, verbosity: int = 0) -> list[str]:
     """Each .slp file's video references: found where, which camera and trial.
 
-    Verbosity 0 gives the trials per experiment and counts of each kind of
-    problem; 1 lists the references placed in a trial, and each kind of problem
-    with at most MAX_LISTED references; 2 lists every reference.
+    Verbosity 0 and 1 give the trials per experiment and counts of each kind
+    of problem; 2 lists the references placed in a trial, and each kind of
+    problem with at most MAX_LISTED references; 3 lists every reference.
     """
     placement = video_placement(assignment)
     excluded = set(assignment.excluded)
@@ -177,11 +177,11 @@ def report_slp_files(assignment: FileAssignment, verbosity: int = 0) -> list[str
             kind = _problem(ref, placement, excluded)
             if kind is not None:
                 problems.setdefault(kind, []).append(ref)
-            if verbosity >= 2 or (verbosity == 1 and kind is None):
+            if verbosity >= 3 or (verbosity == 2 and kind is None):
                 lines += _ref_lines(ref, placement)
-        if verbosity < 2:
+        if verbosity < 3:
             for kind, kind_refs in problems.items():
-                if verbosity == 1 and len(kind_refs) <= MAX_LISTED:
+                if verbosity == 2 and len(kind_refs) <= MAX_LISTED:
                     for ref in kind_refs:
                         lines += _ref_lines(ref, placement)
                 else:
@@ -258,12 +258,12 @@ def main() -> None:
     )
     parser.add_argument(
         "-v", action="count", default=0, dest="verbosity",
-        help="More detail: -v lists the videos placed in trials and short problem "
-        "lists, -vv lists everything",
+        help="More detail: -v names the trials missing cameras, -vv lists the "
+        "videos placed in trials and short problem lists, -vvv lists everything",
     )
     parser.add_argument(
         "--verbose", type=int, dest="verbosity", default=argparse.SUPPRESS,
-        metavar="LEVEL", help="Detail level 0-2 (same as no -v, -v, -vv)",
+        metavar="LEVEL", help="Detail level 0-3 (same as no -v, -v, -vv, -vvv)",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()

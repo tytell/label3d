@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+import textwrap
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -855,14 +856,19 @@ def _missing_cameras_warning(trial_name: str, missing: set[str]) -> str:
     return f"Trial '{trial_name}' is missing cameras: {', '.join(sorted(missing))}"
 
 
-# Below verbosity 2, preview_assignment lists at most this many warnings
+# Below verbosity 3, preview_assignment lists at most this many warnings
 PREVIEW_MAX_WARNINGS = 10
 
 
+def _natural_key(name: str) -> list:
+    """Sort key putting Trial2 before Trial10."""
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", name)]
+
+
 def _experiment_trials(assignment: FileAssignment) -> dict[str, list[str]]:
-    """experiment -> its trials, both sorted."""
+    """experiment -> its trials, both sorted (numbers by value)."""
     groups: dict[str, list[str]] = {}
-    for trial in sorted(assignment.trials):
+    for trial in sorted(assignment.trials, key=_natural_key):
         groups.setdefault(assignment.trial_experiment.get(trial, "default"), []).append(trial)
     return dict(sorted(groups.items()))
 
@@ -873,7 +879,8 @@ def _preview_trials(
     """Trials by experiment, with each experiment's video root.
 
     Verbosity 0 gives each experiment's trial count and groups the trials that
-    lack cameras by the cameras they lack; 1 and up list every trial's videos.
+    lack cameras by the cameras they lack; 1 also names the trials in each
+    group; 2 and up list every trial's videos.
     """
     if not assignment.trials:
         return ["Trials: none found", ""]
@@ -882,15 +889,20 @@ def _preview_trials(
     for exp, trials in groups.items():
         root = assignment.video_roots.get(exp)
         where = f"root: {root}" if root else "(absolute paths)"
-        if verbosity == 0:
+        if verbosity <= 1:
             lines.append(f"  [{exp}]  {len(trials)} trial(s), {where}")
-            lacking = Counter(
-                tuple(c for c in config.camera_names if c not in assignment.trials[t])
-                for t in trials
-            )
-            for cams, count in lacking.items():
+            lacking: dict[tuple[str, ...], list[str]] = {}
+            for t in trials:
+                cams = tuple(c for c in config.camera_names if c not in assignment.trials[t])
                 if cams:
-                    lines.append(f"    {count} trial(s) missing {', '.join(cams)}")
+                    lacking.setdefault(cams, []).append(t)
+            for cams, names in lacking.items():
+                lines.append(f"    {len(names)} trial(s) missing {', '.join(cams)}")
+                if verbosity == 1:
+                    lines += textwrap.wrap(
+                        ", ".join(names), width=100,
+                        initial_indent=" " * 6, subsequent_indent=" " * 6,
+                    )
             continue
         lines.append(f"  [{exp}]  {where}")
         for trial in trials:
@@ -990,16 +1002,17 @@ def _preview_calibration(config: SetupConfig, assignment: FileAssignment) -> lis
 
 
 def preview_assignment(
-    config: SetupConfig, assignment: FileAssignment, verbosity: int = 2
+    config: SetupConfig, assignment: FileAssignment, verbosity: int = 3
 ) -> str:
     """Return a human-readable summary of the file assignment.
 
-    verbosity 2 lists everything. 1 counts unresolved references and unmatched
+    verbosity 3 lists everything. 2 counts unresolved references and unmatched
     files instead of listing them, leaves out the warnings that repeat them or
     the trials' missing cameras, and lists at most PREVIEW_MAX_WARNINGS others.
-    0 also gives trial counts per experiment instead of the trials, sums up
-    calibration by experiment and leaves out the .slp file of each cell and the
-    remapped video paths.
+    1 also gives trial counts per experiment instead of the trials, naming the
+    trials that lack cameras, sums up calibration by experiment and leaves out
+    the .slp file of each cell and the remapped video paths. 0 is 1 without
+    the names of the trials that lack cameras.
     """
     lines = []
 
@@ -1034,7 +1047,7 @@ def preview_assignment(
 
     lines += _preview_trials(config, assignment, verbosity)
 
-    if verbosity == 0 and (
+    if verbosity <= 1 and (
         assignment.calibration_takes or assignment.exp_calibration or assignment.calibration_toml
     ):
         lines += _preview_calibration_summary(config, assignment)
@@ -1069,7 +1082,7 @@ def preview_assignment(
         lines.append("")
 
     # SLP files
-    if assignment.slp_files and verbosity >= 1:
+    if assignment.slp_files and verbosity >= 2:
         lines.append(f"SLP files ({len(assignment.slp_files)} trials):")
         for trial_name in sorted(assignment.slp_files):
             cam_files = assignment.slp_files[trial_name]
@@ -1077,7 +1090,7 @@ def preview_assignment(
                 lines.append(f"  {trial_name}/{cam}: {f.name}")
         lines.append("")
 
-    if assignment.video_remaps and verbosity >= 1:
+    if assignment.video_remaps and verbosity >= 2:
         lines.append("Video paths remapped:")
         for (old_root, new_root), count in sorted(assignment.video_remaps.items()):
             source = old_root or "(basename only)"
@@ -1086,7 +1099,7 @@ def preview_assignment(
 
     if assignment.missing_videos:
         lines.append(f"Unresolved video references ({len(assignment.missing_videos)}):")
-        if verbosity >= 2:
+        if verbosity >= 3:
             for ref, slp_name in assignment.missing_videos:
                 lines.append(f"  {ref}  (from {slp_name})")
         else:
@@ -1100,7 +1113,7 @@ def preview_assignment(
             f"Left out: {len(assignment.excluded)} video(s) of experiments not in "
             "experiment_keywords"
         )
-        if verbosity >= 2:
+        if verbosity >= 3:
             for f in assignment.excluded:
                 lines.append(f"  {f.name}")
         lines.append("")
@@ -1108,14 +1121,14 @@ def preview_assignment(
     # Unmatched
     if assignment.unmatched:
         lines.append(f"Unmatched files ({len(assignment.unmatched)}):")
-        if verbosity >= 2:
+        if verbosity >= 3:
             for f in assignment.unmatched:
                 lines.append(f"  {f.name}")
         lines.append("")
 
     # Warnings
     warnings = assignment.warnings
-    if verbosity < 2:
+    if verbosity < 3:
         repeats = {_missing_video_warning(ref, name) for ref, name in assignment.missing_videos}
         repeats |= {
             _missing_cameras_warning(t, missing)
@@ -1126,7 +1139,7 @@ def preview_assignment(
         warnings = [w for w in warnings if w not in repeats]
     if warnings:
         lines.append("Warnings:")
-        shown = warnings if verbosity >= 2 else warnings[:PREVIEW_MAX_WARNINGS]
+        shown = warnings if verbosity >= 3 else warnings[:PREVIEW_MAX_WARNINGS]
         for w in shown:
             lines.append(f"  ! {w}")
         if len(shown) < len(warnings):
