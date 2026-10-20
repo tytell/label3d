@@ -98,10 +98,14 @@ Field by field:
   file refers to.
 - **`output_dir`** — where the new project is created. Must not already exist.
 - **`camera_names`** — matched against each video's filename, then its parent
-  folder name, to tell cameras apart. Here: `left`, `right`.
+  folder name, to tell cameras apart. Here: `left`, `right`. If older recordings
+  name a camera differently, give its other names in `camera_aliases`, e.g.
+  `camera_aliases = { LateralOrtho = ["Lateral"], LateralOffAxis = ["OffAxisLateral"] }`;
+  the longest matching name or alias wins.
 - **`experiment_keywords`** — one label3d "experiment" per acquisition day here
-  (`20260619`, `20260721`, `20260807`), matched against filenames. Leave this out
-  (or `[]`) if everything belongs to one experiment.
+  (`20260619`, `20260721`, `20260807`), matched against filenames. Videos that
+  name none of them are left out, and the setup summary counts them. Leave this
+  out (or `[]`) if everything belongs to one experiment, named `default`.
 - **`match_strategy`** / **`trial_keyword`** — how *trial* videos are grouped
   into left/right pairs. This project's trial videos happen to be named with the
   word "trial" in them, so `keyword` + `trial_keyword = "trial"` is enough; other

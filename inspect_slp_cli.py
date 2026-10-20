@@ -34,6 +34,7 @@ from label3d.setup_project import (
     SetupConfig,
     classify_slp_files,
     config_from_toml,
+    parse_camera_aliases,
     preview_assignment,
 )
 
@@ -74,6 +75,10 @@ def build_config(args) -> SetupConfig:
     overrides: dict = {}
     if args.cameras:
         overrides["camera_names"] = split_list(args.cameras)
+    if args.camera_alias:
+        overrides["camera_aliases"] = {
+            **config.camera_aliases, **parse_camera_aliases(args.camera_alias)
+        }
     if args.experiments is not None:
         overrides["experiment_keywords"] = split_list(args.experiments)
     if args.match_strategy:
@@ -112,11 +117,13 @@ def video_placement(assignment: FileAssignment) -> dict[Path, tuple[str, str]]:
 MAX_LISTED = 10
 
 
-def _problem(ref, placement) -> str | None:
+def _problem(ref, placement, excluded) -> str | None:
     """Why a reference did not end up in a trial, or None if it did."""
     outcome = ref.resolution
     if outcome.path is None:
         return "ambiguous" if outcome.rule == "ambiguous" else "not found"
+    if outcome.path in excluded:
+        return "in an experiment not listed"
     if ref.camera is None:
         return "no camera match"
     if outcome.path not in placement:
@@ -149,6 +156,7 @@ def report_slp_files(assignment: FileAssignment, verbosity: int = 0) -> list[str
     with at most MAX_LISTED references; 2 lists every reference.
     """
     placement = video_placement(assignment)
+    excluded = set(assignment.excluded)
     by_slp: dict[Path, list] = {}
     for ref in assignment.video_refs:
         by_slp.setdefault(ref.slp_path, []).append(ref)
@@ -166,7 +174,7 @@ def report_slp_files(assignment: FileAssignment, verbosity: int = 0) -> list[str
 
         problems: dict[str, list] = {}
         for ref in refs:
-            kind = _problem(ref, placement)
+            kind = _problem(ref, placement, excluded)
             if kind is not None:
                 problems.setdefault(kind, []).append(ref)
             if verbosity >= 2 or (verbosity == 1 and kind is None):
@@ -225,6 +233,12 @@ def main() -> None:
         help="A setup TOML (as for setup_project_cli.py), or .slp files / folders",
     )
     parser.add_argument("--cameras", help="Comma-separated camera names")
+    parser.add_argument(
+        "--camera-alias",
+        action="append",
+        metavar="CAM=ALIAS[,ALIAS]",
+        help="Other names a camera goes by in filenames (repeatable; adds to the TOML's)",
+    )
     parser.add_argument(
         "--experiments", help="Comma-separated experiment keywords ('' for none)"
     )

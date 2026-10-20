@@ -15,6 +15,7 @@ from label3d.setup_project import (
     SetupConfig,
     classify_files,
     execute_setup,
+    parse_camera_aliases,
     preview_assignment,
     skeleton_from_setup,
     split_project_groups,
@@ -124,6 +125,86 @@ class TestIdentifyCamera:
     def test_truly_ambiguous(self):
         # Both "ab" and "cd" appear in the filename, neither is substring of the other
         assert _identify_camera("ab_cd_trial.mp4", ["ab", "cd"]) is None
+
+
+class TestCameraAliases:
+    CAMS = ["LateralOrtho", "LateralOffAxis", "Ventral"]
+    ALIASES = {"LateralOrtho": ["Lateral"], "LateralOffAxis": ["OffAxisLateral"]}
+
+    @pytest.mark.parametrize("name, camera", [
+        ("PS20_Trial9_Lateral_H264.mp4", "LateralOrtho"),
+        ("PS20_Trial9_OffAxisLateral_H264.mp4", "LateralOffAxis"),  # longest alias wins
+        ("PS37_Trial7_LateralOffAxis_H265.mp4", "LateralOffAxis"),  # name beats alias
+        ("PS37_Trial7_LateralOrtho_H265.mp4", "LateralOrtho"),
+        ("PS37_Trial7_Ventral_H265.mp4", "Ventral"),
+    ])
+    def test_alias_matching(self, name, camera):
+        assert _identify_camera(name, self.CAMS, self.ALIASES) == camera
+
+    def test_without_aliases_old_names_match_nothing(self):
+        assert _identify_camera("PS20_Trial9_Lateral_H264.mp4", self.CAMS) is None
+
+    def test_alias_for_unknown_camera_is_an_error(self, tmp_path):
+        with pytest.raises(ValueError, match="camera_aliases"):
+            SetupConfig(
+                source_dir=tmp_path, output_dir=tmp_path / "p", camera_names=["left"],
+                calib_keyword="calib", match_strategy="number",
+                camera_aliases={"top": ["T"]},
+            )
+
+    def test_parse_camera_aliases(self):
+        assert parse_camera_aliases(["a=x,y", "b=z", "a=w"]) == {"a": ["x", "y", "w"], "b": ["z"]}
+        with pytest.raises(ValueError):
+            parse_camera_aliases(["no_equals"])
+
+    def test_aliases_in_folder_setup(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        # The alias carries a digit, so the number strategy must strip it too
+        for name in ("L2_trial001.mp4", "right_trial001.mp4"):
+            (src / name).write_bytes(b"\x00" * 100)
+        config = SetupConfig(
+            source_dir=src, output_dir=tmp_path / "p", camera_names=["left", "right"],
+            calib_keyword="calib", match_strategy="number",
+            camera_aliases={"left": ["L2"]},
+        )
+        assignment = classify_files(config)
+        assert sorted(assignment.trials["trial_001"]) == ["left", "right"]
+
+
+class TestUnlistedExperiments:
+    def _config(self, tmp_path, keywords):
+        src = tmp_path / "src"
+        src.mkdir()
+        for exp in ("PS1", "PS2"):
+            for cam in ("left", "right"):
+                (src / f"{exp}_{cam}_trial001.mp4").write_bytes(b"\x00" * 100)
+                (src / f"{exp}_{cam}_calib.mp4").write_bytes(b"\x00" * 100)
+        return SetupConfig(
+            source_dir=src, output_dir=tmp_path / "p", camera_names=["left", "right"],
+            calib_keyword="calib", match_strategy="keyword", trial_keyword="trial",
+            experiment_keywords=keywords,
+        )
+
+    def test_unlisted_experiment_left_out(self, tmp_path):
+        config = self._config(tmp_path, ["PS1"])
+        assignment = classify_files(config)
+        assert set(assignment.trial_experiment.values()) == {"PS1"}
+        assert sorted(assignment.exp_calibration) == ["PS1"]
+        assert sorted(f.name for f in assignment.excluded) == [
+            "PS2_left_calib.mp4", "PS2_left_trial001.mp4",
+            "PS2_right_calib.mp4", "PS2_right_trial001.mp4",
+        ]
+        assert "Left out: 4 video(s)" in preview_assignment(config, assignment)
+
+    def test_no_keywords_means_one_default_experiment(self, tmp_path):
+        config = self._config(tmp_path, [])
+        for f in config.source_dir.glob("PS2_*_calib.mp4"):
+            f.unlink()  # one calibration take per camera
+        assignment = classify_files(config)
+        assert assignment.excluded == []
+        assert sorted(assignment.exp_calibration) == ["default"]
+        assert len(assignment.trials) == 2
 
 
 # --- Unit tests: trial key extraction ---

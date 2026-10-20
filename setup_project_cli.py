@@ -18,7 +18,9 @@ Config file format (TOML):
     calib_keyword = "calib"          # legacy single keyword
     calib_keywords = ["PreCal", "PostCal"]   # one keyword per calibration take
     calib_regex = ""                 # alternative: regex naming each take, e.g. "cal\\d+"
-    experiment_keywords = ["PS", "BG"]   # omit or [] for single experiment named "default"
+    experiment_keywords = ["PS", "BG"]   # omit or [] for single experiment named "default";
+                                         # videos naming no listed experiment are left out
+    camera_aliases = { left = ["Lft"] }  # other names a camera goes by in filenames
     match_strategy = "keyword"   # "keyword" | "regex" | "number" | "datestamp" | "mtime"
     trial_keyword = "Trial"      # only for keyword strategy
     trial_regex = "([A-Z]+\\d+_\\d+)"  # only for regex strategy
@@ -75,6 +77,7 @@ from label3d.setup_project import (
     config_from_toml,
     execute_setup,
     import_labels,
+    parse_camera_aliases,
     preview_assignment,
 )
 
@@ -183,6 +186,8 @@ def save_config_toml(config: SetupConfig, path: Path) -> None:
         "project": {"name": config.project_name},
     }
     setup = data["setup"]
+    if config.camera_aliases:
+        setup["camera_aliases"] = config.camera_aliases
     if config.match_strategy == "keyword":
         setup["trial_keyword"] = config.trial_keyword
     elif config.match_strategy == "regex":
@@ -526,6 +531,7 @@ def slp_config_from_args(args) -> SetupConfig:
         source_dir=slp_paths[0].parent,
         output_dir=output_dir,
         camera_names=[s.strip() for s in args.cameras.split(",") if s.strip()],
+        camera_aliases=parse_camera_aliases(args.camera_alias or []),
         calib_keyword=calib_keywords[0] if calib_keywords else "calib",
         calib_keywords=calib_keywords,
         experiment_keywords=[
@@ -611,6 +617,12 @@ def main() -> None:
     )
     slp.add_argument("--output", help="Output project folder (with --from-slp)")
     slp.add_argument("--cameras", help="Comma-separated camera names (with --from-slp)")
+    slp.add_argument(
+        "--camera-alias",
+        action="append",
+        metavar="CAM=ALIAS[,ALIAS]",
+        help="Other names a camera goes by in filenames (repeatable)",
+    )
     slp.add_argument("--name", help="Project name (default: output folder name)")
     slp.add_argument("--experiments", help="Comma-separated experiment keywords")
     slp.add_argument(

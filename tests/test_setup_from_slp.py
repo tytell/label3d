@@ -209,6 +209,17 @@ class TestClassify:
         assert "Calibration: none found" in summary
         assert "Trial3:" in preview_assignment(config, assignment, verbosity=1)
 
+    def test_unlisted_experiment_videos_left_out(self, source, tmp_path):
+        other = [_make_video(tmp_path / "rig" / f"{c}_other_Trial5.mp4") for c in CAMERAS]
+        mixed = _make_slp(tmp_path / "labels" / "mixed.slp", [*other, source["videos"][("cam1", "Trial1")]])
+        config = _config(
+            source, slp_paths=[*source["slps"], mixed], experiment_keywords=["Trial1", "Trial2"]
+        )
+        assignment = classify_slp_files(config)
+        assert sorted(f.name for f in assignment.excluded) == sorted(v.name for v in other)
+        assert set(assignment.trial_experiment.values()) == {"Trial1", "Trial2"}
+        assert assignment.errors == []  # mixed.slp still has a video in Trial1
+
     def test_slp_files_in_listed_experiments_pass(self, source):
         assignment = classify_slp_files(_config(source, experiment_keywords=["cam"]))
         assert assignment.errors == []
@@ -276,6 +287,13 @@ class TestConfigFromToml:
     def test_output_dir_required_by_default(self, source):
         with pytest.raises(KeyError):
             config_from_toml(self._write(source, {}))
+
+    def test_reads_camera_aliases(self, source):
+        path = self._write(source, {
+            "output_dir": str(source["tmp"] / "proj"),
+            "camera_aliases": {"cam1": ["c1", "first"], "cam2": "c2"},
+        })
+        assert config_from_toml(path).camera_aliases == {"cam1": ["c1", "first"], "cam2": ["c2"]}
 
     def test_empty_skeleton_table_uses_slp_skeletons(self, source):
         path = self._write(source, {"output_dir": str(source["tmp"] / "proj")})

@@ -53,6 +53,9 @@ class SetupConfig:
     trial_keyword: str = "Trial"  # used by "keyword" match strategy
     trial_regex: str = ""         # used by "regex" match strategy
     experiment_keywords: list[str] = field(default_factory=list)  # empty → single "default" experiment
+    # camera name -> other names it goes by in filenames, e.g. older recordings
+    # ({"LateralOrtho": ["Lateral"]}); the longest matching name or alias wins
+    camera_aliases: dict[str, list[str]] = field(default_factory=dict)
     # Calibration take identification (Phase 9). Each keyword names one take,
     # e.g. ["PreCal", "PostCal"]; calib_regex is an alternative whose "take"
     # group, else group 1, else whole match supplies the name.
@@ -89,6 +92,12 @@ class SetupConfig:
         # Camera folders share calibrations/ with the refinements folder
         if REFINED_DIR in self.camera_names:
             raise ValueError(f"'{REFINED_DIR}' can't be used as a camera name")
+        unknown = [c for c in self.camera_aliases if c not in self.camera_names]
+        if unknown:
+            raise ValueError(
+                f"camera_aliases name cameras that are not cameras of the project: "
+                f"{', '.join(unknown)}"
+            )
         if self.skeleton_cameras is not None:
             unknown = [c for c in self.skeleton_cameras if c not in self.camera_names]
             if unknown:
@@ -138,6 +147,8 @@ class FileAssignment:
     calibration_takes: dict[str, dict[str, dict[str, Path]]] = field(default_factory=dict)
     # files that couldn't be assigned
     unmatched: list[Path] = field(default_factory=list)
+    # videos left out because they name no listed experiment
+    excluded: list[Path] = field(default_factory=list)
     # warnings generated during classification
     warnings: list[str] = field(default_factory=list)
     # problems that stop execute_setup
@@ -201,7 +212,10 @@ def classify_files(config: SetupConfig) -> FileAssignment:
     data_videos: list[tuple[str, Path]] = []
 
     for f in video_files:
-        camera = _identify_camera(f.name, config.camera_names)
+        if not _in_listed_experiment(f.name, config.experiment_keywords):
+            assignment.excluded.append(f)
+            continue
+        camera = _identify_camera(f.name, config.camera_names, config.camera_aliases)
         if camera is None:
             assignment.unmatched.append(f)
             assignment.warnings.append(
@@ -214,7 +228,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
             data_videos.append((camera, f))
 
     for f in image_files:
-        camera = _identify_camera(f.name, config.camera_names)
+        camera = _identify_camera(f.name, config.camera_names, config.camera_aliases)
         if camera is None:
             assignment.unmatched.append(f)
             continue
@@ -419,7 +433,7 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
         for ref in recorded:
             outcome = _resolve_video_reference(ref, slp_path.parent, search_dirs)
             camera = (
-                _identify_camera_from_path(outcome.path, config.camera_names)
+                _identify_camera_from_path(outcome.path, config.camera_names, config.camera_aliases)
                 if outcome.path is not None
                 else None
             )
@@ -444,6 +458,9 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
                 continue
             seen.add(resolved)
 
+            if not _in_listed_experiment(resolved.name, config.experiment_keywords):
+                assignment.excluded.append(resolved)
+                continue
             if camera is None:
                 assignment.unmatched.append(resolved)
                 assignment.warnings.append(
@@ -492,6 +509,19 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
     return assignment
 
 
+def parse_camera_aliases(items: list[str]) -> dict[str, list[str]]:
+    """camera_aliases from command-line items like "LateralOrtho=Lateral,Lat"."""
+    aliases: dict[str, list[str]] = {}
+    for item in items:
+        camera, sep, names = item.partition("=")
+        if not sep or not camera.strip():
+            raise ValueError(f"Camera alias should be CAMERA=ALIAS[,ALIAS...]: {item!r}")
+        aliases.setdefault(camera.strip(), []).extend(
+            n.strip() for n in names.split(",") if n.strip()
+        )
+    return aliases
+
+
 def config_from_toml(
     config_path: Path, copy_files: bool = False, require_output: bool = True
 ) -> SetupConfig:
@@ -532,6 +562,10 @@ def config_from_toml(
         calib_regex=setup.get("calib_regex", ""),
         calib_match_strategy=setup.get("calib_match_strategy", ""),
         experiment_keywords=setup.get("experiment_keywords", []),
+        camera_aliases={
+            str(cam): [str(a) for a in ([names] if isinstance(names, str) else names)]
+            for cam, names in setup.get("camera_aliases", {}).items()
+        },
         match_strategy=setup.get("match_strategy", "keyword"),
         trial_keyword=setup.get("trial_keyword", "Trial"),
         trial_regex=setup.get("trial_regex", ""),
@@ -615,7 +649,10 @@ def _unreferenced_source_videos(
         resolved = f.resolve()
         if resolved in seen:
             continue
-        camera = _identify_camera_from_path(resolved, config.camera_names)
+        if not _in_listed_experiment(f.name, config.experiment_keywords):
+            assignment.excluded.append(resolved)
+            continue
+        camera = _identify_camera_from_path(resolved, config.camera_names, config.camera_aliases)
         if camera is None:
             assignment.unmatched.append(resolved)
             assignment.warnings.append(_no_camera_warning(f))
@@ -737,7 +774,9 @@ def _find_calibration_videos(
                 continue
             if not _is_calibration(f.name, keywords, config.calib_regex):
                 continue
-            camera = _identify_camera_from_path(f, config.camera_names)
+            if not _in_listed_experiment(f.name, config.experiment_keywords):
+                continue
+            camera = _identify_camera_from_path(f, config.camera_names, config.camera_aliases)
             if camera is not None:
                 found.append((camera, f.resolve()))
     return found
@@ -1054,6 +1093,16 @@ def preview_assignment(
             by_slp = Counter(slp_name for _, slp_name in assignment.missing_videos)
             for slp_name, count in by_slp.items():
                 lines.append(f"  {count} from {slp_name}")
+        lines.append("")
+
+    if assignment.excluded:
+        lines.append(
+            f"Left out: {len(assignment.excluded)} video(s) of experiments not in "
+            "experiment_keywords"
+        )
+        if verbosity >= 2:
+            for f in assignment.excluded:
+                lines.append(f"  {f.name}")
         lines.append("")
 
     # Unmatched
@@ -1595,15 +1644,17 @@ def _resolve_video_reference(
     return ResolvedVideo(None)
 
 
-def _identify_camera_from_path(path: Path, camera_names: list[str]) -> str | None:
+def _identify_camera_from_path(
+    path: Path, camera_names: list[str], aliases: dict[str, list[str]] | None = None
+) -> str | None:
     """Identify a video's camera from its filename, then its parent directory.
 
     The parent directory is the fallback for rigs that write each camera into
     its own folder with filenames that carry no camera token.
     """
-    camera = _identify_camera(path.name, camera_names)
+    camera = _identify_camera(path.name, camera_names, aliases)
     if camera is None:
-        camera = _identify_camera(path.parent.name, camera_names)
+        camera = _identify_camera(path.parent.name, camera_names, aliases)
     return camera
 
 
@@ -1641,16 +1692,21 @@ def _run_match_strategy(
     strategy: str, videos: list[tuple[str, Path]], config: SetupConfig
 ) -> dict[str, dict[str, Path]]:
     """Group (camera, path) pairs into named sets using one matching strategy."""
+    # Names stripped from filenames before looking for the trial key; longest
+    # first, so an alias such as "OffAxisLateral" goes before "Lateral"
+    strip_names = sorted(
+        {*config.camera_names, *(a for names in config.camera_aliases.values() for a in names)},
+        key=len,
+        reverse=True,
+    )
     if strategy == "number":
-        return _match_by_number(videos, config.camera_names)
+        return _match_by_number(videos, strip_names)
     if strategy == "keyword":
         return _match_by_keyword(videos, config.trial_keyword)
     if strategy == "regex":
         return _match_by_regex(videos, config.trial_regex)
     if strategy == "datestamp":
-        return _match_by_datestamp(
-            videos, config.camera_names, config.datestamp_window_sec
-        )
+        return _match_by_datestamp(videos, strip_names, config.datestamp_window_sec)
     if strategy == "mtime":
         return _match_by_mtime(videos, config.camera_names, config.mtime_window_sec)
     raise ValueError(f"Unknown match strategy: {strategy}")
@@ -1731,6 +1787,12 @@ def _match_calibration_takes(
     return takes, unresolved
 
 
+def _in_listed_experiment(filename: str, experiment_keywords: list[str]) -> bool:
+    """True when no experiments are listed, or filename names one of them."""
+    low = filename.lower()
+    return not experiment_keywords or any(kw.lower() in low for kw in experiment_keywords)
+
+
 def _identify_experiment(filename: str, experiment_keywords: list[str]) -> str:
     """Return the first experiment keyword found in filename (case-insensitive), or 'default'."""
     filename_lower = filename.lower()
@@ -1740,28 +1802,34 @@ def _identify_experiment(filename: str, experiment_keywords: list[str]) -> str:
     return "default"
 
 
-def _identify_camera(filename: str, camera_names: list[str]) -> str | None:
+def _identify_camera(
+    filename: str,
+    camera_names: list[str],
+    aliases: dict[str, list[str]] | None = None,
+) -> str | None:
     """Find which camera a filename belongs to by substring match.
+
+    Each camera matches by its name or any of its aliases. When names of
+    different cameras match, the longest wins if every other one is part of it
+    ("cam10" over "cam1", alias "OffAxisLateral" over "Lateral"); otherwise
+    the match is ambiguous.
 
     Returns the camera name, or None if no match / ambiguous match.
     """
     filename_lower = filename.lower()
-    matches = [cam for cam in camera_names if cam.lower() in filename_lower]
-    if len(matches) == 1:
-        return matches[0]
-    if len(matches) > 1:
-        # Try to disambiguate: prefer longer camera name matches
-        matches.sort(key=len, reverse=True)
-        # If the longest match contains a shorter match as a substring,
-        # both would match — keep only the longest
-        # e.g. camera names "cam1" and "cam10": "cam10_trial1.mp4" matches both
-        # but "cam10" is the better match
-        best = matches[0]
-        # Check if the second match is a substring of the first
-        if matches[1].lower() in best.lower():
-            return best
-        # Truly ambiguous
+    names = [(cam, cam) for cam in camera_names]
+    for cam, cam_aliases in (aliases or {}).items():
+        names += [(alias, cam) for alias in cam_aliases]
+    matches = sorted(
+        ((name, cam) for name, cam in names if name.lower() in filename_lower),
+        key=lambda m: len(m[0]),
+        reverse=True,
+    )
+    if not matches:
         return None
+    best, camera = matches[0]
+    if all(cam == camera or name.lower() in best.lower() for name, cam in matches[1:]):
+        return camera
     return None
 
 
