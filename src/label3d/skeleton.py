@@ -169,10 +169,11 @@ def merge_skeletons(skeletons: dict[str, Skeleton], strict: bool = True) -> Skel
 
     Nodes keep the order of the first skeleton, then each later skeleton's new
     nodes in its order. Edges and symmetries are the union, ignoring direction.
+    Skeletons may disagree on edges, which only affect drawing: each camera
+    draws its own skeleton's edges, and the union's are a fallback.
 
     Raises SkeletonConflict listing every conflict:
-    - two skeletons that both have nodes a and b disagree on edge a-b;
-    - ... or on symmetry a-b;
+    - two skeletons that both have nodes a and b disagree on symmetry a-b;
     - a node has more than one symmetry partner in the union.
     With strict=False the union is returned in spite of conflicts.
     """
@@ -193,18 +194,17 @@ def merge_skeletons(skeletons: dict[str, Skeleton], strict: bool = True) -> Skel
     for i, (sk_a, labels_a) in enumerate(groups):
         for sk_b, labels_b in groups[i + 1:]:
             shared = set(sk_a.nodes) & set(sk_b.nodes)
-            for kind, attr in (("edge", "edges"), ("symmetry", "symmetries")):
-                in_a = {p for p in _pair_set(getattr(sk_a, attr)) if p <= shared}
-                in_b = {p for p in _pair_set(getattr(sk_b, attr)) if p <= shared}
-                for pair, has, lacks in (
-                    *((p, labels_a, labels_b) for p in in_a - in_b),
-                    *((p, labels_b, labels_a) for p in in_b - in_a),
-                ):
-                    a, b = sorted(pair, key=sk_a.nodes.index)
-                    conflicts.append(
-                        f"{kind} {a} - {b} is in {_describe(has)} "
-                        f"but not in {_describe(lacks)}"
-                    )
+            in_a = {p for p in _pair_set(sk_a.symmetries) if p <= shared}
+            in_b = {p for p in _pair_set(sk_b.symmetries) if p <= shared}
+            for pair, has, lacks in (
+                *((p, labels_a, labels_b) for p in in_a - in_b),
+                *((p, labels_b, labels_a) for p in in_b - in_a),
+            ):
+                a, b = sorted(pair, key=sk_a.nodes.index)
+                conflicts.append(
+                    f"symmetry {a} - {b} is in {_describe(has)} "
+                    f"but not in {_describe(lacks)}"
+                )
 
     nodes: list[str] = []
     edges: list[tuple[str, str]] = []

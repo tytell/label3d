@@ -95,15 +95,18 @@ class TestMergeSkeletons:
         union = merge_skeletons({"a": FULL, "b": FULL})
         assert union.same_as(FULL)
 
-    def test_edge_conflict(self):
-        no_edge = Skeleton(
-            nodes=FULL.nodes, edges=FULL.edges[:2], symmetries=FULL.symmetries
+    def test_different_edges_are_merged(self):
+        """Edges only affect drawing, so skeletons may disagree on them."""
+        eye_star = Skeleton(
+            nodes=FULL.nodes,
+            edges=[("left_eye", "snout"), ("left_eye", "right_eye"), ("left_eye", "tail")],
+            symmetries=FULL.symmetries,
         )
-        with pytest.raises(SkeletonConflict) as exc:
-            merge_skeletons({"a.slp": FULL, "b.slp": no_edge})
-        assert exc.value.conflicts == [
-            "edge snout - tail is in a.slp but not in b.slp"
-        ]
+        union = merge_skeletons({"a.slp": FULL, "b.slp": eye_star})
+        assert {frozenset(e) for e in union.edges} == {
+            frozenset(e) for e in FULL.edges + eye_star.edges
+        }
+        assert len(union.edges) == 5  # snout - left_eye is in both
 
     def test_edge_to_node_missing_elsewhere_is_fine(self):
         # NO_TAIL lacks tail, so it can't disagree about snout - tail
@@ -131,10 +134,10 @@ class TestMergeSkeletons:
         bare = Skeleton(nodes=FULL.nodes)
         with pytest.raises(SkeletonConflict) as exc:
             merge_skeletons({"a": FULL, "b": bare})
-        assert len(exc.value.conflicts) == 4  # three edges, one symmetry
+        assert len(exc.value.conflicts) == 1  # the symmetry; edges don't conflict
 
     def test_many_identical_labels_shortened(self):
-        bare = Skeleton(nodes=["snout", "tail"])
+        bare = Skeleton(nodes=["left_eye", "right_eye"])
         skeletons = {f"f{i}": FULL for i in range(5)} | {"g": bare}
         with pytest.raises(SkeletonConflict) as exc:
             merge_skeletons(skeletons)
@@ -395,6 +398,11 @@ from tests.test_project_sync import (  # noqa: E402
 )
 
 HEAD_ONLY = Skeleton(nodes=["head"], name="head_only")
+# Conflicts with the sync fixture's skeleton, which has no symmetries
+SYMMETRIC = Skeleton(
+    nodes=SYNC_NODES, edges=[("head", "tail")], symmetries=[("head", "tail")],
+    name="symmetric",
+)
 
 
 def _set_config(project: Project, **sections) -> None:
@@ -463,12 +471,11 @@ class TestProjectSkeletons:
         assert project.skeleton.node_offsets_cm == {"head": [1.0, 2.0, 3.0]}
 
     def test_conflict_is_recorded_not_raised(self, project):
-        no_edge = Skeleton(nodes=SYNC_NODES, name="no_edge")
-        write_slp(project.root / "slp/cam1.slp", no_edge, with_frame=False)
+        write_slp(project.root / "slp/cam1.slp", SYMMETRIC, with_frame=False)
         loaded = Project.load(project.root)
         assert loaded.skeleton_conflicts == [
-            "edge head - tail is in the skeleton assigned to cam0, "
-            "the skeleton assigned to cam1 but not in slp/cam1.slp"
+            "symmetry head - tail is in slp/cam1.slp but not in "
+            "the skeleton assigned to cam0, the skeleton assigned to cam1"
         ]
         assert loaded.skeleton.nodes == SYNC_NODES
         # A later reload with a conflict keeps the skeletons it had
@@ -506,7 +513,8 @@ class TestMappingCheckInProject:
         ]
 
     def test_conflicts_are_problems(self, project):
-        write_slp(project.root / "slp/cam1.slp", Skeleton(nodes=SYNC_NODES), with_frame=False)
+        unnamed = Skeleton(SYNC_NODES, edges=SYMMETRIC.edges, symmetries=SYMMETRIC.symmetries)
+        write_slp(project.root / "slp/cam1.slp", unnamed, with_frame=False)
         project.load_skeletons()
         assert project.skeleton_conflicts
         problems = project.slp_write_problems()
@@ -583,7 +591,7 @@ class TestPreviewAndRemove:
         assert project.skeletons.by_camera["cam1"].nodes == SYNC_NODES
 
     def test_preview_conflict(self, project):
-        preview = project.preview_assignment(Skeleton(nodes=SYNC_NODES), ["cam1"])
+        preview = project.preview_assignment(SYMMETRIC, ["cam1"])
         assert preview.conflicts and preview.skeletons is None
 
     def test_preview_mapping_error(self, project):
@@ -638,7 +646,7 @@ class TestLoadSkeletonDialog:
 
     def test_conflict_disables_ok(self, project, tmp_path):
         dialog = LoadSkeletonDialog(
-            project, _write_json(tmp_path / "x.json", Skeleton(nodes=SYNC_NODES))
+            project, _write_json(tmp_path / "x.json", SYMMETRIC)
         )
         dialog._camera_boxes["cam0"].setChecked(False)
         assert not dialog._ok.isEnabled()

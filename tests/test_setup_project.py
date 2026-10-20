@@ -605,7 +605,7 @@ class TestExecuteSetup:
         assert assignment.skeleton["nodes"] == ["nose", "tail", "fin"]
 
     def test_setup_skeleton_conflicting_with_slp_raises(self, basic_config):
-        basic_config.skeleton = Skeleton(["nose", "tail"], edges=[("nose", "tail")])
+        basic_config.skeleton = Skeleton(["nose", "tail"], symmetries=[("nose", "tail")])
         with pytest.raises(SkeletonConflict, match="in the setup file but not in"):
             classify_files(basic_config)
 
@@ -941,13 +941,17 @@ class TestSlpMatching:
         assert "left.slp (test) has no fin" in summary
         assert "right.slp (test) has no tail" in summary
 
-    def test_conflicting_skeletons_error(self, tmp_path):
-        """Skeletons that disagree on an edge between shared nodes can't be merged."""
+    def test_skeletons_with_different_edges_are_merged(self, tmp_path):
+        """Star skeletons around different centres (as SLEAP makes them) merge."""
+        nodes = ["nose", "eye", "tail"]
         config = self._two_slp_config(
-            tmp_path, ["nose", "tail"], ["nose", "tail"], left_edges=[("nose", "tail")]
+            tmp_path, nodes, nodes, left_edges=[("nose", "eye"), ("nose", "tail")]
         )
-        with pytest.raises(SkeletonConflict, match="edge nose - tail is in left.slp"):
-            classify_files(config)
+        assignment = classify_files(config)
+        assert assignment.skeleton["nodes"] == nodes
+        assert {frozenset(e) for e in assignment.skeleton["edges"]} == {
+            frozenset(("nose", "eye")), frozenset(("nose", "tail"))
+        }
 
     def test_single_slp_covers_multiple_cameras(self, tmp_path):
         """One SLP file referencing videos for two cameras maps to both."""
