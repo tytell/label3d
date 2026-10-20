@@ -22,9 +22,11 @@ def project_copy(tmp_path, qapp):
 @requires_test_project
 class TestCli:
     def test_exports_synthetic_project(self, project_copy, capsys):
-        out = project_copy / "out.csv"
-        assert main([str(project_copy), "-o", str(out)]) == 0
-        df = pd.read_csv(out)
+        """Parquet by default; -o gets the .parquet extension."""
+        assert main([str(project_copy), "-o", str(project_copy / "out.csv")]) == 0
+        out = project_copy / "out.parquet"
+        assert not (project_copy / "out.csv").exists()
+        df = pd.read_parquet(out)
         assert list(df.columns[:5]) == ["experiment", "trial", "frame", "instance", "bodypart"]
         assert {"x.cm", "y.cm", "z.cm"} <= set(df.columns)
         assert not df.duplicated(["experiment", "trial", "frame", "instance", "bodypart"]).any()
@@ -33,8 +35,18 @@ class TestCli:
 
     def test_experiments_option(self, project_copy):
         out = project_copy / "out.csv"
-        assert main([str(project_copy), "-o", str(out), "--experiments", "exp2"]) == 0
+        assert main([str(project_copy), "-o", str(out), "--format", "csv",
+                     "--experiments", "exp2"]) == 0
         assert set(pd.read_csv(out)["experiment"]) == {"exp2"}
+
+    def test_long_layout(self, project_copy):
+        out = project_copy / "out.csv"
+        assert main([str(project_copy), "-o", str(out), "--format", "csv",
+                     "--layout", "long"]) == 0
+        df = pd.read_csv(out)
+        assert list(df.columns[:6]) == ["experiment", "trial", "frame", "instance",
+                                        "bodypart", "view"]
+        assert {"cam1", "cam2", "cam3", "3d"} == set(df["view"])
 
     def test_stale_experiment_fails(self, project_copy, capsys):
         config_path = project_copy / "project.toml"
@@ -44,7 +56,7 @@ class TestCli:
         out = project_copy / "out.csv"
         assert main([str(project_copy), "-o", str(out)]) == 1
         assert "exp1" in capsys.readouterr().err
-        assert not out.exists()
+        assert not out.exists() and not out.with_suffix(".parquet").exists()
 
     def test_missing_project_fails(self, tmp_path):
         assert main([str(tmp_path / "nope")]) == 1

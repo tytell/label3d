@@ -1,18 +1,22 @@
-"""Wide-format export and its pre-flight checks (Phase 13.2)."""
+"""The export, its formats and layouts, and its pre-flight checks (Phases 13.2, 15.4)."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from label3d.export import (
+    LONG_COLUMNS,
     ExportOptions,
     export_columns,
     export_points,
     pending_slp_changes,
     stale_experiments,
     uncalibrated_experiments,
+    with_format_suffix,
 )
 from label3d.geometry import load_cameras, triangulate_trial
 from tests.test_project_sync import (  # noqa: F401  (project is a fixture)
@@ -40,8 +44,78 @@ def calibrated(project):
 
 
 def _export(project, tmp_path, **kwargs):
+    kwargs.setdefault("format", "csv")
     result = export_points(project, ExportOptions(output=tmp_path / "out.csv", **kwargs))
-    return result, pd.read_csv(result.path, dtype={"experiment": str, "trial": str})
+    if result.path.suffix == ".csv":
+        return result, pd.read_csv(result.path, dtype={"experiment": str, "trial": str})
+    return result, pd.read_parquet(result.path)
+
+KEYS = ["experiment", "trial", "frame", "instance", "bodypart"]
+
+
+class TestFormatsAndLayouts:
+    def test_parquet_matches_csv(self, calibrated, tmp_path):
+        _r, csv = _export(calibrated, tmp_path)
+        result, parquet = _export(calibrated, tmp_path, format="parquet")
+        assert result.path == tmp_path / "out.parquet"
+        assert list(parquet.columns) == export_columns(CAMERAS)
+        pd.testing.assert_frame_equal(parquet, csv, check_dtype=False)
+
+    @pytest.mark.parametrize("format", ["csv", "parquet"])
+    def test_long_columns_and_rows(self, calibrated, tmp_path, format):
+        result, out = _export(calibrated, tmp_path, layout="long", format=format)
+        assert list(out.columns) == LONG_COLUMNS
+        n_points = len(TRIALS) * len(BODYPARTS)
+        assert result.n_rows == len(out) == n_points * (len(CAMERAS) + 1)
+        assert list(out["view"].iloc[:len(CAMERAS) + 1]) == [*CAMERAS, "3d"]
+        cams = out[out["view"] != "3d"]
+        assert cams[["z", "n_cameras", "mean_error", "calibration"]].isna().all().all()
+        p3d = out[out["view"] == "3d"]
+        assert p3d[["video_frame", "state", "source", "score", "xr", "yr", "error"]].isna().all().all()
+        assert (p3d["n_cameras"] == len(CAMERAS)).all()
+
+    def test_long_round_trips_to_wide(self, calibrated, tmp_path):
+        calibrated.points.delete_point("t1", 0, 0, "head", "cam1")
+        _triangulate(calibrated)
+        _r, wide = _export(calibrated, tmp_path, format="parquet")
+        _r, long = _export(calibrated, tmp_path, format="parquet", layout="long")
+        long = long.set_index(KEYS + ["view"])
+        for _i, row in wide.iterrows():
+            key = tuple(row[KEYS])
+            for cam in CAMERAS:
+                if pd.isna(row[f"{cam}_state"]):
+                    assert key + (cam,) not in long.index
+                    continue
+                got = long.loc[key + (cam,)]
+                assert got["state"] == row[f"{cam}_state"]
+                for name in ("x", "y", "xr", "yr", "error"):
+                    assert got[name] == pytest.approx(row[f"{cam}_{name}.px"], nan_ok=True)
+                assert got["video_frame"] == row[f"{cam}_video_frame"]
+            if pd.isna(row["x.cm"]):
+                assert key + ("3d",) not in long.index
+            else:
+                got = long.loc[key + ("3d",)]
+                for axis in "xyz":
+                    assert got[axis] == pytest.approx(row[f"{axis}.cm"])
+                assert got["mean_error"] == pytest.approx(row["mean_error.px"])
+
+    def test_suffix_follows_format(self, calibrated, tmp_path):
+        result = export_points(calibrated, ExportOptions(
+            output=tmp_path / "out.csv", format="parquet", write_slp=False))
+        assert result.path == tmp_path / "out.parquet"
+        assert result.path.exists() and not (tmp_path / "out.csv").exists()
+
+    def test_with_format_suffix(self):
+        assert with_format_suffix(Path("a/out.csv"), "parquet") == Path("a/out.parquet")
+        assert with_format_suffix(Path("a/out.PARQUET"), "parquet") == Path("a/out.PARQUET")
+        assert with_format_suffix(Path("a/out"), "csv") == Path("a/out.csv")
+        assert with_format_suffix(Path("a/v1.2"), "csv") == Path("a/v1.2.csv")
+
+    def test_unknown_format_or_layout_raises(self, calibrated, tmp_path):
+        with pytest.raises(ValueError, match="format"):
+            export_points(calibrated, ExportOptions(output=tmp_path / "x", format="xlsx"))
+        with pytest.raises(ValueError, match="layout"):
+            export_points(calibrated, ExportOptions(output=tmp_path / "x", layout="tall"))
 
 
 class TestFormat:
@@ -108,6 +182,7 @@ class TestFormat:
         result = export_points(calibrated, ExportOptions(write_slp=False))
         assert result.path.parent == calibrated.root / "exports"
         assert result.path.name.startswith("points_")
+        assert result.path.suffix == ".parquet"
 
 
 class TestFilters:
@@ -183,3 +258,17 @@ class TestChecks:
         result, _out = _export(calibrated, tmp_path, write_slp=False)
         assert result.slp_files_written is None
         assert not list(calibrated.slp_dir.glob("*.slp"))
+
+
+class TestDialog:
+    def test_format_sets_path_suffix_and_options(self, project, qapp):  # noqa: F811
+        from label3d.widgets.export_dialog import ExportDialog
+
+        dialog = ExportDialog(project)
+        assert dialog._path.text().endswith(".parquet")
+        dialog._format.setCurrentIndex(dialog._format.findData("csv"))
+        assert dialog._path.text().endswith(".csv")
+        dialog._layout.setCurrentIndex(dialog._layout.findData("long"))
+        options = dialog.options()
+        assert (options.format, options.layout) == ("csv", "long")
+        assert options.output.suffix == ".csv"

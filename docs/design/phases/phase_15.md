@@ -2,7 +2,7 @@
 
 **Goal**: Store the project's working tables as Parquet instead of CSV, so they are smaller and faster to read and write, and keep their types. The final export can be written as Parquet or CSV, in the wide layout or a long one.
 
-**Status**: In progress; 15.2 and 15.3 done. This follows from the deferred *scaling of `points.csv`* note in [phase_13.md](phase_13.md#deferred-scaling-of-pointscsv). The BGvPS experiments' `points.csv` files are 94 MB (`BG75`) and 101 MB (`PS21`), and every auto-save, Sync and export reads or writes them in full.
+**Status**: In progress; 15.2–15.4 done. This follows from the deferred *scaling of `points.csv`* note in [phase_13.md](phase_13.md#deferred-scaling-of-pointscsv). The BGvPS experiments' `points.csv` files are 94 MB (`BG75`) and 101 MB (`PS21`), and every auto-save, Sync and export reads or writes them in full.
 
 ---
 
@@ -52,7 +52,7 @@ The temporary-file write is shared by all three files: `parquet_io.write_table(t
 - **Corners (`calibration_io.py`):** `_read_corners_df` and `save_corners` switch to Parquet with the same `CORNER_COLUMNS`. `take` and `detected` are strings, `frame` and `corner_id` int32, and `x, y` float32. `save_corners` already rewrites the whole file, so its logic doesn't change.
 - **Sync history (`project.py`):** `_record_sync` appends with `to_csv(mode="a")`, but Parquet can't be appended to. It reads the history, concatenates the new rows and writes the whole file, with the same temporary-file replace. The file has one row per (sync, experiment, trial), so it stays small.
 
-## 15.4 Export: format and layout (`export.py`, export dialog, CLI)
+## 15.4 Export: format and layout (`export.py`, export dialog, CLI) (done)
 
 `ExportOptions` gains two fields:
 
@@ -67,7 +67,7 @@ The temporary-file write is shared by all three files: `parquet_io.write_table(t
 
 The long table is built from the same per-experiment wide rows (`experiment_rows`) by `wide_to_long(rows, cameras)`, so the two layouts can't disagree. The filters (`include_predictions`, `only_3d`) work as now, before the reshape.
 
-**File extension:** the format sets the extension. `default_output_path(project, format)` gives `exports/points_{timestamp}.parquet` or `.csv`. A user-supplied path with the wrong or no extension gets the right one (`with_suffix`), and the summary shows the final path.
+**File extension:** the format sets the extension. `default_output_path(project, format)` gives `exports/points_{timestamp}.parquet` or `.csv`. A user-supplied path gets the right extension (`with_format_suffix`): another format's extension is replaced, and any other suffix is kept and the extension added (`v1.2` → `v1.2.csv`). The summary shows the final path.
 
 **Dialog (`widgets/export_dialog.py`):** a **Format** choice (Parquet / CSV) and a **Layout** choice (Wide / Long). Changing the format changes the extension in the path field, and the Browse filter follows the format.
 

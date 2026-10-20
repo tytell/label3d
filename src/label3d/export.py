@@ -1,10 +1,14 @@
-"""Export all points to one wide-format CSV (Phase 13.2), without Qt.
+"""Export all points to one Parquet or CSV file (Phases 13.2, 15.4), without Qt.
 
-One row per (experiment, trial, frame, instance, bodypart), as in the points files.
-Each camera has its own block of columns, prefixed with the camera name
-(LateralOrtho_x.px, ...), followed by the 3D point (x.cm, y.cm, z.cm). Units
-follow a dot. Used by File > Export points... and by the label3d-export
-command line tool.
+Wide layout: one row per (experiment, trial, frame, instance, bodypart), as in
+the points files. Each camera has its own block of columns, prefixed with the
+camera name (LateralOrtho_x.px, ...), followed by the 3D point (x.cm, y.cm,
+z.cm). Units follow a dot.
+
+Long layout: one row per (experiment, trial, frame, instance, bodypart, view),
+where view is a camera or "3d"; x and y are px for cameras and cm for 3d.
+
+Used by File > Export points... and by the label3d-export command line tool.
 
 The pre-flight checks (stale_experiments, uncalibrated_experiments,
 pending_slp_changes) are separate, so the dialog can ask about each one;
@@ -22,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 from label3d.geometry import mean_reprojection_errors, triangulation_mask
+from label3d.parquet_io import COMPRESSION
 from label3d.points import INDEX_NAMES, LABELED_STATES, SOURCE_SLEAP_PRED
 from label3d.skeleton import ProjectSkeleton
 from label3d.slp_sync import MergeResult, video_cells
@@ -43,8 +48,16 @@ POINT_3D_COLUMNS = [
 ]
 
 
+FORMATS = {"parquet": ".parquet", "csv": ".csv"}  # format -> file extension
+LAYOUTS = ("wide", "long")
+LONG_COLUMNS = [
+    *INDEX_NAMES, "view", "video_frame", "x", "y", "z", "state", "source", "score",
+    "xr", "yr", "error", "n_cameras", "mean_error", "calibration",
+]
+
+
 def export_columns(cameras: list[str]) -> list[str]:
-    """The CSV's columns, in order, for these cameras."""
+    """The wide layout's columns, in order, for these cameras."""
     return [
         *INDEX_NAMES,
         *(f"{cam}_{name}" for cam in cameras for name in CAMERA_FIELDS),
@@ -58,7 +71,9 @@ class ExportOptions:
     include_predictions: bool = True       # False drops camera points with source sleap_pred
     only_3d: bool = False                  # keep only points that have a 3D point
     write_slp: bool = True                 # also write the mapped SLP files
-    output: Path | None = None             # default: exports/points_{timestamp}.csv
+    output: Path | None = None             # default: exports/points_{timestamp}.{format}
+    format: str = "parquet"                # a key of FORMATS; sets the file extension
+    layout: str = "wide"                   # "wide" or "long"
 
 
 @dataclass
@@ -143,9 +158,20 @@ def describe_slp_changes(results: dict[str, MergeResult]) -> str:
 
 # -- Export ---------------------------------------------------------------------
 
-def default_output_path(project: Project) -> Path:
+def default_output_path(project: Project, format: str = "parquet") -> Path:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return project.root / "exports" / f"points_{stamp}.csv"
+    return project.root / "exports" / f"points_{stamp}{FORMATS[format]}"
+
+
+def with_format_suffix(path: Path, format: str) -> Path:
+    """path with the format's extension, replacing another format's or adding it."""
+    path = Path(path)
+    ext = FORMATS[format]
+    if path.suffix.lower() == ext:
+        return path
+    if path.suffix.lower() in FORMATS.values():
+        return path.with_suffix(ext)
+    return path.with_name(path.name + ext)
 
 
 def export_points(project: Project, options: ExportOptions | None = None) -> ExportResult:
@@ -156,6 +182,10 @@ def export_points(project: Project, options: ExportOptions | None = None) -> Exp
     complete; check pending_slp_changes first.
     """
     options = options or ExportOptions()
+    if options.format not in FORMATS:
+        raise ValueError(f"Unknown format {options.format!r}; choose from {', '.join(FORMATS)}")
+    if options.layout not in LAYOUTS:
+        raise ValueError(f"Unknown layout {options.layout!r}; choose from {', '.join(LAYOUTS)}")
     names = selected_experiments(project, options.experiments)
     stale = stale_experiments(project, names)
     if stale:
@@ -182,13 +212,19 @@ def export_points(project: Project, options: ExportOptions | None = None) -> Exp
             for key, n in project.points_outside(name, project.skeletons).items():
                 result.outside[key] = result.outside.get(key, 0) + n
         result.counts[name] = state_source_counts(rows, cameras)
-        frames.append(rows)
+        frames.append(wide_to_long(rows, cameras) if options.layout == "long" else rows)
 
-    columns = export_columns(cameras)
+    columns = LONG_COLUMNS if options.layout == "long" else export_columns(cameras)
     out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
-    path = Path(options.output) if options.output else default_output_path(project)
+    if options.output:
+        path = with_format_suffix(options.output, options.format)
+    else:
+        path = default_output_path(project, options.format)
     path.parent.mkdir(parents=True, exist_ok=True)
-    out.to_csv(path, index=False)
+    if options.format == "csv":
+        out.to_csv(path, index=False)
+    else:
+        out.to_parquet(path, index=False, compression=COMPRESSION)
     result.path = path
     result.n_rows = len(out)
 
@@ -295,6 +331,34 @@ def experiment_rows(
         keep_row &= has_3d
     rows = keys.assign(**columns)[keep_row]
     return rows.reindex(columns=export_columns(cameras)).reset_index(drop=True)
+
+
+def wide_to_long(rows: pd.DataFrame, cameras: list[str]) -> pd.DataFrame:
+    """The long layout of wide rows: one row per camera point and per 3D point.
+
+    A camera row is written where the camera has a point in the wide rows, a
+    3d row where the 3D point is there. Rows keep the wide order, with each
+    point's cameras first and then 3d.
+    """
+    renames = {f"x.{UNIT_2D}": "x", f"y.{UNIT_2D}": "y", f"xr.{UNIT_2D}": "xr",
+               f"yr.{UNIT_2D}": "yr", f"error.{UNIT_2D}": "error"}
+    parts = []
+    for order, cam in enumerate(cameras):
+        block = rows[INDEX_NAMES + [f"{cam}_{name}" for name in CAMERA_FIELDS]]
+        block = block.set_axis(INDEX_NAMES + [renames.get(n, n) for n in CAMERA_FIELDS], axis=1)
+        block = block[block["state"].notna()]
+        parts.append(block.assign(view=cam, _order=order))
+    block = rows[INDEX_NAMES + POINT_3D_COLUMNS].rename(columns={
+        f"x.{UNIT_3D}": "x", f"y.{UNIT_3D}": "y", f"z.{UNIT_3D}": "z",
+        f"mean_error.{UNIT_2D}": "mean_error",
+    })
+    block = block[block["x"].notna()]
+    parts.append(block.assign(view=VIEW_3D, _order=len(cameras)))
+
+    long = pd.concat(parts)
+    long["_row"] = long.index
+    long = long.sort_values(["_row", "_order"], kind="stable")
+    return long.reindex(columns=LONG_COLUMNS).reset_index(drop=True)
 
 
 def format_summary(result: ExportResult) -> str:

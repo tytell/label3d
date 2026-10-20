@@ -1,7 +1,10 @@
-"""label3d-export: export all points to one CSV without opening the GUI (Phase 13.3).
+"""label3d-export: export all points to one file without opening the GUI (Phase 13.3).
 
-    uv run label3d-export <project> [-o out.csv] [--experiments a,b]
-        [--no-predictions] [--only-3d] [--no-slp]
+    uv run label3d-export <project> [-o out] [--format parquet|csv]
+        [--layout wide|long] [--experiments a,b] [--no-predictions] [--only-3d]
+        [--no-slp]
+
+The format sets the file extension; -o gets it if it has another one.
 
 Exit code 0 when the export is written; 1 when an experiment's 3D points are
 stale, the SLP files hold points label3d doesn't have yet, or loading fails.
@@ -16,6 +19,8 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication
 
 from label3d.export import (
+    FORMATS,
+    LAYOUTS,
     ExportOptions,
     describe_slp_changes,
     export_points,
@@ -31,12 +36,18 @@ from label3d.project import Project
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="label3d-export",
-        description="Export every point of a label3d project to one wide-format CSV "
+        description="Export every point of a label3d project to one Parquet or CSV file "
         "and write the mapped SLP files.",
     )
     parser.add_argument("project", type=Path, help="project folder")
     parser.add_argument("-o", "--output", type=Path,
-                        help="output CSV (default: <project>/exports/points_<timestamp>.csv)")
+                        help="output file; its extension is set by --format "
+                        "(default: <project>/exports/points_<timestamp>.<format>)")
+    parser.add_argument("--format", choices=list(FORMATS), default="parquet",
+                        help="file format (default: parquet)")
+    parser.add_argument("--layout", choices=list(LAYOUTS), default="wide",
+                        help="wide: one row per point; long: one row per point and "
+                        "view (default: wide)")
     parser.add_argument("--experiments", help="comma-separated experiments (default: all)")
     parser.add_argument("--no-predictions", action="store_true",
                         help="leave out SLEAP predictions")
@@ -64,6 +75,8 @@ def main(argv: list[str] | None = None) -> int:
         only_3d=args.only_3d,
         write_slp=not args.no_slp,
         output=args.output,
+        format=args.format,
+        layout=args.layout,
     )
     try:
         stale = stale_experiments(project, experiments)

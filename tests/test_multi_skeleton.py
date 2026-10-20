@@ -973,7 +973,7 @@ class TestPointsOutside:
 
     def test_export_leaves_them_out(self, project, tmp_path):
         project.assign_skeleton(HEAD_ONLY, ["cam1"])
-        result = export_points(project, ExportOptions(output=tmp_path / "out.csv"))
+        result = export_points(project, ExportOptions(output=tmp_path / "out.csv", format="csv"))
         assert result.outside == {("cam1", "tail"): 2}
         rows = pd.read_csv(tmp_path / "out.csv")
         tail = rows[rows["bodypart"] == "tail"]
