@@ -68,6 +68,9 @@ class SetupConfig:
     video_mode: str = ""
     # Extra directories searched when a .slp records a video path that has moved
     video_search_dirs: list[Path] = field(default_factory=list)
+    # SLP-first setup: also take the videos in source_dir that no .slp file
+    # refers to (set when a setup file gives source_dir)
+    include_source_videos: bool = False
     # Pre-existing aniposelib calibration, or a directory to search for one
     calibration_toml: Path | None = None
     calibration_dir: Path | None = None
@@ -448,6 +451,9 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
 
     _merge_slp_skeletons(assignment)
 
+    if config.include_source_videos:
+        data_videos.extend(_unreferenced_source_videos(config, seen, assignment))
+
     assignment.trials = _run_match_strategy(
         config.match_strategy, data_videos, config
     )
@@ -504,6 +510,15 @@ def config_from_toml(
         if setup.get("source_dir")
         else slp_files[0].parent
     )
+    video_search_dirs = [
+        Path(d).expanduser().resolve() for d in setup.get("video_search_dirs", [])
+    ]
+    # Without slp_files, .slp files in source_dir make this an SLP-first setup,
+    # with source_dir also searched for videos that have moved there.
+    if not slp_files and source_dir.is_dir() and any(source_dir.glob(f"*{SLP_EXTENSION}")):
+        slp_files = [source_dir]
+        if source_dir not in video_search_dirs:
+            video_search_dirs.append(source_dir)
 
     return SetupConfig(
         source_dir=source_dir,
@@ -524,9 +539,8 @@ def config_from_toml(
         copy_files=copy_files,
         slp_paths=slp_files,
         video_mode=setup.get("video_mode", "reference" if slp_files else ""),
-        video_search_dirs=[
-            Path(d).expanduser().resolve() for d in setup.get("video_search_dirs", [])
-        ],
+        video_search_dirs=video_search_dirs,
+        include_source_videos=bool(setup.get("source_dir")),
         allow_missing_videos=setup.get("allow_missing_videos", False),
         calibration_toml=(
             Path(setup["calibration_toml"]).expanduser().resolve()
@@ -551,6 +565,35 @@ def config_from_toml(
             else None
         ),
     )
+
+
+def _unreferenced_source_videos(
+    config: SetupConfig, seen: set[Path], assignment: FileAssignment
+) -> list[tuple[str, Path]]:
+    """Data videos in source_dir that no .slp file refers to, as (camera, path).
+
+    Calibration videos are left out; _assign_calibration finds them.
+    """
+    source = Path(config.source_dir)
+    if not source.is_dir():
+        return []
+    keywords = config.effective_calib_keywords()
+    found: list[tuple[str, Path]] = []
+    for f in sorted(source.iterdir()):
+        if not f.is_file() or f.suffix.lower() not in VIDEO_EXTENSIONS:
+            continue
+        if _is_calibration(f.name, keywords, config.calib_regex):
+            continue
+        resolved = f.resolve()
+        if resolved in seen:
+            continue
+        camera = _identify_camera_from_path(resolved, config.camera_names)
+        if camera is None:
+            assignment.unmatched.append(resolved)
+            assignment.warnings.append(f"Video '{f.name}' does not match any camera name")
+            continue
+        found.append((camera, resolved))
+    return found
 
 
 def skeleton_from_setup(table: dict, base_dir: Path | None = None) -> Skeleton:
@@ -677,9 +720,9 @@ def _assign_calibration(
 ) -> None:
     """Attach calibration to each experiment: an existing toml, else videos.
 
-    Searches the directory holding the .slp files, or calibration_dir when one
-    was given. An experiment with neither is left uncalibrated and warned about;
-    the user can calibrate in the app later.
+    Searches source_dir and the directories holding the .slp files, or only
+    calibration_dir when one was given. An experiment with neither is left
+    uncalibrated and warned about; the user can calibrate in the app later.
     """
     experiments = sorted(set(assignment.trial_experiment.values())) or ["default"]
 
@@ -691,7 +734,7 @@ def _assign_calibration(
     dirs = (
         [Path(config.calibration_dir)]
         if config.calibration_dir is not None
-        else sorted({p.parent for p in slp_paths})
+        else sorted({Path(config.source_dir), *(p.parent for p in slp_paths)})
     )
 
     found_toml = _find_calibration_toml(dirs, config.camera_names)

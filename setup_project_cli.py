@@ -24,12 +24,14 @@ Config file format (TOML):
     trial_regex = "([A-Z]+\\d+_\\d+)"  # only for regex strategy
     mtime_window_sec = 60.0      # only for mtime strategy
 
-    # SLP-first setup: give slp_files instead of source_dir
+    # SLP-first setup. Without slp_files, any .slp files in source_dir are used,
+    # along with source_dir's videos that no .slp file refers to.
     slp_files = ["/path/to/labels"]          # .slp files or folders holding them
     video_mode = "reference"                 # "reference" | "copy" | "move"
     video_search_dirs = ["/mnt/videos"]      # searched when a recorded path moved
     allow_missing_videos = false             # true: proceed with the videos that were found
     calibration_toml = "/path/calibration.toml"   # aniposelib file, imported into the registry; or calibration_dir
+                                             # (default: source_dir and the .slp files' folders)
     import_labels = true                     # import SLP labels into points.csv
 
     [project]

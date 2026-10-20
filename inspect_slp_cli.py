@@ -51,7 +51,9 @@ def build_config(args) -> SetupConfig:
             sys.exit("Give either one setup TOML or .slp files/folders, not both")
         config = config_from_toml(tomls[0], require_output=False)
         if not config.slp_paths:
-            sys.exit(f"{tomls[0]} has no slp_files in [setup]")
+            sys.exit(
+                f"{tomls[0]} has no slp_files in [setup] and no .slp files in its source_dir"
+            )
     else:
         if not args.cameras:
             sys.exit("--cameras is required without a setup TOML")

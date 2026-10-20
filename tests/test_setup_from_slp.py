@@ -191,6 +191,34 @@ class TestConfigFromToml:
         assert config.trial_regex == "(Trial\\d+)"
         assert config.output_dir == (source["tmp"] / "proj").resolve()
 
+    def _flat_folder(self, source) -> Path:
+        """The .slp files beside an unlabelled trial and calibration videos."""
+        flat = source["tmp"] / "labels"
+        for cam in CAMERAS:
+            _make_video(flat / f"{cam}_Trial3.mp4")
+            _make_video(flat / f"{cam}_calib.mp4")
+        setup = {"output_dir": str(source["tmp"] / "proj"), "source_dir": str(flat)}
+        path = self._write(source, setup)
+        raw = toml.load(path)
+        del raw["setup"]["slp_files"]
+        path.write_text(toml.dumps(raw))
+        return path
+
+    def test_slp_files_found_in_source_dir(self, source):
+        config = config_from_toml(self._flat_folder(source))
+        assert config.slp_paths == [(source["tmp"] / "labels").resolve()]
+        assert config.include_source_videos
+
+    def test_unreferenced_source_videos_become_trials(self, source):
+        assignment = classify_slp_files(config_from_toml(self._flat_folder(source)))
+        assert sorted(assignment.trials) == ["Trial1", "Trial2", "Trial3"]
+        assert sorted(assignment.trials["Trial3"]) == CAMERAS
+        assert "Trial3" not in assignment.slp_files
+
+    def test_calibration_found_in_source_dir(self, source):
+        assignment = classify_slp_files(config_from_toml(self._flat_folder(source)))
+        assert sorted(assignment.exp_calibration["default"]) == CAMERAS
+
     def test_output_dir_required_by_default(self, source):
         with pytest.raises(KeyError):
             config_from_toml(self._write(source, {}))
