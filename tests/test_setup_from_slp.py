@@ -177,6 +177,21 @@ class TestClassify:
         with pytest.raises(ValueError, match="stray.slp"):
             execute_setup(config, assignment)
 
+    def test_preview_counts_unresolved_without_verbose(self, source, tmp_path):
+        gone = tmp_path / "gone"
+        gone.mkdir()
+        videos = [_make_video(gone / f"cam1_Trial{i}.mp4") for i in (3, 4)]
+        extra = _make_slp(tmp_path / "labels" / "extra.slp", videos)
+        for v in videos:
+            v.unlink()
+        config = _config(source, slp_paths=[*source["slps"], extra])
+        assignment = classify_slp_files(config)
+        brief = preview_assignment(config, assignment, verbose=False)
+        assert "  2 from extra.slp" in brief
+        assert "cam1_Trial3.mp4" not in brief
+        full = preview_assignment(config, assignment)
+        assert full.count("cam1_Trial3.mp4") == 2  # the listing and its warning
+
     def test_slp_files_in_listed_experiments_pass(self, source):
         assignment = classify_slp_files(_config(source, experiment_keywords=["cam"]))
         assert assignment.errors == []

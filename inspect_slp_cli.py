@@ -9,6 +9,9 @@ Usage:
     # the same setup TOML as setup_project_cli.py (output_dir is not needed)
     uv run python inspect_slp_cli.py setup.toml
 
+    # -v lists every reference and warning; without it, long problem lists are counts
+    uv run python inspect_slp_cli.py -v setup.toml
+
     # flags override the TOML, or stand alone with .slp files or folders
     uv run python inspect_slp_cli.py setup.toml --match-strategy number
     uv run python inspect_slp_cli.py labels/ --cameras left,right,bottom \\
@@ -105,8 +108,45 @@ def video_placement(assignment: FileAssignment) -> dict[Path, tuple[str, str]]:
     return placement
 
 
-def report_slp_files(assignment: FileAssignment) -> list[str]:
-    """Each .slp file's video references: found where, which camera and trial."""
+# Without --verbose, a problem list longer than this is given as a count
+MAX_LISTED = 10
+
+
+def _problem(ref, placement) -> str | None:
+    """Why a reference did not end up in a trial, or None if it did."""
+    outcome = ref.resolution
+    if outcome.path is None:
+        return "ambiguous" if outcome.rule == "ambiguous" else "not found"
+    if ref.camera is None:
+        return "no camera match"
+    if outcome.path not in placement:
+        return "not in a trial of a listed experiment"
+    return None
+
+
+def _ref_lines(ref, placement) -> list[str]:
+    """One reference: its recorded path, then where it was found and placed."""
+    outcome = ref.resolution
+    if outcome.path is None:
+        status = "AMBIGUOUS" if outcome.rule == "ambiguous" else "MISSING"
+        lines = [f"    {status:9}  {ref.recorded}"]
+        lines += [f"               could be {c}" for c in outcome.candidates]
+        return lines
+    lines = [f"    ok         {ref.recorded}"]
+    if outcome.rule != "recorded":
+        lines.append(f"               found at {outcome.path}  ({outcome.rule})")
+    camera = ref.camera or "(no camera match)"
+    exp, trial = placement.get(outcome.path, ("-", "(no trial)"))
+    lines.append(f"               camera {camera}, experiment {exp}, trial {trial}")
+    return lines
+
+
+def report_slp_files(assignment: FileAssignment, verbose: bool = False) -> list[str]:
+    """Each .slp file's video references: found where, which camera and trial.
+
+    The references placed in a trial are always listed. Without verbose, each
+    kind of problem with more than MAX_LISTED references is given as a count.
+    """
     placement = video_placement(assignment)
     by_slp: dict[Path, list] = {}
     for ref in assignment.video_refs:
@@ -125,20 +165,20 @@ def report_slp_files(assignment: FileAssignment) -> list[str]:
             f"experiments: {', '.join(experiments) or '-'}; "
             f"trials: {', '.join(t for _, t in trials) or '-'}"
         )
+        problems: dict[str, list] = {}
         for ref in refs:
-            outcome = ref.resolution
-            if outcome.path is None:
-                status = "AMBIGUOUS" if outcome.rule == "ambiguous" else "MISSING"
-                lines.append(f"    {status:9}  {ref.recorded}")
-                for candidate in outcome.candidates:
-                    lines.append(f"               could be {candidate}")
-                continue
-            camera = ref.camera or "(no camera match)"
-            exp, trial = placement.get(outcome.path, ("-", "(no trial)"))
-            lines.append(f"    ok         {ref.recorded}")
-            if outcome.rule != "recorded":
-                lines.append(f"               found at {outcome.path}  ({outcome.rule})")
-            lines.append(f"               camera {camera}, experiment {exp}, trial {trial}")
+            kind = _problem(ref, placement)
+            if kind is None or verbose:
+                lines += _ref_lines(ref, placement)
+            if kind is not None:
+                problems.setdefault(kind, []).append(ref)
+        if not verbose:
+            for kind, kind_refs in problems.items():
+                if len(kind_refs) <= MAX_LISTED:
+                    for ref in kind_refs:
+                        lines += _ref_lines(ref, placement)
+                else:
+                    lines.append(f"    {len(kind_refs)} video(s) {kind} (-v to list)")
         lines.append("")
     return lines
 
@@ -190,6 +230,10 @@ def main() -> None:
         metavar="DIR",
         help="Extra folder to search when a recorded video path has moved (repeatable)",
     )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="List every video reference and warning, not just counts",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
@@ -201,12 +245,12 @@ def main() -> None:
     except (FileNotFoundError, ValueError) as e:
         sys.exit(f"Error: {e}")
 
-    print("\n".join(report_slp_files(assignment)))
+    print("\n".join(report_slp_files(assignment, verbose=args.verbose)))
     print("\n".join(report_folders(assignment)))
     print("-" * 60)
     print("What setup would do:")
     print()
-    print(preview_assignment(config, assignment))
+    print(preview_assignment(config, assignment, verbose=args.verbose))
 
 
 if __name__ == "__main__":

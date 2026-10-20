@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -484,9 +485,7 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
         _check_slp_experiments(config, assignment)
 
     for ref, slp_name in assignment.missing_videos:
-        assignment.warnings.append(
-            f"SLP file '{slp_name}' references video '{ref}' which was not found"
-        )
+        assignment.warnings.append(_missing_video_warning(ref, slp_name))
 
     _assign_calibration(config, assignment, slp_paths)
     _apply_config_skeleton(config, assignment)
@@ -805,8 +804,23 @@ def _assign_calibration(
             )
 
 
-def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
-    """Return a human-readable summary of the file assignment."""
+def _missing_video_warning(ref: Path, slp_name: str) -> str:
+    return f"SLP file '{slp_name}' references video '{ref}' which was not found"
+
+
+# Without verbose, preview_assignment lists at most this many warnings
+PREVIEW_MAX_WARNINGS = 10
+
+
+def preview_assignment(
+    config: SetupConfig, assignment: FileAssignment, verbose: bool = True
+) -> str:
+    """Return a human-readable summary of the file assignment.
+
+    verbose=False counts unresolved references and unmatched files instead of
+    listing them, leaves out the warnings that repeat the unresolved references,
+    and lists at most PREVIEW_MAX_WARNINGS other warnings.
+    """
     lines = []
 
     lines.append(f"Project: {config.project_name or config.output_dir.name}")
@@ -981,22 +995,35 @@ def preview_assignment(config: SetupConfig, assignment: FileAssignment) -> str:
 
     if assignment.missing_videos:
         lines.append(f"Unresolved video references ({len(assignment.missing_videos)}):")
-        for ref, slp_name in assignment.missing_videos:
-            lines.append(f"  {ref}  (from {slp_name})")
+        if verbose:
+            for ref, slp_name in assignment.missing_videos:
+                lines.append(f"  {ref}  (from {slp_name})")
+        else:
+            by_slp = Counter(slp_name for _, slp_name in assignment.missing_videos)
+            for slp_name, count in by_slp.items():
+                lines.append(f"  {count} from {slp_name}")
         lines.append("")
 
     # Unmatched
     if assignment.unmatched:
         lines.append(f"Unmatched files ({len(assignment.unmatched)}):")
-        for f in assignment.unmatched:
-            lines.append(f"  {f.name}")
+        if verbose:
+            for f in assignment.unmatched:
+                lines.append(f"  {f.name}")
     lines.append("")
 
     # Warnings
-    if assignment.warnings:
+    warnings = assignment.warnings
+    if not verbose:
+        repeats = {_missing_video_warning(ref, name) for ref, name in assignment.missing_videos}
+        warnings = [w for w in warnings if w not in repeats]
+    if warnings:
         lines.append("Warnings:")
-        for w in assignment.warnings:
+        shown = warnings if verbose else warnings[:PREVIEW_MAX_WARNINGS]
+        for w in shown:
             lines.append(f"  ! {w}")
+        if len(shown) < len(warnings):
+            lines.append(f"  ... and {len(warnings) - len(shown)} more")
 
     return "\n".join(lines)
 
