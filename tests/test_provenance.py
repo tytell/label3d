@@ -180,7 +180,7 @@ def _clear_camera(project, cam):  # noqa: F811
     df[(cam, "state")] = "not_set"
     df[(cam, "source")] = ""
     project.points.replace_df(df)
-    project.points.to_csv(project.experiments[EXP].root / "points.csv")
+    project.points.to_parquet(project.experiments[EXP].root / "points.parquet")
 
 
 class TestSyncHistory:
@@ -322,26 +322,3 @@ class TestStoreProvenance:
         assert store.get_prev_new_frame("t1", 4) == 0
         assert store.get_prev_new_frame("t1", 0) is None
 
-    def test_old_csv_gets_columns_filled_in(self, tmp_path, qapp):
-        cols = pd.MultiIndex.from_tuples(
-            [("cam0", c) for c in ("x", "y", "xr", "yr", "state")]
-            + [("3d", c) for c in ("x", "y", "z")], names=["view", "coord"],
-        )
-        idx = pd.MultiIndex.from_tuples(
-            [(EXP, "t1", 0, 0, "head"), (EXP, "t1", 0, 0, "tail")],
-            names=["experiment", "trial", "frame", "instance", "bodypart"],
-        )
-        old = pd.DataFrame(
-            [[1, 2, NAN, NAN, "set", NAN, NAN, NAN],
-             [NAN, NAN, NAN, NAN, "not_set", NAN, NAN, NAN]],
-            index=idx, columns=cols,
-        )
-        path = tmp_path / "points.csv"
-        old.to_csv(path)
-        df = PointsStore.read_csv_df(path)
-        assert df.loc[(EXP, "t1", 0, 0, "head"), ("cam0", "source")] == "label3d"
-        assert df.loc[(EXP, "t1", 0, 0, "tail"), ("cam0", "source")] == ""
-        assert df[("cam0", "sync")].isna().all()
-        assert [c for v, c in df.columns if v == "cam0"] == [
-            "x", "y", "xr", "yr", "state", "source", "score", "sync"
-        ]

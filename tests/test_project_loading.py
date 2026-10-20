@@ -79,9 +79,9 @@ class TestMissingOptionalFiles:
         assert proj.skeletons.skeleton_for(("exp1", "trial1", "cam2")).nodes == proj.skeleton.nodes
 
     def test_missing_points_csv_gives_empty_store(self, tmp_path):
-        """No points.csv → an empty store ready to label into, no error raised."""
+        """No points file → an empty store ready to label into, no error raised."""
         _copy_project_without(TEST_PROJECT, tmp_path,
-                               exclude={"experiments/exp1/points.csv"})
+                               exclude={"experiments/exp1/points.parquet"})
         proj = Project.load(tmp_path)
         assert proj.points is not None
         assert proj.points.df.empty
@@ -89,14 +89,14 @@ class TestMissingOptionalFiles:
     def test_missing_points_csv_store_knows_where_to_save(self, tmp_path):
         """The empty store carries the path its first save should write to."""
         _copy_project_without(TEST_PROJECT, tmp_path,
-                               exclude={"experiments/exp1/points.csv"})
+                               exclude={"experiments/exp1/points.parquet"})
         proj = Project.load(tmp_path)
-        assert proj.points._save_path == tmp_path / "experiments/exp1/points.csv"
+        assert proj.points._save_path == tmp_path / "experiments/exp1/points.parquet"
 
     def test_missing_points_csv_store_has_the_experiment_cameras(self, tmp_path):
         """Columns come from the experiment, so points can be set immediately."""
         _copy_project_without(TEST_PROJECT, tmp_path,
-                               exclude={"experiments/exp1/points.csv"})
+                               exclude={"experiments/exp1/points.parquet"})
         proj = Project.load(tmp_path)
         views = set(proj.points.df.columns.get_level_values("view"))
         assert views == set(proj.cameras) | {"3d"}
@@ -145,6 +145,16 @@ class TestLoadErrors:
         f.write_text("hello")
         with pytest.raises(FileNotFoundError):
             Project.load(f)
+
+    @requires_test_project
+    def test_points_csv_refused(self, tmp_path):
+        """A project that still has points.csv and no points.parquet is set up again."""
+        _copy_project_without(TEST_PROJECT, tmp_path,
+                               exclude={"experiments/exp1/points.parquet"})
+        (tmp_path / "experiments/exp1/points.csv").write_text("x\n")
+        with pytest.raises(ValueError, match="points.csv") as exc_info:
+            Project.load(tmp_path)
+        assert "set the project up again" in str(exc_info.value).lower()
 
 
 # ---------------------------------------------------------------------------

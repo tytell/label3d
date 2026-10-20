@@ -39,53 +39,53 @@ class TestPathsWithSpaces:
     def test_save_to_dir_with_spaces(self, qapp, tmp_path):
         spaced_dir = tmp_path / "my project data"
         spaced_dir.mkdir()
-        dest = spaced_dir / "points.csv"
+        dest = spaced_dir / "points.parquet"
         store = make_store_with_point()
-        store.to_csv(dest)
+        store.to_parquet(dest)
         assert dest.exists()
 
     def test_load_from_dir_with_spaces(self, qapp, tmp_path):
         spaced_dir = tmp_path / "my project data"
         spaced_dir.mkdir()
-        dest = spaced_dir / "points.csv"
+        dest = spaced_dir / "points.parquet"
         store = make_store_with_point()
-        store.to_csv(dest)
-        reloaded = PointsStore.from_csv(dest)
+        store.to_parquet(dest)
+        reloaded = PointsStore.from_parquet(dest)
         pt = reloaded.get_point("trial1", 0, 0, "snout", CAMERAS[0])
         assert abs(pt.x - 10.0) < 1e-6
 
     def test_save_filename_with_spaces(self, qapp, tmp_path):
-        dest = tmp_path / "my points file.csv"
+        dest = tmp_path / "my points file.parquet"
         store = make_store_with_point()
-        store.to_csv(dest)
+        store.to_parquet(dest)
         assert dest.exists()
 
     def test_load_filename_with_spaces(self, qapp, tmp_path):
-        dest = tmp_path / "my points file.csv"
+        dest = tmp_path / "my points file.parquet"
         store = make_store_with_point()
-        store.to_csv(dest)
-        reloaded = PointsStore.from_csv(dest)
+        store.to_parquet(dest)
+        reloaded = PointsStore.from_parquet(dest)
         assert len(reloaded.df) > 0
 
     def test_backup_path_with_spaces(self, qapp, tmp_path):
         spaced_dir = tmp_path / "project dir with spaces"
         spaced_dir.mkdir()
-        dest = spaced_dir / "points.csv"
+        dest = spaced_dir / "points.parquet"
         store = make_store_with_point()
-        store.to_csv(dest)
+        store.to_parquet(dest)
         # Mutate and trigger backup
         store.set_point("trial1", 0, 0, "snout", CAMERAS[0], 99.0, 99.0)
         store.save_if_changed()
-        bak = spaced_dir / "points.csv.bak"
+        bak = spaced_dir / "points.parquet.bak"
         assert bak.exists()
 
     def test_nested_dirs_with_spaces(self, qapp, tmp_path):
         nested = tmp_path / "project dir" / "session 01" / "labels"
         nested.mkdir(parents=True)
-        dest = nested / "points.csv"
+        dest = nested / "points.parquet"
         store = make_store_with_point()
-        store.to_csv(dest)
-        reloaded = PointsStore.from_csv(dest)
+        store.to_parquet(dest)
+        reloaded = PointsStore.from_parquet(dest)
         assert len(reloaded.df) == len(store.df)
 
 
@@ -97,18 +97,18 @@ class TestUnicodePaths:
     def test_save_unicode_dir(self, qapp, tmp_path):
         uni_dir = tmp_path / "données"
         uni_dir.mkdir()
-        dest = uni_dir / "points.csv"
+        dest = uni_dir / "points.parquet"
         store = make_store_with_point()
-        store.to_csv(dest)
+        store.to_parquet(dest)
         assert dest.exists()
 
     def test_roundtrip_unicode_dir(self, qapp, tmp_path):
         uni_dir = tmp_path / "données"
         uni_dir.mkdir()
-        dest = uni_dir / "points.csv"
+        dest = uni_dir / "points.parquet"
         store = make_store_with_point()
-        store.to_csv(dest)
-        reloaded = PointsStore.from_csv(dest)
+        store.to_parquet(dest)
+        reloaded = PointsStore.from_parquet(dest)
         pt = reloaded.get_point("trial1", 0, 0, "snout", CAMERAS[0])
         assert abs(pt.x - 10.0) < 1e-6
 
@@ -120,29 +120,29 @@ class TestUnicodePaths:
 class TestPathSeparators:
     def test_posix_path_object(self, qapp, tmp_path):
         """Path objects (which use the OS separator) work correctly."""
-        dest = tmp_path / "sub" / "points.csv"
+        dest = tmp_path / "sub" / "points.parquet"
         dest.parent.mkdir()
         store = make_store_with_point()
-        store.to_csv(dest)
-        reloaded = PointsStore.from_csv(dest)
+        store.to_parquet(dest)
+        reloaded = PointsStore.from_parquet(dest)
         assert len(reloaded.df) > 0
 
     def test_string_path_with_forward_slashes(self, qapp, tmp_path):
         """Explicit forward slashes in string paths — Path() normalises them."""
         sub = tmp_path / "sub"
         sub.mkdir()
-        dest = Path(str(sub) + "/points.csv")
+        dest = Path(str(sub) + "/points.parquet")
         store = make_store_with_point()
-        store.to_csv(dest)
+        store.to_parquet(dest)
         assert dest.exists()
 
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only")
     def test_string_path_with_backslashes_windows(self, qapp, tmp_path):
         sub = tmp_path / "sub"
         sub.mkdir()
-        dest = Path(str(sub) + "\\points.csv")
+        dest = Path(str(sub) + "\\points.parquet")
         store = make_store_with_point()
-        store.to_csv(dest)
+        store.to_parquet(dest)
         assert dest.exists()
 
 
@@ -151,26 +151,26 @@ class TestPathSeparators:
 # ---------------------------------------------------------------------------
 
 class TestErrorHandling:
-    def test_from_csv_missing_file_raises_file_not_found(self, qapp, tmp_path):
-        missing = tmp_path / "does_not_exist.csv"
+    def test_from_parquet_missing_file_raises_file_not_found(self, qapp, tmp_path):
+        missing = tmp_path / "does_not_exist.parquet"
         with pytest.raises(FileNotFoundError) as exc_info:
-            PointsStore.from_csv(missing)
+            PointsStore.from_parquet(missing)
         # Error message should mention the path so the user knows what's missing
         assert str(missing) in str(exc_info.value) or "does_not_exist" in str(exc_info.value)
 
-    def test_from_csv_missing_dir_raises_file_not_found(self, qapp, tmp_path):
-        missing = tmp_path / "no_such_dir" / "points.csv"
+    def test_from_parquet_missing_dir_raises_file_not_found(self, qapp, tmp_path):
+        missing = tmp_path / "no_such_dir" / "points.parquet"
         with pytest.raises((FileNotFoundError, OSError)):
-            PointsStore.from_csv(missing)
+            PointsStore.from_parquet(missing)
 
-    def test_to_csv_missing_dir_raises(self, qapp, tmp_path):
+    def test_to_parquet_missing_dir_raises(self, qapp, tmp_path):
         store = make_store_with_point()
-        missing_dir = tmp_path / "no_such_dir" / "points.csv"
+        missing_dir = tmp_path / "no_such_dir" / "points.parquet"
         with pytest.raises((FileNotFoundError, OSError)):
-            store.to_csv(missing_dir)
+            store.to_parquet(missing_dir)
 
-    def test_to_csv_no_path_raises_value_error(self, qapp):
+    def test_to_parquet_no_path_raises_value_error(self, qapp):
         store = make_store_with_point()
         with pytest.raises(ValueError) as exc_info:
-            store.to_csv()
+            store.to_parquet()
         assert "path" in str(exc_info.value).lower()

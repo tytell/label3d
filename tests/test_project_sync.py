@@ -14,7 +14,14 @@ from aniposelib.cameras import CameraGroup
 
 from label3d.calibration_registry import save_calibration
 from label3d.geometry import load_cameras
-from label3d.points import CAM_COORDS, INDEX_NAMES, THREE_D_COORDS, PointsStore
+from label3d.points import (
+    CAM_COORDS,
+    INDEX_NAMES,
+    THREE_D_COORDS,
+    PointsStore,
+    read_points_df,
+    write_points_file,
+)
 from label3d.project import Project
 from label3d.skeleton import Skeleton
 from label3d.workers.triangulation_worker import AllExperimentsTriangulationWorker
@@ -77,7 +84,7 @@ def project(tmp_path: Path, qapp) -> Project:
     ]}}
     (root / "project.toml").write_text(toml.dumps(config))
 
-    _points_df().to_csv(exp_dir / "points.csv")
+    write_points_file(_points_df(), exp_dir / "points.parquet")
     return Project.load(root)
 
 
@@ -112,7 +119,7 @@ class TestSyncRoundTrip:
         df[("cam1", "y")] = np.nan
         df[("cam1", "state")] = "not_set"
         project.points.replace_df(df)
-        project.points.to_csv(project.experiments[EXP].root / "points.csv")
+        project.points.to_parquet(project.experiments[EXP].root / "points.parquet")
 
         results = project.read_slp_for_sync()
         assert results[EXP].n_new == len(TRIALS) * len(BODYPARTS)
@@ -127,7 +134,7 @@ class TestSyncRoundTrip:
         df = project.points.df.copy()
         df.loc[(EXP, "t1", 0, 0, "head"), ("cam0", "x")] = 999.0
         project.points.replace_df(df)
-        project.points.to_csv(project.experiments[EXP].root / "points.csv")
+        project.points.to_parquet(project.experiments[EXP].root / "points.parquet")
 
         results = project.read_slp_for_sync()
         assert len(results[EXP].conflicts) == 1
@@ -144,7 +151,7 @@ class TestSyncRoundTrip:
         df = project.points.df.copy()
         df.loc[(EXP, "t1", 0, 0, "head"), ("cam0", "x")] = 999.0
         project.points.replace_df(df)
-        project.points.to_csv(project.experiments[EXP].root / "points.csv")
+        project.points.to_parquet(project.experiments[EXP].root / "points.parquet")
 
         results = project.read_slp_for_sync()
         project.apply_merge(results, overwrite=True)
@@ -200,7 +207,7 @@ class TestTriangulateAllExperiments:
         assert store.df[("3d", "x")].notna().all()
         assert store.changed
         store.save_if_changed()
-        saved = PointsStore.read_csv_df(project.experiments[EXP].root / "points.csv")
+        saved = read_points_df(project.experiments[EXP].root / "points.parquet")
         assert saved[("3d", "x")].notna().all()
 
 

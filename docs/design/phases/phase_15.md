@@ -2,7 +2,7 @@
 
 **Goal**: Store the project's working tables as Parquet instead of CSV, so they are smaller and faster to read and write, and keep their types. The final export can be written as Parquet or CSV, in the wide layout or a long one.
 
-**Status**: Planned. This follows from the deferred *scaling of `points.csv`* note in [phase_13.md](phase_13.md#deferred-scaling-of-pointscsv). The BGvPS experiments' `points.csv` files are 94 MB (`BG75`) and 101 MB (`PS21`), and every auto-save, Sync and export reads or writes them in full.
+**Status**: In progress; 15.2 done. This follows from the deferred *scaling of `points.csv`* note in [phase_13.md](phase_13.md#deferred-scaling-of-pointscsv). The BGvPS experiments' `points.csv` files are 94 MB (`BG75`) and 101 MB (`PS21`), and every auto-save, Sync and export reads or writes them in full.
 
 ---
 
@@ -31,18 +31,19 @@ In memory nothing changes: the 5-level row index and the `(view, coord)` column 
 
   | Column | Type |
   |---|---|
-  | `experiment, trial, bodypart` | dictionary-encoded string |
+  | `experiment, trial, bodypart` | string |
   | `frame, instance` | int64 |
-  | `{cam}/x, y, xr, yr, score`, `3d/x, y, z` | float64 |
-  | `{cam}/state, source` | dictionary-encoded string |
-  | `{cam}/sync` | nullable int64 |
+  | `{cam}/x, y, xr, yr, score, sync`, `3d/x, y, z` | float64 |
+  | `{cam}/state, source` | string |
+
+  Parquet dictionary-encodes repeated strings on its own, so the Arrow types are plain strings; dictionary types would come back as pandas Categoricals. `sync` stays float64 as in memory, where NaN means no sync id. `normalize_columns` now also makes the `3d` columns float64, so a store and its file agree.
 
   Because the types are stored, the `astype(str)` fixes in `read_csv_df` for all-digit experiment and trial names are no longer needed.
 - **Row groups:** rows are sorted as now (`sort_points_index`) and written in row groups of about 100k rows, so a reader filtering on `trial` skips the groups it doesn't need. Compression is zstd.
-- **API:**
+- **API (done):**
   - `PointsStore.from_parquet(path)`, `read_points_df(path, trials=None)` and `to_parquet(path)` replace `from_csv`, `read_csv_df` and `to_csv`.
   - `trials=` passes a filter to pyarrow. It is there for `experiment_points_df` and the export, but they can keep reading the whole file until timing (15.6) shows a need.
-- **Safe saves:** `_auto_save` and `save_if_changed` currently rename the file to `.csv.bak` and then write. Instead, they write `points.parquet.tmp`, keep the previous file as `points.parquet.bak`, then `os.replace` the temporary file into place. A crash while writing leaves the old file intact. `Project.clear_unavailable` and `apply_merge`, which write inactive experiments' files, use the same helper (`write_points_file(df, path)`).
+- **Safe saves (done):** `_auto_save` and `save_if_changed` used to rename the file to `.csv.bak` and then write. Now they write `points.parquet.tmp`, keep the previous file as `points.parquet.bak`, then `os.replace` the temporary file into place. A crash while writing leaves the old file intact. `Project.clear_unavailable` and `apply_merge`, which write inactive experiments' files, use the same helper (`write_points_file(df, path)`).
 
 ## 15.3 `corners.parquet` and `sync_history.parquet`
 
@@ -92,6 +93,7 @@ The long table is built from the same per-experiment wide rows (`experiment_rows
 
 ## 15.6 Timing
 
+- **After 15.2:** the same `PS21` points as Parquet are 18.9 MB. Writing takes 0.38 s; reading takes 0.05–0.13 s, and reading one trial (15,025 rows) 0.02 s.
 - **Before:** time reading and writing `points.csv` on BGvPS `PS21`. Measured 2026-10-20: 455,342 rows, 27 columns (3 cameras), 106 MB. Reading with `read_csv_df` takes 0.73 s; writing with `to_csv` takes 4.26 s, and every auto-save, Sync and export of that experiment pays it.
 - **After:** time the same with `points.parquet`, and compare the file sizes.
 - Record the numbers here. If Sync is still slow, the remaining options from the Phase 13 note apply: split the store per trial, or write only the SLP files whose cells changed.

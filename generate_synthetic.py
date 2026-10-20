@@ -22,7 +22,7 @@ Generates:
             │   ├── cam1/<exp>_PreCal_cam1.mp4
             │   ├── ...
             │   └── ground-truth_{timestamp}.toml
-            ├── points.csv
+            ├── points.parquet
             └── videos/
                 ├── cam1_<exp>_trial1.mp4
                 └── ...
@@ -50,6 +50,7 @@ from pathlib import Path
 
 import numpy as np
 
+from label3d.points import POINTS_FILE
 from synthetic import (
     build_cameras,
     compute_body_poses,
@@ -61,7 +62,7 @@ from synthetic import (
     camera_skeleton,
     write_calibration,
     write_flat_folder,
-    write_points_csv,
+    write_points,
     write_project_toml,
     write_slp_files,
     write_trials_csv,
@@ -196,16 +197,16 @@ def main():
         calibrations[exp_name] = calib_entry.id
         print(f"    {calib_entry.path}")
 
-        print("  Writing points.csv...")
-        points_csv_path = experiment_dir / "points.csv"
-        write_points_csv(
+        print("  Writing points.parquet...")
+        points_path = experiment_dir / POINTS_FILE
+        write_points(
             all_pts_3d, all_projected, cameras,
             node_names, trial_name, num_frames,
-            points_csv_path,
+            points_path,
             exp_name,
             missing_nodes,
         )
-        print(f"    {points_csv_path}")
+        print(f"    {points_path}")
 
         # Charuco calibration videos (per-experiment since cameras differ)
         if charuco_cfg and not args.no_charuco:

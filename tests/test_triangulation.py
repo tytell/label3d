@@ -52,7 +52,7 @@ def cameras():
 @pytest.fixture
 def store(qapp):
     """exp1 points with old 3D values everywhere and some bodyparts left with 1 camera."""
-    store = PointsStore.from_csv(EXP_DIR / "points.csv")
+    store = PointsStore.from_parquet(EXP_DIR / "points.parquet")
     df = store.df
     df[("3d", "x")] = OLD
     df[("3d", "y")] = OLD

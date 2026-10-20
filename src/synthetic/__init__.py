@@ -9,7 +9,7 @@ from synthetic.rendering import write_videos
 from synthetic.writers import (
     write_calibration,
     write_flat_folder,
-    write_points_csv,
+    write_points,
     write_project_toml,
     camera_skeleton,
     write_slp_files,
@@ -28,7 +28,7 @@ __all__ = [
     "run_sanity_checks",
     "write_calibration",
     "write_flat_folder",
-    "write_points_csv",
+    "write_points",
     "write_project_toml",
     "camera_skeleton",
     "write_slp_files",

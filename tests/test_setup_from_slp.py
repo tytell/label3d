@@ -14,6 +14,7 @@ import pytest
 import sleap_io as sio
 import toml
 
+from label3d.points import read_points_df
 from label3d.project import Project
 from label3d.setup_project import (
     SetupConfig,
@@ -448,11 +449,11 @@ class TestCalibration:
 
 
 class TestImportLabels:
-    def test_labels_land_in_points_csv(self, source):
+    def test_labels_land_in_points_file(self, source):
         config = _config(source)
         out = execute_setup(config, classify_slp_files(config))
         counts = import_labels(out)
         assert counts.get("default", 0) > 0
-        points = out / "experiments" / "default" / "points.csv"
+        points = out / "experiments" / "default" / "points.parquet"
         assert points.exists()
-        assert "head" in points.read_text()
+        assert "head" in read_points_df(points).index.get_level_values("bodypart")

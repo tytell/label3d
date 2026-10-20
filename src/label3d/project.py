@@ -25,7 +25,14 @@ from label3d.calibration_registry import (
     find_calibration,
     list_calibrations,
 )
-from label3d.points import CAM_COORDS, PointsStore
+from label3d.points import (
+    CAM_COORDS,
+    LEGACY_POINTS_FILE,
+    POINTS_FILE,
+    PointsStore,
+    read_points_df,
+    write_points_file,
+)
 from label3d.skeleton import (
     MappingCheck,
     ProjectSkeleton,
@@ -202,10 +209,19 @@ class Project:
             raise FileNotFoundError(f"trials.csv not found at {trials_path}")
 
         # experiment and trial names are keys everywhere downstream (dict keys,
-        # path components, points.csv index levels), so they must stay strings —
+        # path components, points file index levels), so they must stay strings —
         # an all-digit name like "20260619" is otherwise inferred as int64.
         trials_df = pd.read_csv(trials_path, dtype={"experiment": str, "trial": str})
         cameras = _extract_cameras(trials_df.columns.tolist())
+
+        # --- CSV working files are no longer read; refuse before opening videos ---
+        legacy = _legacy_csv_files(root, trials_df)
+        if legacy:
+            raise ValueError(
+                "This project stores its points as CSV, which label3d no longer reads:\n  "
+                + "\n  ".join(str(p) for p in legacy)
+                + "\nSet the project up again."
+            )
 
         # --- project.toml at project root ---
         # Read before the experiment loop: [video_roots] is needed to resolve
@@ -278,12 +294,12 @@ class Project:
         # --- skeleton.json of older projects moves to project.toml ---
         _migrate_skeleton_json(root, config, cameras)
 
-        # --- points.csv inside active experiment folder ---
+        # --- points file inside active experiment folder ---
         points: PointsStore | None = None
-        points_path = active.root / "points.csv"
+        points_path = active.root / POINTS_FILE
         if points_path.exists():
             try:
-                points = PointsStore.from_csv(points_path)
+                points = PointsStore.from_parquet(points_path)
             except Exception:
                 pass
         else:
@@ -572,7 +588,7 @@ class Project:
         A camera's points are cleared where its skeleton lacks the node; rows
         of nodes in no skeleton are dropped. Uses the project's skeletons
         unless others are given; cameras limits the clearing to those cameras.
-        Each changed points.csv of an inactive experiment is backed up first.
+        Each changed points file of an inactive experiment is backed up first.
         Returns the number of camera points cleared.
         """
         skeletons = self.skeletons if skeletons is None else skeletons
@@ -593,9 +609,7 @@ class Project:
                 self.points.replace_df(cleared)
                 self.points.save_if_changed()
             else:
-                path = exp.root / "points.csv"
-                path.replace(path.with_suffix(".csv.bak"))
-                cleared.to_csv(path)
+                write_points_file(cleared, exp.root / POINTS_FILE)
         return total
 
     def assign_skeleton(self, skeleton: Skeleton, cameras: list[str]) -> bool:
@@ -611,12 +625,12 @@ class Project:
         return self.load_skeletons()
 
     def experiment_points_df(self, experiment: str) -> pd.DataFrame:
-        """Points for an experiment: the live store if active, else its points.csv."""
+        """Points for an experiment: the live store if active, else its points file."""
         if experiment == self.active_experiment and self.points is not None:
             return self.points.df
-        csv_path = self.experiments[experiment].root / "points.csv"
-        if csv_path.exists():
-            return PointsStore.read_csv_df(csv_path)
+        path = self.experiments[experiment].root / POINTS_FILE
+        if path.exists():
+            return read_points_df(path)
         return PointsStore.empty_df(self.cameras)
 
     def read_slp_for_sync(
@@ -760,7 +774,7 @@ class Project:
     def apply_merge(
         self, results: dict[str, MergeResult], overwrite: bool, kind: str = "sync"
     ) -> None:
-        """Store merge results: the active store in memory + points.csv, others to points.csv.
+        """Store merge results: the active store in memory + its file, others to their files.
 
         overwrite=True takes conflicting points from the SLP files.  Merges that
         brought in new points are recorded in sync_history.csv (kind: sync,
@@ -778,12 +792,12 @@ class Project:
                     self.points = PointsStore.create_empty(
                         cameras=self.cameras, bodyparts=[], experiment_name=name
                     )
-                    self.points._save_path = exp.root / "points.csv"
+                    self.points._save_path = exp.root / POINTS_FILE
                 self.points.replace_df(df)
                 self.points.save_if_changed()
             else:
                 exp.root.mkdir(parents=True, exist_ok=True)
-                df.to_csv(exp.root / "points.csv")
+                write_points_file(df, exp.root / POINTS_FILE)
         self._attach_latest_sync()
 
     def write_slp_files(self, mapping: SlpMapping | None = None) -> int:
@@ -835,10 +849,10 @@ class Project:
         self.trials = exp.trials
         self.camera_info = exp.camera_info
         self.has_calibration = exp.has_calibration
-        points_path = exp.root / "points.csv"
+        points_path = exp.root / POINTS_FILE
         if points_path.exists():
             try:
-                self.points = PointsStore.from_csv(points_path)
+                self.points = PointsStore.from_parquet(points_path)
             except Exception:
                 self.points = None
         else:
@@ -1155,6 +1169,20 @@ def check_trial_videos(
     if progress is not None:
         progress(len(cells), len(cells), "Opening project…")
     return check
+
+
+def _legacy_csv_files(root: Path, trials_df: pd.DataFrame) -> list[Path]:
+    """CSV working files of the experiments in trials.csv that have no Parquet file."""
+    if "experiment" in trials_df.columns:
+        names = sorted(trials_df["experiment"].dropna().unique().tolist())
+    else:
+        names = ["default"]
+    found = []
+    for name in names:
+        exp_dir = root / "experiments" / name
+        if (exp_dir / LEGACY_POINTS_FILE).exists() and not (exp_dir / POINTS_FILE).exists():
+            found.append(exp_dir / LEGACY_POINTS_FILE)
+    return found
 
 
 def write_trials_csv(path: Path, trials_df: pd.DataFrame, backup: bool = True) -> None:

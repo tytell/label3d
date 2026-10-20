@@ -1,6 +1,6 @@
 """Export all points to one wide-format CSV (Phase 13.2), without Qt.
 
-One row per (experiment, trial, frame, instance, bodypart), as in points.csv.
+One row per (experiment, trial, frame, instance, bodypart), as in the points files.
 Each camera has its own block of columns, prefixed with the camera name
 (LateralOrtho_x.px, ...), followed by the 3D point (x.cm, y.cm, z.cm). Units
 follow a dot. Used by File > Export points... and by the label3d-export

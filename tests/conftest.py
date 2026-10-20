@@ -57,9 +57,9 @@ def skeleton_json_path() -> Path:
 
 
 @pytest.fixture
-def points_csv_path() -> Path:
+def points_path() -> Path:
     _require_test_project()
-    return TEST_PROJECT / "experiments" / "exp1" / "points.csv"
+    return TEST_PROJECT / "experiments" / "exp1" / "points.parquet"
 
 
 @pytest.fixture
@@ -112,10 +112,10 @@ def empty_store(qapp):
 
 
 @pytest.fixture
-def populated_store(qapp, points_csv_path):
-    """PointsStore loaded from the synthetic test project's points.csv."""
+def populated_store(qapp, points_path):
+    """PointsStore loaded from the synthetic test project's points file."""
     from label3d.points import PointsStore
-    return PointsStore.from_csv(points_csv_path)
+    return PointsStore.from_parquet(points_path)
 
 
 @pytest.fixture

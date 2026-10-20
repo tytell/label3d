@@ -1,4 +1,4 @@
-"""Output writers: calibration registry entry, trials.csv, points.csv, project.toml, .slp files."""
+"""Output writers: calibration registry entry, trials.csv, points.parquet, project.toml, .slp files."""
 
 import shutil
 from pathlib import Path
@@ -9,6 +9,7 @@ import toml
 from aniposelib.cameras import Camera, CameraGroup
 
 from label3d.calibration_registry import CalibrationEntry, registry_dir, save_calibration
+from label3d.points import write_points_file
 
 
 def write_calibration(cameras: dict, experiment_dir: Path) -> CalibrationEntry:
@@ -32,7 +33,7 @@ def write_trials_csv(trial_rows: list[dict], output_path: Path):
     pd.DataFrame(trial_rows).to_csv(output_path, index=False)
 
 
-def write_points_csv(
+def write_points(
     all_pts_3d: list[np.ndarray],
     all_projected: dict[str, list[np.ndarray]],
     cameras: dict,
@@ -43,7 +44,7 @@ def write_points_csv(
     experiment_name: str = "default",
     missing_nodes: dict[str, set[str]] | None = None,
 ):
-    """Write ground-truth points.csv with zero reprojection error.
+    """Write ground-truth points.parquet with zero reprojection error.
 
     Row index is 5-level: (experiment, trial, frame, instance, bodypart).
     missing_nodes (camera -> nodes not in its skeleton) are left not_set.
@@ -96,7 +97,7 @@ def write_points_csv(
         idx_tuples, names=["experiment", "trial", "frame", "instance", "bodypart"]
     )
     df = pd.DataFrame(rows, index=row_idx, columns=col_idx)
-    df.to_csv(output_path)
+    write_points_file(df, output_path)
 
 
 def write_project_toml(
@@ -110,7 +111,7 @@ def write_project_toml(
     """Write project.toml at the project root.
 
     calibrations (experiment -> registry id) is both the active calibration
-    and the one the true 3D points in points.csv correspond to.
+    and the one the true 3D points in points.parquet correspond to.
     node_offsets go to [skeleton.node_offsets_cm]; assigned_skeletons (dicts
     with name, cameras, nodes, edges, symmetries) to [[skeleton.assigned]].
     """

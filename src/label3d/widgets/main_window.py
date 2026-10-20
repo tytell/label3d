@@ -39,7 +39,7 @@ from label3d.workers.triangulation_worker import (
 from label3d.calibration_registry import entry_summary, entry_tree, find_calibration
 from label3d.export import describe_slp_changes, format_summary, stale_experiments
 from label3d.geometry import load_cameras
-from label3d.points import PointsStore
+from label3d.points import POINTS_FILE, PointsStore
 from label3d.project import Project
 from label3d.state import ProjectState
 from label3d.video import FrameProvider
@@ -1263,12 +1263,12 @@ class MainWindow(QMainWindow):
     # -- Triangulate all experiments ------------------------------------------
 
     def _do_triangulate_all_experiments(self) -> None:
-        """Re-triangulate every labeled frame of every experiment and save points.csv."""
+        """Re-triangulate every labeled frame of every experiment and save the points."""
         reply = QMessageBox.question(
             self,
             "Triangulate all experiments?",
             "Re-triangulate every labeled frame in every experiment and write the "
-            "results to each experiment's points.csv?\n\n"
+            "results to each experiment's points file?\n\n"
             "Experiments without an active calibration are skipped.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
@@ -1284,11 +1284,11 @@ class MainWindow(QMainWindow):
         used: dict[str, str | None] = {}
         for name, exp in self._project.experiments.items():
             calib_path = self._project.calibration_path(name)
-            csv_path = exp.root / "points.csv"
+            points_path = exp.root / POINTS_FILE
             if name == self._project.active_experiment and self._project.points is not None:
                 store = self._project.points
-            elif csv_path.exists():
-                store = PointsStore.from_csv(csv_path)
+            elif points_path.exists():
+                store = PointsStore.from_parquet(points_path)
             else:
                 continue
             if calib_path is None:
@@ -1345,7 +1345,7 @@ class MainWindow(QMainWindow):
     # -- SLP startup read ------------------------------------------------------
 
     def _read_slp_on_open(self) -> None:
-        """Read the mapped SLP files into points.csv when a project or experiment opens.
+        """Read the mapped SLP files into the points when a project or experiment opens.
 
         Same read-and-merge as Sync, without the write-back: labels made in
         SLEAP show up straight away, and the SLP files are left alone until the

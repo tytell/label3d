@@ -6,7 +6,7 @@ import warnings
 
 from pandas.errors import PerformanceWarning
 
-from label3d.points import PointsStore
+from label3d.points import PointsStore, write_points_file
 
 BODYPARTS = ["snout", "left_eye", "dorsal"]
 
@@ -36,8 +36,8 @@ def test_bodyparts_keep_skeleton_order():
 
 def test_unsorted_csv_is_sorted_on_load(tmp_path):
     store = _store_with_rows_out_of_order()
-    path = tmp_path / "points.csv"
+    path = tmp_path / "points.parquet"
     df = store.df
-    df.iloc[::-1].to_csv(path)  # write rows in reverse order
-    loaded = PointsStore.from_csv(path)
+    write_points_file(df.iloc[::-1], path)  # write rows in reverse order
+    loaded = PointsStore.from_parquet(path)
     assert loaded.df.index._lexsort_depth >= 4

@@ -1382,11 +1382,11 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
 
 
 def import_labels(project_dir: Path) -> dict[str, int]:
-    """Import the labels of a freshly created project's .slp files into points.csv.
+    """Import the labels of a freshly created project's .slp files into the points files.
 
     Runs the same read/merge path as File > Sync with Sleap, so imported states,
     instance ordering and multi-instance handling match what the app produces.
-    overwrite=True is safe here because points.csv starts empty.
+    overwrite=True is safe here because the points files start empty.
 
     Returns experiment name -> number of imported frames.
     """

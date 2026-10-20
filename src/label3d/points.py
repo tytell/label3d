@@ -12,11 +12,14 @@ accepts it.  A point is *new* when its sync equals the project's latest sync id.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from PySide6.QtCore import QObject, QTimer, Signal
 
 
@@ -33,6 +36,14 @@ INDEX_NAMES = ["experiment", "trial", "frame", "instance", "bodypart"]
 # Levels the index is kept sorted on.  Bodyparts are left in skeleton order,
 # so the lexsort depth is 4: enough for every partial-key .loc lookup.
 SORT_LEVELS = INDEX_NAMES[:4]
+
+# Each experiment's points file. On disk the table is flat: the index levels
+# are ordinary columns and each (view, coord) column is named "view/coord",
+# so tools other than pandas read it as is.
+POINTS_FILE = "points.parquet"
+LEGACY_POINTS_FILE = "points.csv"  # no longer read; a project with one is set up again
+COLUMN_SEP = "/"
+ROW_GROUP_SIZE = 100_000
 
 
 def sort_points_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -141,9 +152,9 @@ class PointsStore(QObject):
         return pd.DataFrame(index=index, columns=columns)
 
     @classmethod
-    def from_csv(cls, path: Path) -> PointsStore:
-        """Load from points.csv."""
-        df = cls.read_csv_df(path)
+    def from_parquet(cls, path: Path) -> PointsStore:
+        """Load from points.parquet."""
+        df = read_points_df(path)
         store = cls(df)
         store._save_path = path
         # Infer experiment name from first row
@@ -151,42 +162,25 @@ class PointsStore(QObject):
         store._experiment_name = str(exp_levels[0]) if len(exp_levels) > 0 else "default"
         return store
 
-    @staticmethod
-    def read_csv_df(path: Path) -> pd.DataFrame:
-        """Read points.csv into a DataFrame (no QObject created; thread-safe)."""
-        df = pd.read_csv(path, header=[0, 1], index_col=[0, 1, 2, 3, 4])
-        df.index.names = INDEX_NAMES
-        # Ensure frame and instance are int
-        # experiment/trial are names, not numbers: all-digit ones ("20260619")
-        # are read as int64 and would not match the strings from trials.csv.
-        df.index = df.index.set_levels(
-            [df.index.levels[0].astype(str),  # experiment
-             df.index.levels[1].astype(str),  # trial
-             df.index.levels[2].astype(int),  # frame
-             df.index.levels[3].astype(int),  # instance
-             df.index.levels[4].astype(str)],  # bodypart
-        )
-        return normalize_columns(df)
-
     @classmethod
     def load_all_experiments(cls, project) -> list[PointsStore]:
-        """Load a PointsStore for each experiment that has a saved points.csv.
+        """Load a PointsStore for each experiment that has a saved points file.
 
-        Skips experiments whose points.csv does not yet exist.
+        Skips experiments whose points file does not yet exist.
         """
         stores = []
         for exp_name, exp_info in project.experiments.items():
-            csv_path = exp_info.root / "points.csv"
-            if csv_path.exists():
-                stores.append(cls.from_csv(csv_path))
+            path = exp_info.root / POINTS_FILE
+            if path.exists():
+                stores.append(cls.from_parquet(path))
         return stores
 
-    def to_csv(self, path: Path | None = None) -> None:
-        """Save to points.csv."""
+    def to_parquet(self, path: Path | None = None) -> None:
+        """Save to points.parquet, keeping the previous file as points.parquet.bak."""
         path = path or self._save_path
         if path is None:
             raise ValueError("No save path specified")
-        self._df.to_csv(path)
+        write_points_file(self._df, path)
         self._save_path = path
         self._changed = False
 
@@ -660,20 +654,12 @@ class PointsStore(QObject):
         self.data_changed.emit()
 
     def _auto_save(self) -> None:
-        if self._changed and self._save_path is not None:
-            # Backup before overwriting
-            bak = self._save_path.with_suffix(".csv.bak")
-            if self._save_path.exists():
-                self._save_path.rename(bak)
-            self.to_csv(self._save_path)
+        self.save_if_changed()
 
     def save_if_changed(self) -> None:
         """Save immediately if there are unsaved changes."""
         if self._changed and self._save_path is not None:
-            bak = self._save_path.with_suffix(".csv.bak")
-            if self._save_path.exists():
-                self._save_path.rename(bak)
-            self.to_csv(self._save_path)
+            self.to_parquet(self._save_path)
 
     # -- Merge -----------------------------------------------------------------
 
@@ -709,6 +695,71 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     for col in columns:
         if col not in df.columns:
             df[col] = np.nan
+    for coord in THREE_D_COORDS:
+        df[("3d", coord)] = pd.to_numeric(df[("3d", coord)], errors="coerce").astype(float)
     return df.reindex(
         columns=pd.MultiIndex.from_tuples(columns, names=["view", "coord"])
     )
+
+
+# -- Points file -------------------------------------------------------------
+
+
+def points_schema(cameras: list[str]) -> pa.Schema:
+    """The flat on-disk schema of a points file with these cameras."""
+    fields = [
+        pa.field("experiment", pa.string()),
+        pa.field("trial", pa.string()),
+        pa.field("frame", pa.int64()),
+        pa.field("instance", pa.int64()),
+        pa.field("bodypart", pa.string()),
+    ]
+    for cam in cameras:
+        for coord in CAM_COORDS:
+            kind = pa.string() if coord in TEXT_COORDS else pa.float64()
+            fields.append(pa.field(f"{cam}{COLUMN_SEP}{coord}", kind))
+    for coord in THREE_D_COORDS:
+        fields.append(pa.field(f"3d{COLUMN_SEP}{coord}", pa.float64()))
+    return pa.schema(fields)
+
+
+def write_points_file(df: pd.DataFrame, path: Path) -> None:
+    """Write a points DataFrame to a Parquet file without risking the old one.
+
+    Writes path.tmp first, then keeps the previous file as path.bak and moves
+    the new one into place, so a failed write leaves the old file as it was.
+    """
+    path = Path(path)
+    cameras = [c for c in df.columns.get_level_values(0).unique() if c != "3d"]
+    columns = [(cam, coord) for cam in cameras for coord in CAM_COORDS]
+    columns += [("3d", coord) for coord in THREE_D_COORDS]
+    flat = df.reindex(columns=pd.MultiIndex.from_tuples(columns)).reset_index()
+    flat.columns = INDEX_NAMES + [f"{view}{COLUMN_SEP}{coord}" for view, coord in columns]
+    table = pa.Table.from_pandas(flat, schema=points_schema(cameras), preserve_index=False)
+
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        pq.write_table(table, tmp, row_group_size=ROW_GROUP_SIZE, compression="zstd")
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    if path.exists():
+        os.replace(path, path.with_name(path.name + ".bak"))
+    os.replace(tmp, path)
+
+
+def read_points_df(path: Path, trials: list[str] | None = None) -> pd.DataFrame:
+    """Read a points file into a DataFrame (no QObject created; thread-safe).
+
+    trials, if given, reads only those trials' rows.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Points file not found: {path}")
+    filters = [("trial", "in", list(trials))] if trials is not None else None
+    flat = pd.read_parquet(path, filters=filters)
+    df = flat.set_index(INDEX_NAMES)
+    df.columns = pd.MultiIndex.from_tuples(
+        [tuple(c.split(COLUMN_SEP, 1)) for c in df.columns], names=["view", "coord"]
+    )
+    return normalize_columns(df)

@@ -1,4 +1,4 @@
-"""SLP file mapping and merge rules for syncing points.csv with SLEAP files.
+"""SLP file mapping and merge rules for syncing the points files with SLEAP files.
 
 The mapping assigns each (experiment, trial, camera) cell — one video — to exactly
 one SLP file.  It is stored in project.toml under [[slp.files]].

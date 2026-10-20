@@ -34,7 +34,7 @@ Config file format (TOML):
     allow_missing_videos = false             # true: proceed with the videos that were found
     calibration_toml = "/path/calibration.toml"   # aniposelib file, imported into the registry; or calibration_dir
                                              # (default: source_dir and the .slp files' folders)
-    import_labels = true                     # import SLP labels into points.csv
+    import_labels = true                     # import SLP labels into the points files
 
     [project]
     name = "my_experiment"
@@ -665,7 +665,7 @@ def main() -> None:
         "--no-import",
         action="store_true",
         default=False,
-        help="Do not import the SLP labels into points.csv",
+        help="Do not import the SLP labels into the points files",
     )
     args = parser.parse_args()
 

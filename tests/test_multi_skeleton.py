@@ -571,7 +571,7 @@ class TestSetupDialogSkeletons:
 # Load skeleton for chosen cameras (phase 14.2)
 # ---------------------------------------------------------------------------
 
-from label3d.points import PointsStore  # noqa: E402
+from label3d.points import PointsStore, read_points_df  # noqa: E402
 from label3d.widgets.load_skeleton_dialog import LoadSkeletonDialog, read_skeleton  # noqa: E402
 
 def _write_json(path: Path, skeleton: Skeleton) -> Path:
@@ -608,7 +608,7 @@ class TestPreviewAndRemove:
         tail = df.xs("tail", level="bodypart")
         assert (tail[("cam1", "state")] == "not_set").all()
         assert (tail[("cam0", "state")] == "set").all()
-        on_disk = PointsStore.read_csv_df(project.experiments[SYNC_EXP].root / "points.csv")
+        on_disk = read_points_df(project.experiments[SYNC_EXP].root / "points.parquet")
         assert (on_disk.xs("tail", level="bodypart")[("cam1", "state")] == "not_set").all()
 
     def test_remove_drops_nodes_in_no_skeleton(self, project):
@@ -703,7 +703,7 @@ def syn_cameras():
 
 @pytest.fixture
 def syn_store(qapp):
-    return PointsStore.from_csv(SYN_EXP / "points.csv")
+    return PointsStore.from_parquet(SYN_EXP / "points.parquet")
 
 
 def _syn_skeletons(**by_camera) -> ProjectSkeleton:

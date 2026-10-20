@@ -11,7 +11,7 @@ import pytest
 import sleap_io as sio
 import toml
 
-from label3d.points import PointsStore
+from label3d.points import PointsStore, read_points_df
 from label3d.project import Project
 from label3d.slp_sync import SlpBlock, SlpFileSpec, SlpMapping, SlpMappingEditor
 
@@ -172,7 +172,7 @@ def _make_project(tmp_path: Path) -> Project:
 def _labeled_project(tmp_path: Path) -> Project:
     project = _make_project(tmp_path)
     store = PointsStore.create_empty(PCAMS, [], experiment_name="exp1")
-    store._save_path = project.experiments["exp1"].root / "points.csv"
+    store._save_path = project.experiments["exp1"].root / "points.parquet"
     store.set_point("t1", 0, 0, "head", "cam1", 10.0, 20.0)
     store.set_point("t1", 0, 0, "tail", "cam1", 30.0, 40.0)
     project.points = store
@@ -213,17 +213,17 @@ class TestProjectApply:
 
         pt = project.points.get_point("t2", 5, 0, "tail", "cam1")
         assert (pt.x, pt.y, pt.state) == (3.0, 4.0, "set")
-        saved = PointsStore.read_csv_df(project.experiments["exp1"].root / "points.csv")
+        saved = read_points_df(project.experiments["exp1"].root / "points.parquet")
         assert ("exp1", "t2", 5, 0, "tail") in saved.index
 
-    def test_other_experiment_written_to_csv(self, qapp, tmp_path):
+    def test_other_experiment_written_to_its_file(self, qapp, tmp_path):
         project = _labeled_project(tmp_path)
         mapping = _per_camera(project)
         project.write_slp_files(mapping)
         _add_user_frame(tmp_path / "slp/cam2.slp", "cam2_exp2_t1.mp4", 3, [[5, 6], [7, 8]])
 
         project.apply_merge(project.read_slp_for_sync(mapping), overwrite=False)
-        df = PointsStore.read_csv_df(project.experiments["exp2"].root / "points.csv")
+        df = read_points_df(project.experiments["exp2"].root / "points.parquet")
         assert df.loc[("exp2", "t1", 3, 0, "head"), ("cam2", "state")] == "set"
 
     def test_conflict_keep_vs_overwrite(self, qapp, tmp_path):

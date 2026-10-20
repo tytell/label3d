@@ -7,9 +7,19 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import pytest
 
-from label3d.points import CAM_COORDS, INDEX_NAMES, THREE_D_COORDS, PointData, PointsStore
+from label3d import points as points_module
+from label3d.points import (
+    CAM_COORDS,
+    INDEX_NAMES,
+    THREE_D_COORDS,
+    PointData,
+    PointsStore,
+    read_points_df,
+    write_points_file,
+)
 from tests.helpers import BODYPARTS, CAMERAS
 
 
@@ -32,30 +42,30 @@ class TestConstruction:
     def test_create_empty_index_names(self, empty_store):
         assert list(empty_store.df.index.names) == INDEX_NAMES
 
-    def test_from_csv_loads(self, populated_store):
+    def test_from_parquet_loads(self, populated_store):
         assert len(populated_store.df) > 0
 
-    def test_from_csv_index_names(self, populated_store):
+    def test_from_parquet_index_names(self, populated_store):
         assert list(populated_store.df.index.names) == INDEX_NAMES
 
-    def test_from_csv_frame_is_int(self, populated_store):
+    def test_from_parquet_frame_is_int(self, populated_store):
         frame_level = populated_store.df.index.get_level_values("frame")
         assert frame_level.dtype == int or np.issubdtype(frame_level.dtype, np.integer)
 
-    def test_from_csv_instance_is_int(self, populated_store):
+    def test_from_parquet_instance_is_int(self, populated_store):
         inst_level = populated_store.df.index.get_level_values("instance")
         assert inst_level.dtype == int or np.issubdtype(inst_level.dtype, np.integer)
 
-    def test_from_csv_numeric_coords_are_float(self, populated_store):
+    def test_from_parquet_numeric_coords_are_float(self, populated_store):
         for cam in populated_store.cameras:
             for coord in ["x", "y", "xr", "yr"]:
                 col = populated_store.df[(cam, coord)]
                 assert pd.api.types.is_float_dtype(col), f"({cam}, {coord}) not float"
 
-    def test_to_csv_roundtrip(self, populated_store, tmp_path):
-        dest = tmp_path / "points_out.csv"
-        populated_store.to_csv(dest)
-        reloaded = PointsStore.from_csv(dest)
+    def test_to_parquet_roundtrip(self, populated_store, tmp_path):
+        dest = tmp_path / "points_out.parquet"
+        populated_store.to_parquet(dest)
+        reloaded = PointsStore.from_parquet(dest)
         # Shape and index
         assert len(reloaded.df) == len(populated_store.df)
         assert list(reloaded.df.index.names) == INDEX_NAMES
@@ -64,13 +74,100 @@ class TestConstruction:
         new_val = reloaded.df.iloc[0][("cam1", "x")]
         assert abs(float(orig_val) - float(new_val)) < 1e-6
 
-    def test_from_csv_file_not_found(self, tmp_path):
+    def test_from_parquet_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError):
-            PointsStore.from_csv(tmp_path / "no_such_file.csv")
+            PointsStore.from_parquet(tmp_path / "no_such_file.parquet")
 
-    def test_to_csv_no_path_raises(self, empty_store):
+    def test_to_parquet_no_path_raises(self, empty_store):
         with pytest.raises(ValueError, match="[Nn]o save path"):
-            empty_store.to_csv()
+            empty_store.to_parquet()
+
+
+
+class TestPointsFile:
+    """The Parquet points file: exact round-trip, flat layout, safe saves."""
+
+    @staticmethod
+    def _varied_store() -> PointsStore:
+        """Every state and source, NaNs, a score and a sync id, all-digit names."""
+        store = PointsStore.create_empty(CAMERAS, BODYPARTS, experiment_name="20260619")
+        df = store.df
+        rows = [("20260619", "12", f, 0, bp) for f in (0, 1) for bp in BODYPARTS]
+        df = df.reindex(pd.MultiIndex.from_tuples(rows, names=INDEX_NAMES))
+        cam = CAMERAS[0]
+        df[(cam, "state")] = ["set", "predicted", "not_visible", "not_set", "set", "predicted"]
+        df[(cam, "source")] = ["label3d", "sleap_pred", "sleap_user", "", "label3d", "sleap_pred"]
+        df[(cam, "x")] = [1.5, 2.5, np.nan, np.nan, 3.0, 4.0]
+        df[(cam, "y")] = [5.0, 6.0, np.nan, np.nan, 7.0, 8.0]
+        df[(cam, "score")] = [np.nan, 0.9, np.nan, np.nan, np.nan, 0.4]
+        df[(cam, "sync")] = [np.nan, 3.0, 2.0, np.nan, np.nan, 3.0]
+        df[("3d", "x")] = [0.1, np.nan, np.nan, np.nan, 0.2, np.nan]
+        for other in CAMERAS[1:]:
+            df[(other, "state")] = "not_set"
+            df[(other, "source")] = ""
+        store.replace_df(points_module.normalize_columns(df))
+        return store
+
+    def test_roundtrip_is_exact(self, qapp, tmp_path):
+        store = self._varied_store()
+        store.to_parquet(tmp_path / "points.parquet")
+        pd.testing.assert_frame_equal(read_points_df(tmp_path / "points.parquet"), store.df)
+
+    def test_empty_store_roundtrips(self, empty_store, tmp_path):
+        empty_store.to_parquet(tmp_path / "points.parquet")
+        back = read_points_df(tmp_path / "points.parquet")
+        assert back.empty
+        assert back.columns.equals(empty_store.df.columns)
+
+    def test_all_digit_names_stay_strings(self, qapp, tmp_path):
+        self._varied_store().to_parquet(tmp_path / "points.parquet")
+        back = read_points_df(tmp_path / "points.parquet")
+        assert set(back.index.get_level_values("experiment")) == {"20260619"}
+        assert set(back.index.get_level_values("trial")) == {"12"}
+
+    def test_file_is_flat(self, qapp, tmp_path):
+        """Readable without pandas: index levels and view/coord are plain columns."""
+        self._varied_store().to_parquet(tmp_path / "points.parquet")
+        names = pq.read_schema(tmp_path / "points.parquet").names
+        assert names[:5] == INDEX_NAMES
+        assert f"{CAMERAS[0]}/state" in names
+        assert names[-3:] == ["3d/x", "3d/y", "3d/z"]
+
+    def test_read_some_trials(self, qapp, tmp_path):
+        store = self._varied_store()
+        df = store.df.rename(index={"12": "13"}, level="trial").iloc[:3]
+        write_points_file(pd.concat([store.df, df]), tmp_path / "points.parquet")
+        back = read_points_df(tmp_path / "points.parquet", trials=["13"])
+        assert set(back.index.get_level_values("trial")) == {"13"}
+        assert len(back) == 3
+
+    def test_backup_holds_previous_contents(self, qapp, tmp_path):
+        dest = tmp_path / "points.parquet"
+        store = self._varied_store()
+        store.to_parquet(dest)
+        before = read_points_df(dest)
+        store.set_point("12", 0, 0, BODYPARTS[0], CAMERAS[1], 9.0, 9.0)
+        store.save_if_changed()
+        pd.testing.assert_frame_equal(read_points_df(tmp_path / "points.parquet.bak"), before)
+        assert read_points_df(dest).loc[("20260619", "12", 0, 0, BODYPARTS[0]), (CAMERAS[1], "x")] == 9.0
+
+    def test_failed_write_leaves_file(self, qapp, tmp_path, monkeypatch):
+        dest = tmp_path / "points.parquet"
+        store = self._varied_store()
+        store.to_parquet(dest)
+        before = dest.read_bytes()
+
+        def fail(table, where, **kwargs):
+            Path(where).write_bytes(b"partial")
+            raise OSError("disk full")
+
+        monkeypatch.setattr(points_module.pq, "write_table", fail)
+        store.set_point("12", 0, 0, BODYPARTS[0], CAMERAS[1], 9.0, 9.0)
+        with pytest.raises(OSError):
+            store.save_if_changed()
+        assert dest.read_bytes() == before
+        assert not (tmp_path / "points.parquet.tmp").exists()
+        assert not (tmp_path / "points.parquet.bak").exists()
 
 
 class TestProperties:
@@ -405,30 +502,30 @@ class TestDirtyAndSave:
         empty_store.set_point("trial1", 0, 0, "snout", "cam1", 1.0, 2.0)
         assert empty_store.changed
 
-    def test_clean_after_to_csv(self, empty_store, tmp_path):
+    def test_clean_after_to_parquet(self, empty_store, tmp_path):
         empty_store.set_point("trial1", 0, 0, "snout", "cam1", 1.0, 2.0)
         assert empty_store.changed
-        empty_store.to_csv(tmp_path / "p.csv")
+        empty_store.to_parquet(tmp_path / "p.parquet")
         assert not empty_store.changed
 
     def test_save_if_changed_writes_file(self, empty_store, tmp_path):
-        dest = tmp_path / "save_test.csv"
+        dest = tmp_path / "save_test.parquet"
         empty_store.set_point("trial1", 0, 0, "snout", "cam1", 1.0, 2.0)
         empty_store._save_path = dest
         empty_store.save_if_changed()
         assert dest.exists()
 
     def test_save_if_changed_creates_backup(self, empty_store, tmp_path):
-        dest = tmp_path / "points.csv"
+        dest = tmp_path / "points.parquet"
         # Write initial file so backup is possible
-        empty_store.to_csv(dest)
+        empty_store.to_parquet(dest)
         # Mutate and save again
         empty_store.set_point("trial1", 0, 0, "snout", "cam1", 1.0, 2.0)
         empty_store.save_if_changed()
-        assert (tmp_path / "points.csv.bak").exists()
+        assert (tmp_path / "points.parquet.bak").exists()
 
     def test_save_if_changed_noop_when_clean(self, empty_store, tmp_path):
-        dest = tmp_path / "points.csv"
+        dest = tmp_path / "points.parquet"
         empty_store._save_path = dest
         empty_store.save_if_changed()  # dirty=False, save_path set — should not write
         assert not dest.exists()
@@ -447,26 +544,26 @@ class TestSpecialCharNames:
     def test_bodypart_with_spaces_csv_roundtrip(self, qapp, tmp_path):
         store = PointsStore.create_empty(["cam1"], ["left front paw", "dorsal fin"])
         store.set_point("trial1", 0, 0, "left front paw", "cam1", 10.0, 20.0)
-        dest = tmp_path / "p.csv"
-        store.to_csv(dest)
-        reloaded = PointsStore.from_csv(dest)
+        dest = tmp_path / "p.parquet"
+        store.to_parquet(dest)
+        reloaded = PointsStore.from_parquet(dest)
         pt = reloaded.get_point("trial1", 0, 0, "left front paw", "cam1")
         assert abs(pt.x - 10.0) < 1e-6
 
     def test_bodypart_with_colon_csv_roundtrip(self, qapp, tmp_path):
         store = PointsStore.create_empty(["cam1"], ["joint:elbow"])
         store.set_point("trial1", 0, 0, "joint:elbow", "cam1", 5.0, 6.0)
-        dest = tmp_path / "p.csv"
-        store.to_csv(dest)
-        reloaded = PointsStore.from_csv(dest)
+        dest = tmp_path / "p.parquet"
+        store.to_parquet(dest)
+        reloaded = PointsStore.from_parquet(dest)
         pt = reloaded.get_point("trial1", 0, 0, "joint:elbow", "cam1")
         assert abs(pt.x - 5.0) < 1e-6
 
     def test_trial_name_with_spaces_csv_roundtrip(self, qapp, tmp_path):
         store = PointsStore.create_empty(["cam1"], ["snout"])
         store.set_point("my trial session 1", 3, 0, "snout", "cam1", 7.0, 8.0)
-        dest = tmp_path / "p.csv"
-        store.to_csv(dest)
-        reloaded = PointsStore.from_csv(dest)
+        dest = tmp_path / "p.parquet"
+        store.to_parquet(dest)
+        reloaded = PointsStore.from_parquet(dest)
         pt = reloaded.get_point("my trial session 1", 3, 0, "snout", "cam1")
         assert abs(pt.x - 7.0) < 1e-6
