@@ -9,20 +9,33 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 
 from aniposelib.boards import merge_rows
+
+from label3d.parquet_io import write_table
 
 logger = logging.getLogger(__name__)
 
 
-# corners.csv columns. One file per camera holds every take's detections;
+# Corners file columns. One file per camera holds every take's detections;
 # `detected` is the time of the detection run that produced a take's rows.
 CORNER_COLUMNS = ["take", "frame", "corner_id", "x", "y", "detected"]
+CORNERS_SCHEMA = pa.schema([
+    pa.field("take", pa.string()),
+    pa.field("frame", pa.int32()),
+    pa.field("corner_id", pa.int32()),
+    pa.field("x", pa.float32()),
+    pa.field("y", pa.float32()),
+    pa.field("detected", pa.string()),
+])
+CORNERS_FILE = "corners.parquet"
+LEGACY_CORNERS_FILE = "corners.csv"  # no longer read; a project with one is set up again
 
 
 def corners_path(cam_dir: Path) -> Path:
     """Path to a camera's corners file."""
-    return cam_dir / "corners.csv"
+    return cam_dir / CORNERS_FILE
 
 
 def _rows_to_df(rows: list[dict], detected: str) -> pd.DataFrame:
@@ -42,15 +55,13 @@ def _rows_to_df(rows: list[dict], detected: str) -> pd.DataFrame:
 
 def _read_corners_df(cam_dir: Path) -> pd.DataFrame | None:
     """The corners file as a DataFrame."""
-    csv_path = corners_path(cam_dir)
-    if not csv_path.exists():
+    path = corners_path(cam_dir)
+    if not path.exists():
         return None
     try:
-        df = pd.read_csv(csv_path, dtype={"take": str})
-    except pd.errors.EmptyDataError:
-        return pd.DataFrame(columns=CORNER_COLUMNS)
+        df = pd.read_parquet(path)
     except Exception as exc:
-        logger.warning("Failed to load corners from %s: %s", csv_path, exc)
+        logger.warning("Failed to load corners from %s: %s", path, exc)
         return None
     return df
 
@@ -76,7 +87,8 @@ def save_corners(
     if old is not None and not old.empty:
         old = old[~old["take"].astype(str).isin(takes)]
         new = pd.concat([old, new], ignore_index=True) if not new.empty else old
-    new.to_csv(corners_path(cam_dir), index=False)
+    table = pa.Table.from_pandas(new[CORNER_COLUMNS], schema=CORNERS_SCHEMA, preserve_index=False)
+    write_table(table, corners_path(cam_dir))
 
 
 def corner_detections(cam_dir: Path) -> dict[str, str]:

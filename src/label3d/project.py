@@ -11,6 +11,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import toml
 
 import logging
@@ -19,12 +20,15 @@ logger = logging.getLogger(__name__)
 from sleap_io.io.slp import read_videos
 
 from label3d.adapters.sleap_adapter import SleapAdapter, basename_lookup
+from label3d.calibration_io import CORNERS_FILE, LEGACY_CORNERS_FILE
 from label3d.calibration_registry import (
     CalibrationEntry,
     camera_dir,
     find_calibration,
     list_calibrations,
+    registry_dir,
 )
+from label3d.parquet_io import write_table
 from label3d.points import (
     CAM_COORDS,
     LEGACY_POINTS_FILE,
@@ -70,6 +74,12 @@ SYNC_HISTORY_COLUMNS = [
     "id", "timestamp", "kind", "experiment", "trial",
     "n_new_user", "n_new_pred", "n_updated_pred", "n_conflicts", "n_frames",
 ]
+SYNC_HISTORY_SCHEMA = pa.schema([
+    (name, pa.string() if name in ("timestamp", "kind", "experiment", "trial") else pa.int64())
+    for name in SYNC_HISTORY_COLUMNS
+])
+SYNC_HISTORY_FILE = "sync_history.parquet"
+LEGACY_SYNC_HISTORY_FILE = "sync_history.csv"  # no longer read; a project with one is set up again
 
 
 @dataclass
@@ -218,7 +228,7 @@ class Project:
         legacy = _legacy_csv_files(root, trials_df)
         if legacy:
             raise ValueError(
-                "This project stores its points as CSV, which label3d no longer reads:\n  "
+                "This project stores its working files as CSV, which label3d no longer reads:\n  "
                 + "\n  ".join(str(p) for p in legacy)
                 + "\nSet the project up again."
             )
@@ -702,15 +712,14 @@ class Project:
 
     @property
     def sync_history_path(self) -> Path:
-        return self.root / "sync_history.csv"
+        return self.root / SYNC_HISTORY_FILE
 
     def sync_history(self) -> pd.DataFrame:
         """All recorded syncs, one row per (sync, experiment, trial) that changed."""
         path = self.sync_history_path
         if not path.exists():
             return pd.DataFrame(columns=SYNC_HISTORY_COLUMNS)
-        df = pd.read_csv(path, dtype={"experiment": str, "trial": str})
-        return df
+        return pd.read_parquet(path)[SYNC_HISTORY_COLUMNS]
 
     def latest_sync_id(self) -> int | None:
         history = self.sync_history()
@@ -753,10 +762,12 @@ class Project:
                     rows.append(row)
         if not rows:
             return
-        path = self.sync_history_path
-        pd.DataFrame(rows, columns=SYNC_HISTORY_COLUMNS).to_csv(
-            path, mode="a", header=not path.exists(), index=False
-        )
+        # Parquet can't be appended to; the history is small, so it is rewritten.
+        new = pd.DataFrame(rows, columns=SYNC_HISTORY_COLUMNS)
+        history = self.sync_history()
+        history = pd.concat([history, new], ignore_index=True) if not history.empty else new
+        table = pa.Table.from_pandas(history, schema=SYNC_HISTORY_SCHEMA, preserve_index=False)
+        write_table(table, self.sync_history_path)
 
     def _attach_latest_sync(self) -> None:
         if self.points is None:
@@ -777,7 +788,7 @@ class Project:
         """Store merge results: the active store in memory + its file, others to their files.
 
         overwrite=True takes conflicting points from the SLP files.  Merges that
-        brought in new points are recorded in sync_history.csv (kind: sync,
+        brought in new points are recorded in the sync history (kind: sync,
         open, close or import), which makes them the latest sync.
         Must be called from the main thread (may create a PointsStore).
         """
@@ -1172,17 +1183,21 @@ def check_trial_videos(
 
 
 def _legacy_csv_files(root: Path, trials_df: pd.DataFrame) -> list[Path]:
-    """CSV working files of the experiments in trials.csv that have no Parquet file."""
+    """CSV working files (points, corners, sync history) that have no Parquet file."""
     if "experiment" in trials_df.columns:
         names = sorted(trials_df["experiment"].dropna().unique().tolist())
     else:
         names = ["default"]
-    found = []
+    pairs = [(root, LEGACY_SYNC_HISTORY_FILE, SYNC_HISTORY_FILE)]
     for name in names:
         exp_dir = root / "experiments" / name
-        if (exp_dir / LEGACY_POINTS_FILE).exists() and not (exp_dir / POINTS_FILE).exists():
-            found.append(exp_dir / LEGACY_POINTS_FILE)
-    return found
+        pairs.append((exp_dir, LEGACY_POINTS_FILE, POINTS_FILE))
+        calibrations = registry_dir(exp_dir)
+        if calibrations.is_dir():
+            pairs += [(d, LEGACY_CORNERS_FILE, CORNERS_FILE)
+                      for d in sorted(calibrations.iterdir()) if d.is_dir()]
+    return [folder / old for folder, old, new in pairs
+            if (folder / old).exists() and not (folder / new).exists()]
 
 
 def write_trials_csv(path: Path, trials_df: pd.DataFrame, backup: bool = True) -> None:

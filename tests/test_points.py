@@ -10,6 +10,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
+from label3d import parquet_io
 from label3d import points as points_module
 from label3d.points import (
     CAM_COORDS,
@@ -161,7 +162,7 @@ class TestPointsFile:
             Path(where).write_bytes(b"partial")
             raise OSError("disk full")
 
-        monkeypatch.setattr(points_module.pq, "write_table", fail)
+        monkeypatch.setattr(parquet_io.pq, "write_table", fail)
         store.set_point("12", 0, 0, BODYPARTS[0], CAMERAS[1], 9.0, 9.0)
         with pytest.raises(OSError):
             store.save_if_changed()

@@ -47,7 +47,7 @@ def dropped_text(dropped: dict[tuple[str, str], int]) -> str:
 class SyncSummaryDialog(QDialog):
     """Table of new points per experiment × trial for one sync.
 
-    rows: the sync_history.csv rows of one sync id.  Rows of the active
+    rows: the sync history rows of one sync id.  Rows of the active
     experiment come first.  "Go to first new frame" closes the dialog with
     go_to_first_new() True; it is disabled when the active experiment has no
     new points.

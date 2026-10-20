@@ -913,7 +913,7 @@ class CalibrationView(QWidget):
         self._all_rows = all_rows
         self._cam_sizes = cam_sizes
 
-        # Save corners for later reload. Each camera's corners.csv holds every
+        # Save corners for later reload. Each camera's corners file holds every
         # take; the takes detected now replace their earlier rows.
         exp_dir = self._project.root / "experiments" / self._project.active_experiment
         take_names = [t.name for t in self._takes]

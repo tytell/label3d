@@ -140,9 +140,9 @@ class TestCornersIO:
 
     def test_single_file(self, tmp_path):
         save_corners(tmp_path, self._rows("PreCal") + self._rows("PostCal"), WHEN)
-        assert corners_path(tmp_path) == tmp_path / "corners.csv"
-        assert sorted(p.name for p in tmp_path.iterdir()) == ["corners.csv"]
-        df = pd.read_csv(tmp_path / "corners.csv")
+        assert corners_path(tmp_path) == tmp_path / "corners.parquet"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["corners.parquet"]
+        df = pd.read_parquet(tmp_path / "corners.parquet")
         assert list(df.columns) == ["take", "frame", "corner_id", "x", "y", "detected"]
 
     def test_round_trip_preserves_take_key(self, tmp_path):

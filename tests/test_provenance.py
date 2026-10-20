@@ -216,6 +216,20 @@ class TestSyncHistory:
         assert project.latest_sync_id() == 1
         assert project.points.get_new_frames("t1") == {0: "user"}
 
+    def test_second_sync_keeps_the_first(self, project):  # noqa: F811
+        project.write_slp_files()
+        _clear_camera(project, "cam1")
+        project.apply_merge(project.read_slp_for_sync(), overwrite=False)
+        project.write_slp_files()
+        _clear_camera(project, "cam0")
+        project.apply_merge(project.read_slp_for_sync(), overwrite=False)
+
+        history = project.sync_history()
+        assert sorted(set(history["id"])) == [1, 2]
+        assert len(history) == 2 * len(TRIALS)
+        assert project.sync_history_path.name == "sync_history.parquet"
+        assert history["trial"].map(type).eq(str).all()
+
     def test_setup_import_marks_nothing_new(self, project):  # noqa: F811
         project.write_slp_files()
         _clear_camera(project, "cam1")

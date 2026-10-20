@@ -2,7 +2,7 @@
 
 **Goal**: Store the project's working tables as Parquet instead of CSV, so they are smaller and faster to read and write, and keep their types. The final export can be written as Parquet or CSV, in the wide layout or a long one.
 
-**Status**: In progress; 15.2 done. This follows from the deferred *scaling of `points.csv`* note in [phase_13.md](phase_13.md#deferred-scaling-of-pointscsv). The BGvPS experiments' `points.csv` files are 94 MB (`BG75`) and 101 MB (`PS21`), and every auto-save, Sync and export reads or writes them in full.
+**Status**: In progress; 15.2 and 15.3 done. This follows from the deferred *scaling of `points.csv`* note in [phase_13.md](phase_13.md#deferred-scaling-of-pointscsv). The BGvPS experiments' `points.csv` files are 94 MB (`BG75`) and 101 MB (`PS21`), and every auto-save, Sync and export reads or writes them in full.
 
 ---
 
@@ -16,7 +16,7 @@
 | `trials.csv` | unchanged | edited by hand |
 | `refined/{id}_points.csv` | unchanged | small provenance record of a refinement, kept with its registry `.toml` |
 
-- **CSV is no longer read.** A project with a `points.csv`, `corners.csv` or `sync_history.csv` but no Parquet file is not converted: `Project.load` raises, naming the files and saying the project has to be set up again. This is how the pre-registry layout is handled. There is no conversion code. Before setting BGvPS up again, run **Sync** in the current version so that every manual label is in the mapped `.slp` files.
+- **CSV is no longer read.** A project with a `points.csv`, `corners.csv` or `sync_history.csv` but no Parquet file is not converted: `Project.load` raises before it opens any video, naming the files and saying the project has to be set up again (`_legacy_csv_files`). This is how the pre-registry layout is handled. There is no conversion code. Before setting BGvPS up again, run **Sync** in the current version so that every manual label is in the mapped `.slp` files.
 - **Dependency:** add `pyarrow` to `pyproject.toml`. It is the pandas Parquet engine, and R's `arrow` package reads the same files.
 - **File names** live in one place, as constants next to their readers: `POINTS_FILE` in `points.py`, `corners_path` in `calibration_io.py` (exists), and `sync_history_path` in `project.py` (exists). The many literal `"points.csv"` paths in `project.py`, `main_window.py`, `setup_project.py` and `synthetic/writers.py` use `POINTS_FILE`.
 
@@ -45,7 +45,9 @@ In memory nothing changes: the 5-level row index and the `(view, coord)` column 
   - `trials=` passes a filter to pyarrow. It is there for `experiment_points_df` and the export, but they can keep reading the whole file until timing (15.6) shows a need.
 - **Safe saves (done):** `_auto_save` and `save_if_changed` used to rename the file to `.csv.bak` and then write. Now they write `points.parquet.tmp`, keep the previous file as `points.parquet.bak`, then `os.replace` the temporary file into place. A crash while writing leaves the old file intact. `Project.clear_unavailable` and `apply_merge`, which write inactive experiments' files, use the same helper (`write_points_file(df, path)`).
 
-## 15.3 `corners.parquet` and `sync_history.parquet`
+## 15.3 `corners.parquet` and `sync_history.parquet` (done)
+
+The temporary-file write is shared by all three files: `parquet_io.write_table(table, path, backup=False)`. Only the points file keeps a `.bak`.
 
 - **Corners (`calibration_io.py`):** `_read_corners_df` and `save_corners` switch to Parquet with the same `CORNER_COLUMNS`. `take` and `detected` are strings, `frame` and `corner_id` int32, and `x, y` float32. `save_corners` already rewrites the whole file, so its logic doesn't change.
 - **Sync history (`project.py`):** `_record_sync` appends with `to_csv(mode="a")`, but Parquet can't be appended to. It reads the history, concatenates the new rows and writes the whole file, with the same temporary-file replace. The file has one row per (sync, experiment, trial), so it stays small.

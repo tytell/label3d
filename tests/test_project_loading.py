@@ -147,6 +147,18 @@ class TestLoadErrors:
             Project.load(f)
 
     @requires_test_project
+    @pytest.mark.parametrize("legacy", [
+        "sync_history.csv",
+        "experiments/exp1/calibrations/cam1/corners.csv",
+    ])
+    def test_other_csv_working_files_refused(self, tmp_path, legacy):
+        _copy_project_without(TEST_PROJECT, tmp_path, exclude=set())
+        (tmp_path / legacy).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / legacy).write_text("x\n")
+        with pytest.raises(ValueError, match=legacy.rsplit("/", 1)[-1]):
+            Project.load(tmp_path)
+
+    @requires_test_project
     def test_points_csv_refused(self, tmp_path):
         """A project that still has points.csv and no points.parquet is set up again."""
         _copy_project_without(TEST_PROJECT, tmp_path,

@@ -52,7 +52,7 @@ def registry_dir(exp_dir: Path) -> Path:
 
 
 def camera_dir(exp_dir: Path, camera: str) -> Path:
-    """Folder of one camera's calibration videos and corners.csv."""
+    """Folder of one camera's calibration videos and corners file."""
     return registry_dir(exp_dir) / camera
 
 

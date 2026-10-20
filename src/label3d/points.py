@@ -12,15 +12,15 @@ accepts it.  A point is *new* when its sync equals the project's latest sync id.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 from PySide6.QtCore import QObject, QTimer, Signal
+
+from label3d.parquet_io import write_table
 
 
 CAM_COORDS = ["x", "y", "xr", "yr", "state", "source", "score", "sync"]
@@ -736,16 +736,7 @@ def write_points_file(df: pd.DataFrame, path: Path) -> None:
     flat = df.reindex(columns=pd.MultiIndex.from_tuples(columns)).reset_index()
     flat.columns = INDEX_NAMES + [f"{view}{COLUMN_SEP}{coord}" for view, coord in columns]
     table = pa.Table.from_pandas(flat, schema=points_schema(cameras), preserve_index=False)
-
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        pq.write_table(table, tmp, row_group_size=ROW_GROUP_SIZE, compression="zstd")
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-    if path.exists():
-        os.replace(path, path.with_name(path.name + ".bak"))
-    os.replace(tmp, path)
+    write_table(table, path, backup=True, row_group_size=ROW_GROUP_SIZE)
 
 
 def read_points_df(path: Path, trials: list[str] | None = None) -> pd.DataFrame:
