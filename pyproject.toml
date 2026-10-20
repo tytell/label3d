@@ -17,6 +17,7 @@ dependencies = [
     "toml>=0.10.2",
     "pyqtgraph>=0.13",
     "pyopengl>=3.1.10",
+    "pyarrow>=26.0.0",
 ]
 
 [project.scripts]

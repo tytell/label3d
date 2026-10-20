@@ -92,7 +92,7 @@ The long table is built from the same per-experiment wide rows (`experiment_rows
 
 ## 15.6 Timing
 
-- **Before:** time reading and writing `points.csv` on BGvPS `PS21`.
+- **Before:** time reading and writing `points.csv` on BGvPS `PS21`. Measured 2026-10-20: 455,342 rows, 27 columns (3 cameras), 106 MB. Reading with `read_csv_df` takes 0.73 s; writing with `to_csv` takes 4.26 s, and every auto-save, Sync and export of that experiment pays it.
 - **After:** time the same with `points.parquet`, and compare the file sizes.
 - Record the numbers here. If Sync is still slow, the remaining options from the Phase 13 note apply: split the store per trial, or write only the SLP files whose cells changed.
 
