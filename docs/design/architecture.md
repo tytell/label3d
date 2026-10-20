@@ -149,9 +149,9 @@ label3d/
 
 4. **Playback**: Frame-step only — no video playback.
 
-5. **Point storage**: Raw pixel coordinates stored in `points.csv`. Undistortion applied on the fly for geometry — never stored. Preserves fidelity and allows recalculation if calibration is updated.
+5. **Point storage**: Raw pixel coordinates stored in `points.parquet`. Undistortion applied on the fly for geometry — never stored. Preserves fidelity and allows recalculation if calibration is updated.
 
-6. **Always hierarchical layout**: All projects use `experiments/{name}/` subfolders. A single-experiment project has exactly one subfolder (`experiments/default/`). Each experiment has a calibration registry (`calibrations/`) with exactly one active entry. `.slp` files are global at project root. `points.csv` is per-experiment with 5-level row index.
+6. **Always hierarchical layout**: All projects use `experiments/{name}/` subfolders. A single-experiment project has exactly one subfolder (`experiments/default/`). Each experiment has a calibration registry (`calibrations/`) with exactly one active entry. `.slp` files are global at project root. `points.parquet` is per-experiment with 5-level row index.
 
 7. **Trial names are local to each experiment**: The global `trials.csv` `experiment` column disambiguates — `Trial1` in `PS18` is distinct from `Trial1` in `PS19`.
 

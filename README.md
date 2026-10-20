@@ -8,4 +8,4 @@ A desktop app for labelling 3D points across synchronized, calibrated camera vie
 
 Launch with `uv run label3d <project folder>`.
 
-Export every point to one CSV without opening the app with `uv run label3d-export <project folder>` (options: `uv run label3d-export --help`). The columns are listed in [the workflow guide](docs/user_workflow.md#export-columns).
+Export every point to one Parquet or CSV file without opening the app with `uv run label3d-export <project folder>` (options: `uv run label3d-export --help`). The columns are listed in [the workflow guide](docs/user_workflow.md#export-columns).

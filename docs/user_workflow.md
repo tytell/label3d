@@ -11,7 +11,7 @@ This guide walks through a label3d project from start to finish. You label point
 5. Bring the predictions back into label3d, review them, correct or add labels, and sync again. Repeat steps 4–5 until the model is good enough.
 6. Run the final model on every frame, then triangulate and export.
 
-label3d keeps your labels in each experiment's `points.csv`. The `.slp` files in the project's `slp/` folder are copies of those labels that SLEAP can read. **Sync with Sleap** keeps the two in step.
+label3d keeps your labels in each experiment's `points.parquet`. The `.slp` files in the project's `slp/` folder are copies of those labels that SLEAP can read. **Sync with Sleap** keeps the two in step.
 
 ## 1. Set up a project
 
@@ -122,7 +122,7 @@ Once the model is good enough:
 
 ## 7. Export
 
-**File > Export points...** writes every point, from all experiments, to one CSV. It also writes the current points into the SLP files, as **Sync** does.
+**File > Export points...** writes every point, from all experiments, to one file, as Parquet or CSV. It also writes the current points into the SLP files, as **Sync** does.
 
 It is greyed out while any experiment's 3D points come from a calibration other than its active one. Hover over it to see which; then use **Instances > Triangulate all experiments...**.
 
@@ -131,27 +131,33 @@ The dialog has:
 - **Experiments:** all are checked by default.
 - **Include predictions:** on by default. Off leaves out SLEAP predictions. Every prediction is exported whatever its score; use the `score` column to filter them afterwards.
 - **Only points with 3D:** off by default.
-- **Output file:** by default `exports/points_{date-time}.csv` in the project folder.
+- **Format:** Parquet (the default) or CSV. Parquet files are much smaller and keep each column's type; R, Python and many viewers read them (see [Opening the files](#opening-the-files)). The format sets the file's extension.
+- **Layout:** **Wide** (the default) has one row per point, with a block of columns for each camera. **Long** has one row per point in each camera, plus one row for its 3D point. See [Export columns](#export-columns).
+- **Output file:** by default `exports/points_{date-time}.parquet` in the project folder.
 
 When you click **Export**:
 
 - **Experiments without an active calibration:** label3d warns you and, if you choose **Export anyway**, exports only their 2D points.
 - **New points in the SLP files:** if the SLP files have points that label3d doesn't have yet (for example, predictions saved from the SLEAP GUI), label3d says so and exports nothing. Run **Sync with Sleap**, triangulate, then export again.
-- Otherwise it writes the CSV and the SLP files, then shows how many rows it wrote and the points per experiment by state and source.
+- Otherwise it writes the file and the SLP files, then shows how many rows it wrote and the points per experiment by state and source.
 
 ### From the command line
 
 After a large inference job you can export without opening the app:
 
 ```
-uv run label3d-export <project folder> [-o out.csv] [--experiments a,b] [--no-predictions] [--only-3d] [--no-slp]
+uv run label3d-export <project folder> [-o out] [--format parquet|csv] [--layout wide|long] [--experiments a,b] [--no-predictions] [--only-3d] [--no-slp]
 ```
+
+It writes Parquet in the wide layout unless you ask otherwise. `-o` gets the extension of the format, so `-o out.csv` without `--format csv` writes `out.parquet`.
 
 It runs the same checks. It stops with an error (exit code 1) if an experiment's 3D points are out of date or the SLP files have new points. It doesn't triangulate, so run **Triangulate all experiments** in label3d first. `--no-slp` skips the SLP files entirely.
 
 ### Export columns
 
-One row per point: experiment, trial, frame, instance and bodypart, as in `points.csv`. Each camera has its own set of columns, named with the camera as a prefix (for example `LateralOrtho_x.px`), followed by the 3D point. Units follow a dot: `.px` for pixels, `.cm` for the 3D coordinates. The columns are always in this order.
+#### Wide layout
+
+One row per point: experiment, trial, frame, instance and bodypart, as in the project's points files. Each camera has its own set of columns, named with the camera as a prefix (for example `LateralOrtho_x.px`), followed by the 3D point. Units follow a dot: `.px` for pixels, `.cm` for the 3D coordinates. The columns are always in this order.
 
 | Column | Meaning |
 |---|---|
@@ -168,6 +174,33 @@ One row per point: experiment, trial, frame, instance and bodypart, as in `point
 | `calibration` | the id of the calibration used |
 
 A camera's columns are empty where it has no point. The 3D columns are empty for a point seen by fewer than two cameras, or in an experiment without a calibration. Points never placed in any camera are left out. **Include predictions** off empties the prediction cells but keeps the 3D point, which may have used them; `n_cameras` and `mean_error.px` always describe the triangulation.
+
+#### Long layout
+
+One row per point in each camera, and one more for its 3D point. The `view` column says which: a camera name, or `3d`. The columns are always in this order:
+
+| Column | Camera rows | `3d` rows |
+|---|---|---|
+| `experiment`, `trial`, `frame`, `instance`, `bodypart` | which point | which point |
+| `view` | the camera | `3d` |
+| `video_frame` | the frame in that camera's video | empty |
+| `x`, `y` | the point, in pixels | the 3D point, in cm |
+| `z` | empty | the 3D point, in cm |
+| `state`, `source`, `score` | as in the wide layout | empty |
+| `xr`, `yr`, `error` | reprojection and its error, in pixels | empty |
+| `n_cameras`, `mean_error`, `calibration` | empty | as in the wide layout; `mean_error` in pixels |
+
+A camera has a row only where it has a point, and a point has a `3d` row only where it was triangulated. Each point's camera rows come first, then its `3d` row. The same rules as the wide layout decide what is left out.
+
+### Opening the files
+
+Parquet files open in most data tools:
+
+- **Python:** `pandas.read_parquet("points_….parquet")`
+- **R:** `arrow::read_parquet("points_….parquet")`, or `arrow::open_dataset()` to filter with dplyr before reading it all in
+- **Viewers:** [Tad](https://www.tadviewer.com) or the DuckDB UI (`duckdb -ui`) let you browse and sort a file without writing code.
+
+The project's own working files are Parquet too: each experiment's `points.parquet`, each camera's `corners.parquet` and the project's `sync_history.parquet`. They open the same way, but change them only through label3d. In `points.parquet` each camera column is named `camera/coordinate`, for example `LateralOrtho/x`.
 
 ## Keyboard reference for review
 

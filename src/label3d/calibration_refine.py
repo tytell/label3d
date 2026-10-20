@@ -176,7 +176,7 @@ def save_points_record(
     """Write every camera observation that went into a refinement.
 
     The x/y are copied rather than referenced, so the file still describes the
-    fit after points.csv is edited or re-synced. Source and score are looked
+    fit after the points are edited or re-synced. Source and score are looked
     up in points_df.
     """
     df = _experiment_rows(points_df, None).reindex(index)

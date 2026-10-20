@@ -2,7 +2,7 @@
 
 **Goal**: Store the project's working tables as Parquet instead of CSV, so they are smaller and faster to read and write, and keep their types. The final export can be written as Parquet or CSV, in the wide layout or a long one.
 
-**Status**: In progress; 15.2–15.4 done. This follows from the deferred *scaling of `points.csv`* note in [phase_13.md](phase_13.md#deferred-scaling-of-pointscsv). The BGvPS experiments' `points.csv` files are 94 MB (`BG75`) and 101 MB (`PS21`), and every auto-save, Sync and export reads or writes them in full.
+**Status**: Code, tests and docs done; to be checked in the app (open a project set up again, label, Sync, export in both formats and layouts) before marking complete. This follows from the deferred *scaling of `points.csv`* note in [phase_13.md](phase_13.md#deferred-scaling-of-pointscsv). The BGvPS experiments' `points.csv` files are 94 MB (`BG75`) and 101 MB (`PS21`), and every auto-save, Sync and export reads or writes them in full.
 
 ---
 
@@ -93,14 +93,14 @@ The long table is built from the same per-experiment wide rows (`experiment_rows
   - the hand-built projects in `test_project_sync.py` and `test_slp_setup.py` write Parquet;
   - `test_points_paths.py` (spaces, unicode, nested paths) switches to Parquet.
 
-## 15.6 Timing
+## 15.6 Timing (done)
 
 - **After 15.2:** the same `PS21` points as Parquet are 18.9 MB. Writing takes 0.38 s; reading takes 0.05–0.13 s, and reading one trial (15,025 rows) 0.02 s.
 - **Before:** time reading and writing `points.csv` on BGvPS `PS21`. Measured 2026-10-20: 455,342 rows, 27 columns (3 cameras), 106 MB. Reading with `read_csv_df` takes 0.73 s; writing with `to_csv` takes 4.26 s, and every auto-save, Sync and export of that experiment pays it.
 - **After:** time the same with `points.parquet`, and compare the file sizes.
 - Record the numbers here. If Sync is still slow, the remaining options from the Phase 13 note apply: split the store per trial, or write only the SLP files whose cells changed.
 
-## 15.7 Docs
+## 15.7 Docs (done)
 
 - **`CLAUDE.md`, `docs/design/data_model.md`:** file names, the on-disk column naming (`{view}/{coord}`) and the types. Mark CSV as no longer supported.
 - **`docs/user_workflow.md`:**

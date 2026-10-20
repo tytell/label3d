@@ -29,7 +29,7 @@ references the videos in place.
                       │                                            │
                       ├──► skeletons ─► (union)                    ├──► trials.csv (path cells)
                       │                                            └──► project.toml [video_roots]
-                      └──► labels ───────────────────────────────► points.csv
+                      └──► labels ───────────────────────────────► points.parquet
 calibration.toml or calibration videos ────────────────────────────► experiments/{exp}/calibrations/ (registry)
 ```
 
@@ -224,7 +224,7 @@ Order of operations in `execute_setup()`:
    relative to the project root, and write it as the `[slp]` section of `project.toml`.
 4. Reopen the project with `Project.load()`, then for each experiment run
    `read_slp_for_sync()` → `apply_merge(results, overwrite=True)`. `overwrite=True` is correct
-   here because `points.csv` starts empty, so there is nothing to conflict with.
+   here because the points file starts empty, so there is nothing to conflict with.
 
 A `--no-import` flag stops after step 3, leaving the `.slp` files mapped but unimported for a
 user who wants to review the mapping in the app first.
@@ -298,7 +298,7 @@ the affected camera cells are left blank.
       omitted; skeleton extraction and the inconsistency error.
 - [x] `test_project.py` additions — the three-branch path resolution, including that existing
       bare-filename projects are unaffected.
-- [x] One end-to-end test: generate → `--from-slp` → `Project.load()` → assert `points.csv`
+- [x] One end-to-end test: generate → `--from-slp` → `Project.load()` → assert `points.parquet`
       matches the labels in the source `.slp` files.
 
 ---

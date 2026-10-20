@@ -44,7 +44,7 @@ All keys go under `[setup]` unless noted otherwise.
 | `calibration_dir` | Folder to search for calibration videos or a `calibration.toml`. Without it, setup searches `source_dir` and the `.slp` files' folders. |
 | `calibration_toml` | An existing aniposelib calibration. It is imported and made active, so you can skip calibrating. |
 | `allow_missing_videos` | `true` sets the project up with the videos that were found, and leaves the missing ones blank in `trials.csv`. |
-| `import_labels` | `true` (the default) imports the `.slp` labels into `points.csv`. |
+| `import_labels` | `true` (the default) imports the `.slp` labels into `points.parquet`. |
 | `[project] name` | Defaults to the name of the output folder. |
 | `[charuco]` | The calibration board: `squares_x`, `squares_y`, `square_length`, `marker_length`, `marker_bits`, `dict_size`. |
 | `[skeleton]` | Optional: `file = "skeleton.json"`, or inline `nodes`, `edges`, `symmetries` and `node_offsets_cm`, plus optional `cameras = [...]`. It is only needed for cameras that have no `.slp` file yet. |

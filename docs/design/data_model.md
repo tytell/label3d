@@ -37,17 +37,17 @@ Project
 ├── project.toml             # top-level config: name, charuco params, [skeleton] (shared)
 ├── trials.csv               # global: all trials across all experiments (has experiment column)
 ├── slp/                     # optional: imported .slp files (global, not per-experiment)
-├── sync_history.csv         # one row per trial for each SLEAP read that brought in points
-├── exports/                 # File > Export points... / label3d-export output: points_{timestamp}.csv
+├── sync_history.parquet     # one row per trial for each SLEAP read that brought in points
+├── exports/                 # File > Export points... / label3d-export output: points_{timestamp}.parquet or .csv
 └── experiments/
     ├── PS18/                # one subfolder per experiment
     │   ├── calibrations/    # everything about calibrating this experiment
-    │   │   ├── cam0/        # take videos + corners.csv for cam0
+    │   │   ├── cam0/        # take videos + corners.parquet for cam0
     │   │   ├── cam1/
     │   │   ├── *.toml       # registry: every solution, one .toml each
     │   │   └── refined/     # refinements (Phase 12), each with a _points.csv
     │   ├── videos/          # video files for this experiment's trials
-    │   └── points.csv       # 2D + 3D labels for this experiment's trials
+    │   └── points.parquet   # 2D + 3D labels for this experiment's trials
     ├── PS19/
     │   └── …
     └── BG03/
@@ -56,9 +56,9 @@ Project
 
 **Key design properties:**
 - `trials.csv` is **global** at the project root; it has an `experiment` column so all experiments' trials live in one file. Trial names may repeat across experiments and are disambiguated by the `experiment` value.
-- Each experiment has its own calibration registry and `points.csv` — per-experiment because each has a distinct calibration and independent label data.
+- Each experiment has its own calibration registry and `points.parquet` — per-experiment because each has a distinct calibration and independent label data.
 - `.slp` files live in the top-level `slp/` folder; the adapter receives the full global `trials.csv` and resolves which `(experiment, trial, camera)` each file belongs to by matching video basenames across all rows.
-- `points.csv` row index is `(experiment, trial, frame, instance, bodypart)` — the `experiment` level is constant within a single file but allows cross-experiment aggregation via plain `pd.concat`.
+- The points row index is `(experiment, trial, frame, instance, bodypart)` — the `experiment` level is constant within a single file but allows cross-experiment aggregation via plain `pd.concat`.
 - The calibration in use for each experiment is the registry entry named in `[calibration.active]` of `project.toml`; the geometry stack (triangulation, epipolar lines) always sees exactly one `CameraGroup` per experiment.
 
 ### Project configuration (`project.toml`)
@@ -104,7 +104,7 @@ The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init_
 | `experiments/{exp}/calibrations/{label}_{YYYYmmdd-HHMMSS}.toml` | one registry entry: a `charuco`, `imported` or `align` solution |
 | `experiments/{exp}/calibrations/refined/{id}.toml` | a `refine` entry (Phase 12) |
 | `experiments/{exp}/calibrations/refined/{id}_points.csv` | the exact points that went into that refinement |
-| `experiments/{exp}/calibrations/{cam}/corners.csv` | every take's detected corners for one camera |
+| `experiments/{exp}/calibrations/{cam}/corners.parquet` | every take's detected corners for one camera |
 
 **Registry entries** are plain `CameraGroup.dump()` files. Provenance is in the `[metadata]` table, which aniposelib keeps on load (`cgroup.metadata`). The id is the file stem; it never changes, and renaming changes only `label`. Each Calibrate run saves one `charuco` entry per take (`charuco-{take}`) and one for the joint solution (`charuco-all`). Deleting an entry also deletes every entry derived from it through `parent`. The module is `calibration_registry.py`.
 
@@ -172,9 +172,9 @@ spread_rotation_deg = 0.01            # spread_* left out when Stage 2 ran once
 spread_baseline_pct = 0.05
 ```
 
-**`{id}_points.csv` columns:** `trial, frame, instance, bodypart, camera, x, y, source, score, holdout`. One row is one camera observation that went into the refinement, in raw pixels, copied so the file still describes the fit after `points.csv` changes. `holdout` is True for observations in held-out frames. With the parent entry and the stored seed, this is enough to rerun the refinement exactly.
+**`{id}_points.csv` columns:** `trial, frame, instance, bodypart, camera, x, y, source, score, holdout`. One row is one camera observation that went into the refinement, in raw pixels, copied so the file still describes the fit after the points change. It stays CSV: it is small and kept next to its registry `.toml`. `holdout` is True for observations in held-out frames. With the parent entry and the stored seed, this is enough to rerun the refinement exactly.
 
-**`corners.csv` columns:** `take, frame, corner_id, x, y, detected`. One row is one detected corner. Cross-camera correspondence is by take name and absolute video frame. `detected` is the time of the detection run that produced that take's rows. Re-detecting a take replaces only its rows, so a charuco entry whose `metadata.charuco.detected` no longer matches was solved from older corners. `load_corners(cam_dir, takes=…)` filters by take.
+**`corners.parquet` columns:** `take` (string), `frame`, `corner_id` (int32), `x, y` (float32), `detected` (string). One row is one detected corner. Cross-camera correspondence is by take name and absolute video frame. `detected` is the time of the detection run that produced that take's rows. Re-detecting a take replaces only its rows, so a charuco entry whose `metadata.charuco.detected` no longer matches was solved from older corners. `load_corners(cam_dir, takes=…)` filters by take.
 
 **Old projects.** Projects made before Phase 11 kept solutions in `calibration.toml` and `calibration_takes/`, and calibration media in `calibration/{cam}/`. None of these are read any more; set such projects up again.
 
@@ -200,9 +200,11 @@ spread_baseline_pct = 0.05
 
 **Calibration takes** (`is_calibration = True`): a take is one synchronized calibration recording, typically one before and one after the trials. The `trial` column holds the take name (from the calibration keyword, e.g. `PreCal`). Takes reuse the camera / `_start` / `_end` triples, so a take can be trimmed to the segment where the board is visible. Take videos resolve relative to `experiments/{experiment}/calibrations/{camera}/`; trial videos relative to `experiments/{experiment}/videos/`. Takes are excluded from `Project.trials` and from SLP cell matching.
 
-### Primary storage: `points.csv`
+### Primary storage: `points.parquet`
 
-One file per experiment, storing both 2D and 3D data. Rows indexed by `(experiment, trial, frame, instance, bodypart)`. Columns grouped by **view**: each real camera has `(x, y, xr, yr, state, source, score, sync)` coords; `"3d"` pseudo-camera has `(x, y, z)`.
+One Parquet file per experiment, storing both 2D and 3D data (Phase 15). label3d no longer reads the CSV working files (`points.csv`, `corners.csv`, `sync_history.csv`): `Project.load` refuses a project that has one without its Parquet file, and the project is set up again.
+
+In memory, as below. Rows indexed by `(experiment, trial, frame, instance, bodypart)`. Columns grouped by **view**: each real camera has `(x, y, xr, yr, state, source, score, sync)` coords; `"3d"` pseudo-camera has `(x, y, z)`.
 
 ```
                                           cam0                          cam1                3d
@@ -223,7 +225,7 @@ Column structure is a 2-level `MultiIndex (view, coord)`:
 | `score` | float or NaN | SLEAP per-point score, for `sleap_pred` |
 | `sync` | sync id or NaN | The sync read that last brought the point in from SLEAP. Cleared when the user corrects or accepts the point. |
 
-A point is **new** when its `sync` equals the latest id in `sync_history.csv`. Files without these columns get them filled in on read: labeled points get `source = label3d`.
+A point is **new** when its `sync` equals the latest id in the sync history.
 
 **Point state values:**
 
@@ -234,13 +236,24 @@ A point is **new** when its `sync` equals the latest id in `sync_history.csv`. F
 | `not_set` | Point not yet placed — x, y are NaN; instance is user-type |
 | `not_visible` | User marked as not visible — coordinates kept, excluded from triangulation |
 
+**On disk** the table is flat, so tools other than pandas read it as is: the five index levels are ordinary columns, and each `(view, coord)` column is named `{view}/{coord}` (`cam0/x`, `3d/z`). The schema is fixed (`points_schema`):
+
+| Column | Type |
+|---|---|
+| `experiment`, `trial`, `bodypart` | string |
+| `frame`, `instance` | int64 |
+| `{cam}/x, y, xr, yr, score, sync`, `3d/x, y, z` | float64 |
+| `{cam}/state`, `{cam}/source` | string |
+
+Rows are sorted by (experiment, trial, frame, instance) and stored in row groups of 100,000, zstd-compressed, so reading one trial skips the rest. A save writes `points.parquet.tmp`, keeps the previous file as `points.parquet.bak` and then moves the new file into place (`write_points_file`, `parquet_io.write_table`).
+
 Written/read with:
 ```python
-# Write
-df.to_csv("points.csv")
+from label3d.points import read_points_df, write_points_file
 
-# Read — 2-level column header, 5-level row index
-df = pd.read_csv("points.csv", header=[0, 1], index_col=[0, 1, 2, 3, 4])
+write_points_file(df, path)                      # MultiIndex DataFrame -> flat file
+df = read_points_df(path)                        # flat file -> MultiIndex DataFrame
+df = read_points_df(path, trials=["trial1"])     # only some trials
 
 # Access one camera
 cam0 = df["cam0"]                          # columns: x, y, xr, yr, state, source, score, sync
@@ -282,11 +295,11 @@ symmetries = []
 
 An older project's `skeleton.json` is copied once into `project.toml` (assigned to every camera) and then ignored.
 
-A node available in fewer than 2 cameras of a trial is never triangulated (it can still be labelled in 2D): triangulation counts a camera's point only where its skeleton has the node. Points left in a cell whose skeleton lacks the node (after a skeleton changed) are kept in `points.csv` but hidden, not triangulated, not written to `.slp` and left out of the export; **File > Remove points outside the skeletons...** deletes them (`Project.remove_points_outside`). SLP points of nodes a cell's skeleton lacks are dropped on import and counted in the sync summary.
+A node available in fewer than 2 cameras of a trial is never triangulated (it can still be labelled in 2D): triangulation counts a camera's point only where its skeleton has the node. Points left in a cell whose skeleton lacks the node (after a skeleton changed) are kept in the points file but hidden, not triangulated, not written to `.slp` and left out of the export; **File > Remove points outside the skeletons...** deletes them (`Project.remove_points_outside`). SLP points of nodes a cell's skeleton lacks are dropped on import and counted in the sync summary.
 
-### Sync history: `sync_history.csv`
+### Sync history: `sync_history.parquet`
 
-At the project root. One row per (sync, experiment, trial) for every SLEAP read that brought in new points (startup read, Sync, Import predictions, Set up, sync on close). A read that changes nothing adds no row.
+At the project root. Parquet can't be appended to, so each recorded sync rewrites the file; it stays small. One row per (sync, experiment, trial) for every SLEAP read that brought in new points (startup read, Sync, Import predictions, Set up, sync on close). A read that changes nothing adds no row.
 
 | Column | Meaning |
 |---|---|
@@ -415,7 +428,7 @@ class ExperimentAssignment:
 Files are **moved** (not copied). Creates:
 - `experiments/{name}/calibrations/{camera}/` for calibration media
 - `experiments/{name}/videos/` for video files
-- `experiments/{name}/points.csv` placeholder (correct 5-level row index)
+- `experiments/{name}/points.parquet` when the `.slp` labels are imported (`import_labels`); otherwise the app starts an empty one
 - `trials.csv` (global) at project root with `experiment` column
 - `project.toml` and `slp/` at project root; a setup file `[skeleton]` is written to `project.toml` as an assignment (to its `cameras`, or all of them); otherwise the skeletons come from the `.slp` files
 

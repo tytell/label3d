@@ -1,6 +1,6 @@
 # label3d — Synthetic Data Generator
 
-`generate_synthetic.py` creates a complete test project with known-correct ground truth: cameras, videos with rendered skeleton keypoints, a ground-truth calibration registry entry, `points.csv`, `project.toml`, and `.slp` files (one per camera, whose skeletons can differ; see below).
+`generate_synthetic.py` creates a complete test project with known-correct ground truth: cameras, videos with rendered skeleton keypoints, a ground-truth calibration registry entry, `points.parquet`, `project.toml`, and `.slp` files (one per camera, whose skeletons can differ; see below).
 
 ```bash
 uv run python generate_synthetic.py synthetic_config.toml
@@ -35,7 +35,7 @@ test_project/
     └── default/
         ├── calibrations/{cam}/*.mp4                     # charuco take videos
         ├── calibrations/ground-truth_{timestamp}.toml   # ground-truth camera params; active
-        ├── points.csv            # ground-truth points (5-level row index)
+        ├── points.parquet        # ground-truth points (5-level row index)
         └── videos/               # rendered trial videos
 ```
 
@@ -48,7 +48,7 @@ A camera's `missing_nodes` leaves those nodes out of its skeleton, to test Phase
 missing_nodes = ["dorsal"]
 ```
 
-That camera's `.slp` file gets a skeleton without them, named `synthetic_without_dorsal`, and no points for them; its cells in `points.csv` are `not_set`. Edges touching a missing node are dropped from its skeleton.
+That camera's `.slp` file gets a skeleton without them, named `synthetic_without_dorsal`, and no points for them; its cells in `points.parquet` are `not_set`. Edges touching a missing node are dropped from its skeleton.
 
 `--no-slp` writes no `.slp` files. Each distinct camera skeleton goes to `project.toml` as a `[[skeleton.assigned]]` entry instead, as after **File > Load skeleton...**, for testing the workflow where the first Sync creates the files.
 

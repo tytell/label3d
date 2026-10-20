@@ -34,7 +34,7 @@ Configured in a settings panel before calibration. Maps directly to `CharucoBoar
 ```
 experiments/{name}/
 ├── calibrations/
-│   ├── cam0/        # take videos and corners.csv for cam0
+│   ├── cam0/        # take videos and corners.parquet for cam0
 │   ├── cam1/
 │   ├── …
 │   └── *.toml       # registry: every solution saved here (see below)
@@ -66,7 +66,7 @@ Every solution is kept in the experiment's calibration registry (`experiments/{e
 
 - **Run Calibration** saves one `charuco` entry per take (`charuco-{take}`) and one for the joint solution (`charuco-all`), and makes the joint one active. If the active calibration is a refined one, it asks first. The refined entry is kept, so you can switch back to it.
 - **Use selected take** makes that take's entry active. It doesn't write a file.
-- **Detect Corners** writes each camera's `corners.csv`, replacing the rows of the takes it detected.
+- **Detect Corners** writes each camera's `corners.parquet`, replacing the rows of the takes it detected.
 
 The **Saved calibrations** list shows every entry (label, date, method, error), with refinements under the calibration they came from. The active entry is bold, and the tooltip shows its provenance.
 
@@ -227,7 +227,7 @@ Before labeling, user must either:
   - Last sync summary...
   - Load skeleton...        assign a skeleton (.json or .slp) to all cameras or chosen ones
   - Remove points outside the skeletons...   delete points a camera's skeleton lacks
-  - Export points...       wide-format CSV + SLP write; greyed while any experiment's 3D is stale
+  - Export points...       Parquet/CSV, wide/long + SLP write; greyed while any experiment's 3D is stale
 
 > Navigate
   - Previous / Next labeled frame   [ / ]
@@ -407,33 +407,43 @@ The user-facing steps and the column reference are in [user_workflow.md](../user
 
 **Enabled** when `stale_experiments(project)` is empty, i.e. every experiment with an active calibration has `triangulated_with` equal to it. The state is refreshed when the File menu opens and from `_update_calibration_status`. Experiments with no active calibration don't block it.
 
-**Dialog** (`ExportDialog`): experiment checklist (all checked), **Include predictions** (on), **Only points with 3D** (off), output path (default `exports/points_{YYYYmmdd-HHMMSS}.csv`). There is no score threshold: every point is triangulated and exported whatever its score, with its `score` column.
+**Dialog** (`ExportDialog`): experiment checklist (all checked), **Include predictions** (on), **Only points with 3D** (off), **Format** (Parquet or CSV), **Layout** (wide or long), output path (default `exports/points_{YYYYmmdd-HHMMSS}.parquet`; changing the format changes the extension). There is no score threshold: every point is triangulated and exported whatever its score, with its `score` column.
 
 **On Export:**
 1. `uncalibrated_experiments`: if any checked experiment has no active calibration, a warning lists them. **Export anyway** exports only their 2D columns; **Cancel** returns to the dialog.
 2. `ExportWorker` (background): if the SLP mapping is complete (the condition that enables Sync), `pending_slp_changes` reads the mapped files like Sync (`read_slp_for_sync` + `compute_merge`). Any new or changed points, new scores or conflicts → a warning listing them per experiment; nothing is written.
-3. Otherwise `export_points` writes the CSV, then `project.write_slp_files()` (the write half of a Sync; no sync id is recorded).
+3. Otherwise `export_points` writes the file, then `project.write_slp_files()` (the write half of a Sync; no sync id is recorded).
 4. A summary (`format_summary`): rows written, camera points per experiment by state/source, 2D-only experiments, SLP files written.
 
 ### `uv run label3d-export`
 
 ```
-uv run label3d-export <project> [-o out.csv] [--experiments a,b] [--no-predictions] [--only-3d] [--no-slp]
+uv run label3d-export <project> [-o out] [--format parquet|csv] [--layout wide|long] [--experiments a,b] [--no-predictions] [--only-3d] [--no-slp]
 ```
 
-Same checks, without asking: stale experiments or pending SLP changes → message on stderr, exit 1, nothing written; experiments without a calibration → warning, 2D only. `--no-slp` skips the SLP check and write. It doesn't triangulate. It loads the project with `Project.load`, so the videos must be reachable.
+The format sets the extension: `-o` gets it if it has another (`with_format_suffix`). Same checks, without asking: stale experiments or pending SLP changes → message on stderr, exit 1, nothing written; experiments without a calibration → warning, 2D only. `--no-slp` skips the SLP check and write. It doesn't triangulate. It loads the project with `Project.load`, so the videos must be reachable.
 
-### CSV format
+### Export file
 
-Wide format, one row per (experiment, trial, frame, instance, bodypart), as in `points.csv`. Columns in the fixed order `export_columns(project.cameras)`: the five index columns, then for each camera
+`ExportOptions.format` is `parquet` (default) or `csv`, and `layout` is `wide` (default) or `long`. Both layouts are written the same way in either format.
+
+**Wide layout:** one row per (experiment, trial, frame, instance, bodypart), as in the points files. Columns in the fixed order `export_columns(project.cameras)`: the five index columns, then for each camera
 
 `{cam}_video_frame, {cam}_x.px, {cam}_y.px, {cam}_state, {cam}_source, {cam}_score, {cam}_xr.px, {cam}_yr.px, {cam}_error.px`
 
 then `x.cm, y.cm, z.cm, n_cameras, mean_error.px, calibration`. Units follow a dot (`UNIT_2D`, `UNIT_3D` in `export.py`); columns without one are unitless.
 
 - `video_frame = {cam}_start + frame`, from `trials.csv`.
-- `error`, `n_cameras`, `mean_error` (`mean_reprojection_errors`) and `calibration` (`triangulated_with`) are computed at export; they are not stored in `points.csv`. `sync` is not exported.
+- `error`, `n_cameras`, `mean_error` (`mean_reprojection_errors`) and `calibration` (`triangulated_with`) are computed at export; they are not stored in the points files. `sync` is not exported.
 - A camera's cells are blank where its state is `not_set` (or it's a prediction and **Include predictions** is off). The 3D columns are blank where x/y/z are missing; triangulation clears them for points seen by fewer than 2 cameras, so they are never stale. A row is left out only when no camera has a point and there is no 3D point.
+
+**Long layout** (`wide_to_long`, built from the wide rows): one row per (experiment, trial, frame, instance, bodypart, view), with `view` a camera or `3d`, in the order `LONG_COLUMNS`:
+
+`experiment, trial, frame, instance, bodypart, view, video_frame, x, y, z, state, source, score, xr, yr, error, n_cameras, mean_error, calibration`
+
+- A camera row is written where the wide row has that camera's point; a `3d` row where it has the 3D point. Each point's cameras come first, then `3d`.
+- Camera rows leave `z, n_cameras, mean_error, calibration` empty; `3d` rows leave `video_frame, state, source, score, xr, yr, error` empty.
+- No units in the names: `x, y` are px in camera rows and cm in `3d` rows; `error` and `mean_error` are px.
 
 ### SLEAP files (SleapAdapter.save)
 

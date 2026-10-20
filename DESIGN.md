@@ -14,7 +14,7 @@ A cross-platform desktop app for:
 | Document | Contents |
 |---|---|
 | [docs/user_workflow.md](docs/user_workflow.md) | **User guide**: the label → train → review loop, step by step (draft) |
-| [docs/design/data_model.md](docs/design/data_model.md) | Project layout, `points.csv` schema, `project.toml`, `trials.csv`, calibration registry, adapter interface, project setup utility |
+| [docs/design/data_model.md](docs/design/data_model.md) | Project layout, `points.parquet` schema, `project.toml`, `trials.csv`, calibration registry, adapter interface, project setup utility |
 | [docs/design/workflows.md](docs/design/workflows.md) | Calibration UI, axis alignment, labeling UI, export UI, keyboard shortcuts, key features |
 | [docs/design/architecture.md](docs/design/architecture.md) | Package layout, build order, technology stack, risks, design decisions |
 | [docs/design/testing.md](docs/design/testing.md) | Test modules and testing conventions |
@@ -27,7 +27,7 @@ A cross-platform desktop app for:
 | [docs/design/phases/phase_12.md](docs/design/phases/phase_12.md) | Phase 12 — Refining the calibration with labelled points (complete) |
 | [docs/design/phases/phase_13.md](docs/design/phases/phase_13.md) | Phase 13 — Batch triangulation and export |
 | [docs/design/phases/phase_14.md](docs/design/phases/phase_14.md) | Phase 14 — Per-camera skeletons (implemented; to be checked in the app) |
-| [docs/design/phases/phase_15.md](docs/design/phases/phase_15.md) | Phase 15 — Parquet working files (planned) |
+| [docs/design/phases/phase_15.md](docs/design/phases/phase_15.md) | Phase 15 — Parquet working files (implemented; to be checked in the app) |
 | [docs/design/phases/phase_16.md](docs/design/phases/phase_16.md) | Phase 16 — Axis alignment (deferred; partially implemented) |
 | [docs/design/phases/phase_17_18.md](docs/design/phases/phase_17_18.md) | Phases 17–18: Export to other pose formats, Polish and robustness (deferred) |
 | [docs/design/phases/phase_19.md](docs/design/phases/phase_19.md) | Phase 19 — Multi-instance support and cross-camera matching (deferred) |

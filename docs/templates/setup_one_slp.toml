@@ -28,7 +28,7 @@ video_mode = "reference"                  # leave trial videos in place
 # Where the recorded video paths have moved to, e.g. a different drive letter or mount
 video_search_dirs = ["/Volumes/Lab/NewData/VerticalOMR/3_edited_fish_videos"]
 allow_missing_videos = true               # set up without the videos that can't be found
-import_labels = true                      # .slp labels go into points.csv
+import_labels = true                      # .slp labels go into points.parquet
 
 [project]
 name = "OMR"
