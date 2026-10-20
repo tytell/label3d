@@ -298,6 +298,11 @@ def classify_files(config: SetupConfig) -> FileAssignment:
                     assignment.slp_files.setdefault(trial_name, {})[cam] = slp_path
                     covered.add((trial_name, cam))
                 else:
+                    logger.debug(
+                        "  '%s' is not a trial video in %s (matched by basename "
+                        "only; video_search_dirs are not used without slp_files)",
+                        vb, source,
+                    )
                     assignment.warnings.append(
                         f"SLP file '{slp_path.name}' references video '{vb}'"
                         " not found in source folder"
@@ -412,6 +417,14 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
         raise FileNotFoundError("No .slp files found in the given paths")
 
     search_dirs = [Path(d) for d in config.video_search_dirs]
+    logger.debug("SLP files: %s", [str(p) for p in slp_paths])
+    if not search_dirs:
+        logger.debug("No video_search_dirs given")
+    for d in search_dirs:
+        logger.debug(
+            "Search dir %s (anchor name '%s'): %s",
+            d, d.name, "exists" if d.is_dir() else "NOT FOUND or not a directory",
+        )
     data_videos: list[tuple[str, Path]] = []
     video_sources: dict[Path, list[Path]] = {}  # resolved video -> .slp files
     seen: set[Path] = set()
@@ -425,6 +438,10 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
             )
             continue
 
+        logger.debug(
+            "SLP '%s' (%s) records %d videos, %d labeled frames",
+            slp_path.name, slp_path.parent, len(recorded), n_frames,
+        )
         assignment.slp_skeletons[slp_path] = _skeleton_from_dict(skeleton_dict, slp_path)
         if n_frames == 0:
             assignment.warnings.append(
@@ -463,6 +480,10 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
                 assignment.excluded.append(resolved)
                 continue
             if camera is None:
+                logger.debug(
+                    "  '%s' (or its folder '%s') contains none of the cameras %s",
+                    resolved.name, resolved.parent.name, config.camera_names,
+                )
                 assignment.unmatched.append(resolved)
                 assignment.warnings.append(
                     _no_camera_warning(resolved)
@@ -1517,6 +1538,8 @@ def _read_slp_info(slp_path: Path) -> tuple[set[str], dict]:
     symmetries (list[tuple]).
     """
     labels = sio.load_file(str(slp_path))
+    for video in labels.videos:
+        logger.debug("SLP '%s' records video path: %s", slp_path.name, video.filename)
     video_basenames = {Path(lf.video.filename).name for lf in labels.labeled_frames}
     return video_basenames, _skeleton_dict(labels)
 
@@ -1589,7 +1612,9 @@ def _unique_existing(candidates: list[tuple[Path, Path]]) -> tuple[list[Path], l
     paths: list[Path] = []
     dirs: list[Path] = []
     for candidate, directory in candidates:
-        if not candidate.exists():
+        exists = candidate.exists()
+        logger.debug("      %s %s", "found  " if exists else "missing", candidate)
+        if not exists:
             continue
         resolved = candidate.resolve()
         if resolved in paths:
@@ -1624,56 +1649,78 @@ def _resolve_video_reference(
     reference is reported ambiguous and left unresolved, rather than resolved
     to an arbitrary one of them.
     """
+    logger.debug("Resolving recorded video path: %s", recorded)
     if recorded.exists():
+        logger.debug("  -> recorded path exists")
         return ResolvedVideo(recorded.resolve(), "recorded")
+    logger.debug("  recorded path does not exist")
 
     parts = _recorded_parts(recorded)
+    logger.debug("  components (drive dropped): %s", parts)
     if not parts:
+        logger.debug("  -> unresolved: no path components")
         return ResolvedVideo(None)
 
     # 2. Anchor on a search directory's own name, matched exactly. Only
     #    directory components can anchor, so parts[:-1].
     anchored: list[tuple[Path, Path]] = []
     depths: dict[Path, int] = {}
+    logger.debug("  [anchor] search-dir name among recorded directory components?")
     for directory in search_dirs:
         indices = [i for i, part in enumerate(parts[:-1]) if part == directory.name]
         if not indices:
+            logger.debug("    '%s' (%s): not a component", directory.name, directory)
             continue
+        logger.debug(
+            "    '%s' (%s): component %d", directory.name, directory, indices[-1]
+        )
         index = indices[-1]  # deepest occurrence when a name repeats
         anchored.append((directory.joinpath(*parts[index + 1:]), directory))
         depths[directory] = index
     paths, dirs = _unique_existing(anchored)
     if len(paths) > 1:
+        logger.debug("  -> ambiguous: %s", [str(c) for c in paths])
         return ResolvedVideo(None, "ambiguous", candidates=paths)
     if paths:
         index = depths[dirs[0]]
+        logger.debug("  -> anchor match: %s", paths[0])
         return ResolvedVideo(
             paths[0], "anchor", "/".join(parts[: index + 1]), dirs[0]
         )
 
     # 3. Deepest trailing run of recorded components that exists.
+    logger.debug("  [suffix] trailing recorded components under each search dir")
     for k in range(len(parts) - 1, 1, -1):
         suffix = parts[-k:]
+        logger.debug("    last %d components: %s", k, "/".join(suffix))
         paths, dirs = _unique_existing(
             [(d.joinpath(*suffix), d) for d in search_dirs]
         )
         if len(paths) > 1:
+            logger.debug("  -> ambiguous: %s", [str(c) for c in paths])
             return ResolvedVideo(None, "ambiguous", candidates=paths)
         if paths:
+            logger.debug("  -> suffix match: %s", paths[0])
             return ResolvedVideo(
                 paths[0], "suffix", "/".join(parts[:-k]), dirs[0]
             )
 
     # 4. Basename only, beside the .slp file first.
+    logger.debug("  [basename] '%s' beside the .slp, then in each search dir", parts[-1])
     candidate = slp_dir / parts[-1]
     if candidate.exists():
+        logger.debug("  -> beside .slp: %s", candidate)
         return ResolvedVideo(candidate.resolve(), "beside_slp")
+    logger.debug("      missing %s", candidate)
     paths, dirs = _unique_existing([(d / parts[-1], d) for d in search_dirs])
     if len(paths) > 1:
+        logger.debug("  -> ambiguous: %s", [str(c) for c in paths])
         return ResolvedVideo(None, "ambiguous", candidates=paths)
     if paths:
+        logger.debug("  -> basename match: %s", paths[0])
         return ResolvedVideo(paths[0], "basename", "/".join(parts[:-1]), dirs[0])
 
+    logger.debug("  -> unresolved")
     return ResolvedVideo(None)
 
 

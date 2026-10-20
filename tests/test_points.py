@@ -525,6 +525,18 @@ class TestDirtyAndSave:
         empty_store.save_if_changed()
         assert (tmp_path / "points.parquet.bak").exists()
 
+    def test_save_if_changed_overwrites_existing_backup(self, empty_store, tmp_path):
+        # Path.rename refuses to overwrite on Windows; the second save must still work
+        dest = tmp_path / "points.parquet"
+        empty_store.to_parquet(dest)
+        empty_store.set_point("trial1", 0, 0, "snout", "cam1", 1.0, 2.0)
+        empty_store.save_if_changed()
+        first = dest.read_bytes()
+        empty_store.set_point("trial1", 0, 0, "snout", "cam1", 3.0, 4.0)
+        empty_store.save_if_changed()
+        assert (tmp_path / "points.parquet.bak").read_bytes() == first
+        assert dest.read_bytes() != first
+
     def test_save_if_changed_noop_when_clean(self, empty_store, tmp_path):
         dest = tmp_path / "points.parquet"
         empty_store._save_path = dest

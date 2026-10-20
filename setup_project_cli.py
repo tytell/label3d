@@ -555,12 +555,35 @@ def slp_config_from_args(args) -> SetupConfig:
 
 def run_from_config(config_path: Path, copy_files: bool = False, dry_run: bool = False) -> None:
     """Run the setup utility from a TOML config file."""
+    try:
+        raw = toml.load(config_path)
+    except toml.TomlDecodeError as e:
+        hint = ""
+        if "escape" in str(e):
+            hint = (
+                "\nBackslashes in double-quoted TOML strings are escape sequences. "
+                "Put Windows paths in single quotes ('D:\\data\\videos') "
+                "or use forward slashes (\"D:/data/videos\")."
+            )
+        sys.exit(f"Could not read {config_path}: {e}{hint}")
+    setup = raw.get("setup", {})
     config = config_from_toml(config_path, copy_files=copy_files)
-    setup = toml.load(config_path).get("setup", {})
 
     if config.slp_paths:
         run_slp_setup(config, dry_run=dry_run, do_import=setup.get("import_labels", True))
         return
+
+    slp_only = [
+        k for k in ("video_search_dirs", "video_mode", "import_labels", "allow_missing_videos")
+        if k in setup
+    ]
+    if slp_only:
+        print(
+            f"Warning: {', '.join(slp_only)} only apply to SLP-first setup, which needs "
+            "slp_files (or .slp files in source_dir); they are ignored here. To use "
+            "SLP-first setup, add: slp_files = ['<folder with .slp files>']",
+            file=sys.stderr,
+        )
 
     print("Scanning files...")
     assignment = classify_files(config)
@@ -669,7 +692,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.DEBUG if args.debug else logging.WARNING)
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.WARNING,
+        format="%(name)s: %(message)s",
+    )
+    for noisy in ("h5py", "matplotlib", "PIL", "numexpr"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     if args.from_slp:
         run_slp_setup(

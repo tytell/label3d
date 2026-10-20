@@ -162,6 +162,9 @@ class TestAmbiguity:
         mount = tmp_path / "3_edited_fish_videos"
         video = _make(mount, SUBPATH)
         link = tmp_path / "alias"
-        link.symlink_to(mount)
+        try:
+            link.symlink_to(mount)
+        except OSError:
+            pytest.skip("cannot create symlinks (Windows without Developer Mode)")
         outcome = _resolve_video_reference(RECORDED, tmp_path / "slp", [mount, link])
         assert outcome.path == video.resolve()
