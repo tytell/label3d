@@ -14,7 +14,7 @@
 | `calibrations/{cam}/corners.csv` | `corners.parquet` | same columns |
 | `sync_history.csv` | `sync_history.parquet` | same columns |
 | `trials.csv` | unchanged | edited by hand |
-| `refined/{id}_points.csv` | unchanged | small provenance record of a refinement, kept with its registry `.toml` |
+| `refined/{id}_points.csv` | `{id}_points.parquet` | a refinement's record of its points; `points_file` in the registry `.toml` names it |
 
 - **CSV is no longer read.** A project with a `points.csv`, `corners.csv` or `sync_history.csv` but no Parquet file is not converted: `Project.load` raises before it opens any video, naming the files and saying the project has to be set up again (`_legacy_csv_files`). This is how the pre-registry layout is handled. There is no conversion code. Before setting BGvPS up again, run **Sync** in the current version so that every manual label is in the mapped `.slp` files.
 - **Dependency:** add `pyarrow` to `pyproject.toml`. It is the pandas Parquet engine, and R's `arrow` package reads the same files.

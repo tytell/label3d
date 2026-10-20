@@ -45,7 +45,7 @@ Project
     │   │   ├── cam0/        # take videos + corners.parquet for cam0
     │   │   ├── cam1/
     │   │   ├── *.toml       # registry: every solution, one .toml each
-    │   │   └── refined/     # refinements (Phase 12), each with a _points.csv
+    │   │   └── refined/     # refinements (Phase 12), each with a _points.parquet
     │   ├── videos/          # video files for this experiment's trials
     │   └── points.parquet   # 2D + 3D labels for this experiment's trials
     ├── PS19/
@@ -103,7 +103,7 @@ The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init_
 |---|---|
 | `experiments/{exp}/calibrations/{label}_{YYYYmmdd-HHMMSS}.toml` | one registry entry: a `charuco`, `imported` or `align` solution |
 | `experiments/{exp}/calibrations/refined/{id}.toml` | a `refine` entry (Phase 12) |
-| `experiments/{exp}/calibrations/refined/{id}_points.csv` | the exact points that went into that refinement |
+| `experiments/{exp}/calibrations/refined/{id}_points.parquet` | the exact points that went into that refinement |
 | `experiments/{exp}/calibrations/{cam}/corners.parquet` | every take's detected corners for one camera |
 
 **Registry entries** are plain `CameraGroup.dump()` files. Provenance is in the `[metadata]` table, which aniposelib keeps on load (`cgroup.metadata`). The id is the file stem; it never changes, and renaming changes only `label`. Each Calibrate run saves one `charuco` entry per take (`charuco-{take}`) and one for the joint solution (`charuco-all`). Deleting an entry also deletes every entry derived from it through `parent`. The module is `calibration_registry.py`.
@@ -141,7 +141,7 @@ sources = ["label3d", "sleap_user"]
 score_min = 0.8                       # for sleap_pred only
 min_cameras = 2
 n_points = 1840
-points_file = "refine_20261005-142210_points.csv"
+points_file = "refine_20261005-142210_points.parquet"
 
 [metadata.points.frames]              # trial -> frames that had points
 t1 = [10, 55, 90]
@@ -172,7 +172,7 @@ spread_rotation_deg = 0.01            # spread_* left out when Stage 2 ran once
 spread_baseline_pct = 0.05
 ```
 
-**`{id}_points.csv` columns:** `trial, frame, instance, bodypart, camera, x, y, source, score, holdout`. One row is one camera observation that went into the refinement, in raw pixels, copied so the file still describes the fit after the points change. It stays CSV: it is small and kept next to its registry `.toml`. `holdout` is True for observations in held-out frames. With the parent entry and the stored seed, this is enough to rerun the refinement exactly.
+**`{id}_points.parquet` columns:** `trial, frame, instance, bodypart, camera, x, y, source, score, holdout` (`RECORD_SCHEMA`). One row is one camera observation that went into the refinement, in raw pixels, copied so the file still describes the fit after the points change. `holdout` is True for observations in held-out frames. With the parent entry and the stored seed, this is enough to rerun the refinement exactly.
 
 **`corners.parquet` columns:** `take` (string), `frame`, `corner_id` (int32), `x, y` (float32), `detected` (string). One row is one detected corner. Cross-camera correspondence is by take name and absolute video frame. `detected` is the time of the detection run that produced that take's rows. Re-detecting a take replaces only its rows, so a charuco entry whose `metadata.charuco.detected` no longer matches was solved from older corners. `load_corners(cam_dir, takes=…)` filters by take.
 

@@ -200,7 +200,7 @@ Parquet files open in most data tools:
 - **R:** `arrow::read_parquet("points_….parquet")`, or `arrow::open_dataset()` to filter with dplyr before reading it all in
 - **Viewers:** [Tad](https://www.tadviewer.com) or the DuckDB UI (`duckdb -ui`) let you browse and sort a file without writing code.
 
-The project's own working files are Parquet too: each experiment's `points.parquet`, each camera's `corners.parquet` and the project's `sync_history.parquet`. They open the same way, but change them only through label3d. In `points.parquet` each camera column is named `camera/coordinate`, for example `LateralOrtho/x`.
+The project's own working files are Parquet too: each experiment's `points.parquet`, each camera's `corners.parquet`, the project's `sync_history.parquet`, and the record of points kept with each refined calibration. They open the same way, but change them only through label3d. In `points.parquet` each camera column is named `camera/coordinate`, for example `LateralOrtho/x`.
 
 ## Keyboard reference for review
 

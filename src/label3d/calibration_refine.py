@@ -17,6 +17,7 @@ from typing import Callable
 import cv2
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 from aniposelib.cameras import CameraGroup
 
 from label3d.calibration_compare import PairDrift, compare_calibrations, run_spread
@@ -36,12 +37,19 @@ from label3d.calibration_solve import (
     take_detections,
     take_ranges,
 )
+from label3d.parquet_io import write_table
 from label3d.points import SOURCE_LABEL3D, SOURCE_SLEAP_PRED, SOURCE_SLEAP_USER
 
 ALL_SOURCES = (SOURCE_LABEL3D, SOURCE_SLEAP_USER, SOURCE_SLEAP_PRED)
 USED_STATES = ("set", "predicted")
 POINT_INDEX = ["trial", "frame", "instance", "bodypart"]
 RECORD_COLUMNS = POINT_INDEX + ["camera", "x", "y", "source", "score", "holdout"]
+RECORD_SCHEMA = pa.schema([
+    ("trial", pa.string()), ("frame", pa.int64()), ("instance", pa.int64()),
+    ("bodypart", pa.string()), ("camera", pa.string()), ("x", pa.float64()),
+    ("y", pa.float64()), ("source", pa.string()), ("score", pa.float64()),
+    ("holdout", pa.bool_()),
+])
 
 
 @dataclass
@@ -192,16 +200,15 @@ def save_points_record(
                 )
     records.sort(key=lambda r: (r[0], r[1]))   # point order, so a reload keeps it
     rows = [r[2:] for r in records]
-    pd.DataFrame(rows, columns=RECORD_COLUMNS).to_csv(path, index=False)
+    df = pd.DataFrame(rows, columns=RECORD_COLUMNS)
+    write_table(pa.Table.from_pandas(df, schema=RECORD_SCHEMA, preserve_index=False), path)
 
 
 def load_points_record(
     path: Path, cam_names: list[str]
 ) -> tuple[np.ndarray, pd.MultiIndex, np.ndarray]:
     """Read a points record back as (p2ds C×N×2, point index, holdout per point)."""
-    df = pd.read_csv(path, dtype={"trial": str, "bodypart": str, "camera": str})
-    df["frame"] = df["frame"].astype(int)
-    df["instance"] = df["instance"].astype(int)
+    df = pd.read_parquet(path)
     keys = list(dict.fromkeys(zip(df["trial"], df["frame"], df["instance"], df["bodypart"])))
     position = {k: n for n, k in enumerate(keys)}
     cam_pos = {cam: c for c, cam in enumerate(cam_names)}
@@ -545,7 +552,7 @@ def save_refinement(
     options: RefineOptions,
     points_df: pd.DataFrame,
 ) -> CalibrationEntry:
-    """Save a refine entry under refined/, with its _points.csv record."""
+    """Save a refine entry under refined/, with its _points.parquet record."""
     cam_names = result.cgroup.get_names()
     entry = save_calibration(
         exp_dir, result.cgroup, label, "refine", parent=parent.id,
@@ -568,7 +575,7 @@ def save_refinement(
         },
         errors=result.errors,
     )
-    points_file = f"{entry.id}_points.csv"
+    points_file = f"{entry.id}_points.parquet"
     save_points_record(
         entry.path.parent / points_file, result.p2ds, result.index, cam_names,
         points_df, result.holdout,

@@ -3,7 +3,7 @@
 Each solution is an aniposelib CameraGroup.dump() file under
 experiments/{name}/calibrations/, with its provenance in the [metadata] table
 (the only top-level table CameraGroup.load() doesn't read as a camera).
-Refinements (Phase 12) go in calibrations/refined/, next to a _points.csv
+Refinements (Phase 12) go in calibrations/refined/, next to a _points.parquet
 record of the points that went into them. Which entry is in use is a pointer in
 project.toml (see Project.calibration_path), not part of the registry.
 """

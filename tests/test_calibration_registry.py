@@ -110,16 +110,16 @@ class TestRegistry:
         other = save_calibration(tmp_path, make_cgroup(), "other", "charuco")
         child = save_calibration(
             tmp_path, make_cgroup(), "child", "refine", parent=root.id,
-            points={"points_file": "child_points.csv"},
+            points={"points_file": "child_points.parquet"},
         )
-        (child.path.parent / "child_points.csv").write_text("x\n")
+        (child.path.parent / "child_points.parquet").write_text("x\n")
         grandchild = save_calibration(tmp_path, make_cgroup(), "gc", "align",
                                       parent=child.id)
 
         removed = delete_calibration(tmp_path, root)
         assert {e.id for e in removed} == {root.id, child.id, grandchild.id}
         assert [e.id for e in list_calibrations(tmp_path)] == [other.id]
-        assert not (child.path.parent / "child_points.csv").exists()
+        assert not (child.path.parent / "child_points.parquet").exists()
 
     def test_saving_does_not_touch_callers_metadata(self, tmp_path):
         a, b = make_cgroup(), make_cgroup()

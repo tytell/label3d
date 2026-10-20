@@ -180,10 +180,10 @@ class TestPointsRecord:
         sel = PointSelection(sources={"label3d", "sleap_user", "sleap_pred"}, score_min=0.8, min_cameras=1)
         p2ds, index = gather_points(df, CAMS, sel)
         holdout = np.array([False, True, False, True][: len(index)])
-        path = tmp_path / "x_points.csv"
+        path = tmp_path / "x_points.parquet"
         save_points_record(path, p2ds, index, CAMS, df, holdout)
 
-        record = pd.read_csv(path)
+        record = pd.read_parquet(path)
         assert list(record.columns) == [
             "trial", "frame", "instance", "bodypart", "camera", "x", "y", "source", "score", "holdout",
         ]
@@ -376,7 +376,7 @@ class TestSaving:
         assert points["sources"] == ["label3d"]
         assert points["score_min"] == 0.0
         assert points["frames"]["t1"] == list(range(60))
-        assert points["points_file"] == f"{entry.id}_points.csv"
+        assert points["points_file"] == f"{entry.id}_points.parquet"
         assert entry.metadata["options"]["seed"] == 13
         assert find_calibration(tmp_path, entry.id) is not None
 
