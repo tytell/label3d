@@ -9,8 +9,8 @@ Usage:
     # the same setup TOML as setup_project_cli.py (output_dir is not needed)
     uv run python inspect_slp_cli.py setup.toml
 
-    # -v lists every reference and warning; without it, long problem lists are counts
-    uv run python inspect_slp_cli.py -v setup.toml
+    # more detail: -v (or --verbose=1), everything: -vv (or --verbose=2)
+    uv run python inspect_slp_cli.py -vv setup.toml
 
     # flags override the TOML, or stand alone with .slp files or folders
     uv run python inspect_slp_cli.py setup.toml --match-strategy number
@@ -141,11 +141,12 @@ def _ref_lines(ref, placement) -> list[str]:
     return lines
 
 
-def report_slp_files(assignment: FileAssignment, verbose: bool = False) -> list[str]:
+def report_slp_files(assignment: FileAssignment, verbosity: int = 0) -> list[str]:
     """Each .slp file's video references: found where, which camera and trial.
 
-    The references placed in a trial are always listed. Without verbose, each
-    kind of problem with more than MAX_LISTED references is given as a count.
+    Verbosity 0 gives the trials per experiment and counts of each kind of
+    problem; 1 lists the references placed in a trial, and each kind of problem
+    with at most MAX_LISTED references; 2 lists every reference.
     """
     placement = video_placement(assignment)
     by_slp: dict[Path, list] = {}
@@ -158,45 +159,56 @@ def report_slp_files(assignment: FileAssignment, verbose: bool = False) -> list[
         trials = sorted(
             {placement[r.resolution.path] for r in refs if r.resolution.path in placement}
         )
-        experiments = sorted({exp for exp, _ in trials})
         lines.append(f"  {slp_path}")
-        lines.append(
-            f"    {len(refs)} video(s), {found} found; "
-            f"experiments: {', '.join(experiments) or '-'}; "
-            f"trials: {', '.join(t for _, t in trials) or '-'}"
-        )
+        lines.append(f"    {len(refs)} video(s), {found} found")
+        for exp, count in sorted(Counter(exp for exp, _ in trials).items()):
+            lines.append(f"    {exp}: {count} trial(s)")
+
         problems: dict[str, list] = {}
         for ref in refs:
             kind = _problem(ref, placement)
-            if kind is None or verbose:
-                lines += _ref_lines(ref, placement)
             if kind is not None:
                 problems.setdefault(kind, []).append(ref)
-        if not verbose:
+            if verbosity >= 2 or (verbosity == 1 and kind is None):
+                lines += _ref_lines(ref, placement)
+        if verbosity < 2:
             for kind, kind_refs in problems.items():
-                if len(kind_refs) <= MAX_LISTED:
+                if verbosity == 1 and len(kind_refs) <= MAX_LISTED:
                     for ref in kind_refs:
                         lines += _ref_lines(ref, placement)
                 else:
-                    lines.append(f"    {len(kind_refs)} video(s) {kind} (-v to list)")
+                    lines.append(f"    {len(kind_refs)} video(s) {kind}")
         lines.append("")
     return lines
 
 
 def report_folders(assignment: FileAssignment) -> list[str]:
-    """The distinct folders the .slp files record videos in, and whether they exist."""
+    """The distinct folders the .slp files record videos in, and where they are now.
+
+    A folder whose videos were found elsewhere is followed by each folder they
+    were found in, with how many.
+    """
     counts = Counter(str(ref.recorded.parent) for ref in assignment.video_refs)
     found = Counter(
         str(ref.recorded.parent)
         for ref in assignment.video_refs
         if ref.resolution.path is not None
     )
+    moved: dict[str, Counter] = {}
+    for ref in assignment.video_refs:
+        outcome = ref.resolution
+        if outcome.path is not None and outcome.rule != "recorded":
+            moved.setdefault(str(ref.recorded.parent), Counter())[
+                str(outcome.path.parent)
+            ] += 1
     lines = [f"Recorded video folders ({len(counts)}):"]
     for folder in sorted(counts):
         exists = "exists" if Path(folder).is_dir() else "NOT FOUND"
         lines.append(
             f"  {folder}  [{exists}]  {counts[folder]} video(s), {found[folder]} located"
         )
+        for new_folder, count in sorted(moved.get(folder, Counter()).items()):
+            lines.append(f"    -> {new_folder}  ({count} video(s))")
     lines.append("")
     return lines
 
@@ -231,8 +243,13 @@ def main() -> None:
         help="Extra folder to search when a recorded video path has moved (repeatable)",
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="List every video reference and warning, not just counts",
+        "-v", action="count", default=0, dest="verbosity",
+        help="More detail: -v lists the videos placed in trials and short problem "
+        "lists, -vv lists everything",
+    )
+    parser.add_argument(
+        "--verbose", type=int, dest="verbosity", default=argparse.SUPPRESS,
+        metavar="LEVEL", help="Detail level 0-2 (same as no -v, -v, -vv)",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
@@ -245,12 +262,12 @@ def main() -> None:
     except (FileNotFoundError, ValueError) as e:
         sys.exit(f"Error: {e}")
 
-    print("\n".join(report_slp_files(assignment, verbose=args.verbose)))
+    print("\n".join(report_slp_files(assignment, verbosity=args.verbosity)))
     print("\n".join(report_folders(assignment)))
     print("-" * 60)
     print("What setup would do:")
     print()
-    print(preview_assignment(config, assignment, verbose=args.verbose))
+    print(preview_assignment(config, assignment, verbosity=args.verbosity))
 
 
 if __name__ == "__main__":

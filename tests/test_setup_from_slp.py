@@ -186,11 +186,28 @@ class TestClassify:
             v.unlink()
         config = _config(source, slp_paths=[*source["slps"], extra])
         assignment = classify_slp_files(config)
-        brief = preview_assignment(config, assignment, verbose=False)
+        brief = preview_assignment(config, assignment, verbosity=1)
         assert "  2 from extra.slp" in brief
         assert "cam1_Trial3.mp4" not in brief
         full = preview_assignment(config, assignment)
         assert full.count("cam1_Trial3.mp4") == 2  # the listing and its warning
+
+    def test_preview_summary_groups_missing_cameras(self, source, tmp_path):
+        """Verbosity 0: trial counts, trials grouped by the cameras they lack."""
+        extra = _make_slp(
+            tmp_path / "labels" / "extra.slp",
+            [_make_video(tmp_path / "rig" / f"cam1_Trial{i}.mp4") for i in (3, 4)],
+        )
+        config = _config(source, slp_paths=[*source["slps"], extra])
+        assignment = classify_slp_files(config)
+        summary = preview_assignment(config, assignment, verbosity=0)
+        assert "[default]  4 trial(s), root:" in summary
+        assert "    2 trial(s) missing cam2" in summary
+        assert "Trial3:" not in summary
+        assert "SLP files (" not in summary
+        assert "is missing cameras" not in summary  # the warnings repeat the group
+        assert "Calibration: none found" in summary
+        assert "Trial3:" in preview_assignment(config, assignment, verbosity=1)
 
     def test_slp_files_in_listed_experiments_pass(self, source):
         assignment = classify_slp_files(_config(source, experiment_keywords=["cam"]))

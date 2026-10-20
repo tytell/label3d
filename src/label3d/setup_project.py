@@ -205,7 +205,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         if camera is None:
             assignment.unmatched.append(f)
             assignment.warnings.append(
-                f"Video '{f.name}' does not match any camera name"
+                _no_camera_warning(f)
             )
             continue
         if _is_calibration(f.name, calib_kws, config.calib_regex):
@@ -304,7 +304,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         missing = set(config.camera_names) - set(cam_files.keys())
         if missing:
             assignment.warnings.append(
-                f"Trial '{trial_name}' is missing cameras: {', '.join(sorted(missing))}"
+                _missing_cameras_warning(trial_name, missing)
             )
 
     # Assign trials to experiments using experiment_keywords
@@ -447,7 +447,7 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
             if camera is None:
                 assignment.unmatched.append(resolved)
                 assignment.warnings.append(
-                    f"Video '{resolved.name}' does not match any camera name"
+                    _no_camera_warning(resolved)
                 )
                 continue
             data_videos.append((camera, resolved))
@@ -475,7 +475,7 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
         missing = set(config.camera_names) - set(cam_files)
         if missing:
             assignment.warnings.append(
-                f"Trial '{trial_name}' is missing cameras: {', '.join(sorted(missing))}"
+                _missing_cameras_warning(trial_name, missing)
             )
 
     assignment.video_roots = _compute_video_roots(
@@ -618,7 +618,7 @@ def _unreferenced_source_videos(
         camera = _identify_camera_from_path(resolved, config.camera_names)
         if camera is None:
             assignment.unmatched.append(resolved)
-            assignment.warnings.append(f"Video '{f.name}' does not match any camera name")
+            assignment.warnings.append(_no_camera_warning(f))
             continue
         found.append((camera, resolved))
     return found
@@ -808,18 +808,159 @@ def _missing_video_warning(ref: Path, slp_name: str) -> str:
     return f"SLP file '{slp_name}' references video '{ref}' which was not found"
 
 
-# Without verbose, preview_assignment lists at most this many warnings
+def _no_camera_warning(video: Path) -> str:
+    return f"Video '{video.name}' does not match any camera name"
+
+
+def _missing_cameras_warning(trial_name: str, missing: set[str]) -> str:
+    return f"Trial '{trial_name}' is missing cameras: {', '.join(sorted(missing))}"
+
+
+# Below verbosity 2, preview_assignment lists at most this many warnings
 PREVIEW_MAX_WARNINGS = 10
 
 
+def _experiment_trials(assignment: FileAssignment) -> dict[str, list[str]]:
+    """experiment -> its trials, both sorted."""
+    groups: dict[str, list[str]] = {}
+    for trial in sorted(assignment.trials):
+        groups.setdefault(assignment.trial_experiment.get(trial, "default"), []).append(trial)
+    return dict(sorted(groups.items()))
+
+
+def _preview_trials(
+    config: SetupConfig, assignment: FileAssignment, verbosity: int
+) -> list[str]:
+    """Trials by experiment, with each experiment's video root.
+
+    Verbosity 0 gives each experiment's trial count and groups the trials that
+    lack cameras by the cameras they lack; 1 and up list every trial's videos.
+    """
+    if not assignment.trials:
+        return ["Trials: none found", ""]
+    groups = _experiment_trials(assignment)
+    lines = [f"Trials ({len(assignment.trials)}) across {len(groups)} experiment(s):"]
+    for exp, trials in groups.items():
+        root = assignment.video_roots.get(exp)
+        where = f"root: {root}" if root else "(absolute paths)"
+        if verbosity == 0:
+            lines.append(f"  [{exp}]  {len(trials)} trial(s), {where}")
+            lacking = Counter(
+                tuple(c for c in config.camera_names if c not in assignment.trials[t])
+                for t in trials
+            )
+            for cams, count in lacking.items():
+                if cams:
+                    lines.append(f"    {count} trial(s) missing {', '.join(cams)}")
+            continue
+        lines.append(f"  [{exp}]  {where}")
+        for trial in trials:
+            cam_files = assignment.trials[trial]
+            lines.append(f"    {trial}:")
+            for cam in config.camera_names:
+                path = cam_files.get(cam)
+                if path is None:
+                    lines.append(f"      {cam}: (missing)")
+                else:
+                    flag = "" if path.exists() else "  MISSING"
+                    lines.append(f"      {cam}: {path.name}{flag}")
+    empty = [e for e in config.experiment_keywords if e not in groups]
+    if empty:
+        lines.append(f"  No trials for: {', '.join(empty)}")
+    lines.append("")
+    return lines
+
+
+def _preview_calibration_summary(
+    config: SetupConfig, assignment: FileAssignment
+) -> list[str]:
+    """Which experiments have complete calibration, and what the others lack."""
+    experiments = list(_experiment_trials(assignment)) or ["default"]
+    problems: list[str] = []
+    complete = 0
+    for exp in experiments:
+        if exp in assignment.calibration_toml:
+            complete += 1
+            continue
+        takes = assignment.calibration_takes.get(exp)
+        if takes:
+            lacking = [
+                f"{take} missing {', '.join(missing)}"
+                for take, cams in sorted(takes.items())
+                if (missing := [c for c in config.camera_names if c not in cams])
+            ]
+            if lacking:
+                problems.append(f"  {exp}: {'; '.join(lacking)}")
+            else:
+                complete += 1
+        elif assignment.exp_calibration.get(exp):
+            missing = [
+                c for c in config.camera_names if c not in assignment.exp_calibration[exp]
+            ]
+            if missing:
+                problems.append(f"  {exp}: no calibration videos for {', '.join(missing)}")
+            else:
+                complete += 1
+        else:
+            problems.append(f"  {exp}: no calibration")
+    lines = [f"Calibration: {complete} of {len(experiments)} experiment(s) complete"]
+    return lines + problems + [""]
+
+
+def _preview_calibration(config: SetupConfig, assignment: FileAssignment) -> list[str]:
+    """Every experiment's calibration takes, or calibration files per camera."""
+    lines = []
+    if assignment.calibration_takes:
+        n_takes = sum(len(t) for t in assignment.calibration_takes.values())
+        lines.append(f"Calibration ({n_takes} takes):")
+        for exp_name in sorted(assignment.calibration_takes):
+            takes = assignment.calibration_takes[exp_name]
+            lines.append(f"  [{exp_name}]")
+            for take in sorted(takes):
+                cam_files = takes[take]
+                parts = []
+                for cam in config.camera_names:
+                    present = cam in cam_files
+                    parts.append(f"{cam}: {'ok' if present else '-- !'}")
+                lines.append(f"    {take} — " + "  ".join(parts))
+    elif assignment.exp_calibration:
+        total = sum(
+            len(files)
+            for cam_dict in assignment.exp_calibration.values()
+            for files in cam_dict.values()
+        )
+        lines.append(f"Calibration ({total} files):")
+        for exp_name in sorted(assignment.exp_calibration):
+            cam_dict = assignment.exp_calibration[exp_name]
+            prefix = f"  [{exp_name}]  " if assignment.trial_experiment else "  "
+            parts = []
+            for cam in config.camera_names:
+                n = len(cam_dict.get(cam, []))
+                flag = "" if n else " !"
+                parts.append(f"{cam}: {n}{flag}")
+            lines.append(prefix + "  ".join(parts))
+    elif not assignment.calibration_toml:
+        lines.append("Calibration: none found")
+    for exp_name, path in sorted(assignment.calibration_toml.items()):
+        lines.append(
+            f"  [{exp_name}]  calibration found at {path} "
+            "(imported into the calibration registry)"
+        )
+    lines.append("")
+    return lines
+
+
 def preview_assignment(
-    config: SetupConfig, assignment: FileAssignment, verbose: bool = True
+    config: SetupConfig, assignment: FileAssignment, verbosity: int = 2
 ) -> str:
     """Return a human-readable summary of the file assignment.
 
-    verbose=False counts unresolved references and unmatched files instead of
-    listing them, leaves out the warnings that repeat the unresolved references,
-    and lists at most PREVIEW_MAX_WARNINGS other warnings.
+    verbosity 2 lists everything. 1 counts unresolved references and unmatched
+    files instead of listing them, leaves out the warnings that repeat them or
+    the trials' missing cameras, and lists at most PREVIEW_MAX_WARNINGS others.
+    0 also gives trial counts per experiment instead of the trials, sums up
+    calibration by experiment and leaves out the .slp file of each cell and the
+    remapped video paths.
     """
     lines = []
 
@@ -852,72 +993,14 @@ def preview_assignment(
         lines += [f"  !! {e}" for e in assignment.errors]
         lines.append("")
 
-    # Trials — grouped by experiment when experiment_keywords are set
-    if assignment.trials:
-        if assignment.trial_experiment:
-            exp_groups: dict[str, list[str]] = {}
-            for tn, exp in assignment.trial_experiment.items():
-                exp_groups.setdefault(exp, []).append(tn)
-            lines.append(
-                f"Trials ({len(assignment.trials)}) across {len(exp_groups)} experiment(s):"
-            )
-            for exp_name in sorted(exp_groups):
-                lines.append(f"  [{exp_name}]")
-                for trial_name in sorted(exp_groups[exp_name]):
-                    cam_files = assignment.trials[trial_name]
-                    lines.append(f"    {trial_name}:")
-                    for cam in config.camera_names:
-                        if cam in cam_files:
-                            lines.append(f"      {cam}: {cam_files[cam].name}")
-                        else:
-                            lines.append(f"      {cam}: (missing)")
-        else:
-            lines.append(f"Trials ({len(assignment.trials)}):")
-            for trial_name in sorted(assignment.trials):
-                cam_files = assignment.trials[trial_name]
-                lines.append(f"  {trial_name}:")
-                for cam in config.camera_names:
-                    if cam in cam_files:
-                        lines.append(f"    {cam}: {cam_files[cam].name}")
-                    else:
-                        lines.append(f"    {cam}: (missing)")
-    else:
-        lines.append("Trials: none found")
-    lines.append("")
+    lines += _preview_trials(config, assignment, verbosity)
 
-    # Calibration — per experiment, broken out by take
-    if assignment.calibration_takes:
-        n_takes = sum(len(t) for t in assignment.calibration_takes.values())
-        lines.append(f"Calibration ({n_takes} takes):")
-        for exp_name in sorted(assignment.calibration_takes):
-            takes = assignment.calibration_takes[exp_name]
-            lines.append(f"  [{exp_name}]")
-            for take in sorted(takes):
-                cam_files = takes[take]
-                parts = []
-                for cam in config.camera_names:
-                    present = cam in cam_files
-                    parts.append(f"{cam}: {'ok' if present else '-- !'}")
-                lines.append(f"    {take} — " + "  ".join(parts))
-    elif assignment.exp_calibration:
-        total = sum(
-            len(files)
-            for cam_dict in assignment.exp_calibration.values()
-            for files in cam_dict.values()
-        )
-        lines.append(f"Calibration ({total} files):")
-        for exp_name in sorted(assignment.exp_calibration):
-            cam_dict = assignment.exp_calibration[exp_name]
-            prefix = f"  [{exp_name}]  " if assignment.trial_experiment else "  "
-            parts = []
-            for cam in config.camera_names:
-                n = len(cam_dict.get(cam, []))
-                flag = "" if n else " !"
-                parts.append(f"{cam}: {n}{flag}")
-            lines.append(prefix + "  ".join(parts))
+    if verbosity == 0 and (
+        assignment.calibration_takes or assignment.exp_calibration or assignment.calibration_toml
+    ):
+        lines += _preview_calibration_summary(config, assignment)
     else:
-        lines.append("Calibration: none found")
-    lines.append("")
+        lines += _preview_calibration(config, assignment)
 
     # Multi-group split
     if assignment.needs_split:
@@ -947,46 +1030,15 @@ def preview_assignment(
         lines.append("")
 
     # SLP files
-    if assignment.slp_files:
+    if assignment.slp_files and verbosity >= 1:
         lines.append(f"SLP files ({len(assignment.slp_files)} trials):")
         for trial_name in sorted(assignment.slp_files):
             cam_files = assignment.slp_files[trial_name]
             for cam, f in sorted(cam_files.items()):
                 lines.append(f"  {trial_name}/{cam}: {f.name}")
-    lines.append("")
-
-    # Referenced videos (SLP-first setup) — where they live and whether they exist
-    if config.effective_video_mode() == "reference":
-        lines.append("Videos (referenced in place):")
-        for exp_name in sorted(set(assignment.trial_experiment.values()) or {"default"}):
-            root = assignment.video_roots.get(exp_name)
-            lines.append(
-                f"  [{exp_name}]  root: {root}" if root else f"  [{exp_name}]  (absolute paths)"
-            )
-            exp_trials = [
-                t
-                for t in sorted(assignment.trials)
-                if assignment.trial_experiment.get(t, "default") == exp_name
-            ]
-            for trial_name in exp_trials:
-                cam_files = assignment.trials[trial_name]
-                parts = []
-                for cam in config.camera_names:
-                    path = cam_files.get(cam)
-                    if path is None:
-                        parts.append(f"{cam}: --")
-                    else:
-                        parts.append(f"{cam}: {'ok' if path.exists() else 'MISSING'}")
-                lines.append(f"    {trial_name}  " + "  ".join(parts))
-        if assignment.calibration_toml:
-            for exp_name, path in sorted(assignment.calibration_toml.items()):
-                lines.append(
-                    f"  [{exp_name}]  calibration found at {path} "
-                    "(imported into the calibration registry)"
-                )
         lines.append("")
 
-    if assignment.video_remaps:
+    if assignment.video_remaps and verbosity >= 1:
         lines.append("Video paths remapped:")
         for (old_root, new_root), count in sorted(assignment.video_remaps.items()):
             source = old_root or "(basename only)"
@@ -995,7 +1047,7 @@ def preview_assignment(
 
     if assignment.missing_videos:
         lines.append(f"Unresolved video references ({len(assignment.missing_videos)}):")
-        if verbose:
+        if verbosity >= 2:
             for ref, slp_name in assignment.missing_videos:
                 lines.append(f"  {ref}  (from {slp_name})")
         else:
@@ -1007,19 +1059,25 @@ def preview_assignment(
     # Unmatched
     if assignment.unmatched:
         lines.append(f"Unmatched files ({len(assignment.unmatched)}):")
-        if verbose:
+        if verbosity >= 2:
             for f in assignment.unmatched:
                 lines.append(f"  {f.name}")
-    lines.append("")
+        lines.append("")
 
     # Warnings
     warnings = assignment.warnings
-    if not verbose:
+    if verbosity < 2:
         repeats = {_missing_video_warning(ref, name) for ref, name in assignment.missing_videos}
+        repeats |= {
+            _missing_cameras_warning(t, missing)
+            for t, cams in assignment.trials.items()
+            if (missing := set(config.camera_names) - set(cams))
+        }
+        repeats |= {_no_camera_warning(f) for f in assignment.unmatched}
         warnings = [w for w in warnings if w not in repeats]
     if warnings:
         lines.append("Warnings:")
-        shown = warnings if verbose else warnings[:PREVIEW_MAX_WARNINGS]
+        shown = warnings if verbosity >= 2 else warnings[:PREVIEW_MAX_WARNINGS]
         for w in shown:
             lines.append(f"  ! {w}")
         if len(shown) < len(warnings):
