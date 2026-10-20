@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 import toml
 
+from label3d import setup_project
 from label3d.setup_project import (
     FileAssignment,
     SetupConfig,
@@ -170,6 +171,31 @@ class TestCameraAliases:
         )
         assignment = classify_files(config)
         assert sorted(assignment.trials["trial_001"]) == ["left", "right"]
+
+
+class TestCopyFile:
+    """Copies from network shares whose file flags can't be set locally."""
+
+    def _refuse_copystat(self, monkeypatch):
+        def copystat(src, dst, **kwargs):
+            raise PermissionError(1, "Operation not permitted", dst)
+        monkeypatch.setattr(setup_project.shutil, "copystat", copystat)
+
+    def test_copy_survives_metadata_failure(self, tmp_path, monkeypatch):
+        self._refuse_copystat(monkeypatch)
+        src = tmp_path / "a.mp4"
+        src.write_bytes(b"video")
+        setup_project._copy_file(str(src), str(tmp_path / "b.mp4"))
+        assert (tmp_path / "b.mp4").read_bytes() == b"video"
+
+    def test_setup_copies_calibration_despite_metadata_failure(
+        self, basic_config, monkeypatch
+    ):
+        self._refuse_copystat(monkeypatch)
+        basic_config.copy_files = True
+        execute_setup(basic_config, classify_files(basic_config))
+        copied = list((basic_config.output_dir / "experiments").rglob("calib_left.mp4"))
+        assert copied
 
 
 class TestUnlistedExperiments:

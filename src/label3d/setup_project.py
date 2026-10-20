@@ -1204,6 +1204,26 @@ def _fill_cell(row: dict, camera: str, filename: str) -> None:
     row[f"{camera}_end"] = ""
 
 
+def _copy_file(src: str, dst: str) -> str:
+    """Copy a file's data, then its metadata where the destination allows it.
+
+    Files on network shares can carry flags a local file can't be given
+    (chflags fails with EPERM); shutil.copy2 would then fail after copying the
+    data. The times are set before the flags, so they are kept either way.
+    """
+    shutil.copyfile(src, dst)
+    try:
+        shutil.copystat(src, dst)
+    except OSError as e:
+        logger.info("Copied %s without all of its metadata: %s", src, e)
+    return dst
+
+
+def _move_file(src: str, dst: str) -> str:
+    """shutil.move, copying with _copy_file when it has to copy across drives."""
+    return shutil.move(src, dst, copy_function=_copy_file)
+
+
 def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     """Create project folder structure, move or copy files, write trials.csv and project.toml.
 
@@ -1243,7 +1263,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
 
     mode = config.effective_video_mode()
     reference = mode == "reference"
-    transfer = shutil.copy2 if mode == "copy" else shutil.move
+    transfer = _copy_file if mode == "copy" else _move_file
 
     # Group trials by experiment
     if assignment.trial_experiment:
@@ -1271,7 +1291,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         # mode: they are small, they come from calibration_dir rather than
         # from the SLP references, and the project then owns its calibration
         # inputs.  Referenced trial videos are still left where they are.
-        calib_transfer = shutil.copy2 if reference else transfer
+        calib_transfer = _copy_file if reference else transfer
         for cam, files in assignment.exp_calibration.get(exp_name, {}).items():
             cam_dir = camera_dir(exp_dir, cam)
             cam_dir.mkdir(parents=True, exist_ok=True)
@@ -1332,7 +1352,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     if assignment.slp_files:
         slp_dir = out / "slp"
         slp_dir.mkdir(parents=True, exist_ok=True)
-        slp_transfer = shutil.copy2 if reference else transfer
+        slp_transfer = _copy_file if reference else transfer
         seen: set[Path] = set()
         for trial_name, cam_files in assignment.slp_files.items():
             for cam, f in cam_files.items():
