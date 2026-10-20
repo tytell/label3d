@@ -27,9 +27,10 @@ A cross-platform desktop app for:
 | [docs/design/phases/phase_12.md](docs/design/phases/phase_12.md) | Phase 12 — Refining the calibration with labelled points (complete) |
 | [docs/design/phases/phase_13.md](docs/design/phases/phase_13.md) | Phase 13 — Batch triangulation and export |
 | [docs/design/phases/phase_14.md](docs/design/phases/phase_14.md) | Phase 14 — Per-camera skeletons (implemented; to be checked in the app) |
-| [docs/design/phases/phase_15.md](docs/design/phases/phase_15.md) | Phase 15 — Axis alignment (deferred; partially implemented) |
-| [docs/design/phases/phase_16_17.md](docs/design/phases/phase_16_17.md) | Phases 16–17: Export to other pose formats, Polish and robustness (deferred) |
-| [docs/design/phases/phase_18.md](docs/design/phases/phase_18.md) | Phase 18 — Multi-instance support and cross-camera matching (deferred) |
+| [docs/design/phases/phase_15.md](docs/design/phases/phase_15.md) | Phase 15 — Parquet working files (planned) |
+| [docs/design/phases/phase_16.md](docs/design/phases/phase_16.md) | Phase 16 — Axis alignment (deferred; partially implemented) |
+| [docs/design/phases/phase_17_18.md](docs/design/phases/phase_17_18.md) | Phases 17–18: Export to other pose formats, Polish and robustness (deferred) |
+| [docs/design/phases/phase_19.md](docs/design/phases/phase_19.md) | Phase 19 — Multi-instance support and cross-camera matching (deferred) |
 | [docs/design/phases/archive/phases_1_7.md](docs/design/phases/archive/phases_1_7.md) | Phases 1–7 (completed; archived for reference) |
 
 ---

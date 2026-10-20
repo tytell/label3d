@@ -130,7 +130,7 @@ charuco = 0.41
 spread_rotation_deg = 0.02
 spread_baseline_pct = 0.1
 
-[metadata.alignment]                  # align only (Phase 15); see the schema below
+[metadata.alignment]                  # align only (Phase 16); see the schema below
 ```
 
 A `refine` entry (Phase 12) has `parent` set to the entry it started from and `charuco_takes` copied from it, plus:

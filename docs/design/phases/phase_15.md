@@ -1,47 +1,116 @@
-# Phase 15 — Axis Alignment
+# Phase 15 — Parquet Working Files
 
-**Goal**: Let the user re-orient the world coordinate system to a physical reference by clicking points in trial video frames.
+**Goal**: Store the project's working tables as Parquet instead of CSV, so they are smaller and faster to read and write, and keep their types. The final export can be written as Parquet or CSV, in the wide layout or a long one.
 
-**Status**: Deferred (after Phases 10–14). Partially implemented — geometry helpers and CameraPanel pick mode done; UI widget not yet created.
+**Status**: Planned. This follows from the deferred *scaling of `points.csv`* note in [phase_13.md](phase_13.md#deferred-scaling-of-pointscsv). The BGvPS experiments' `points.csv` files are 94 MB (`BG75`) and 101 MB (`PS21`), and every auto-save, Sync and export reads or writes them in full.
 
-**Changes from Phase 11**: calibrations now live in the registry (`experiments/{name}/calibrations/`), and `calibration.toml` is no longer used. "Apply & Save" saves a new `align` entry whose parent is the calibration being aligned, rather than writing into `calibration.toml`. `CameraGroup.load()` reads every top-level key except `metadata` as a camera, so the alignment goes under `[metadata.alignment]`, not in a top-level `[alignment]` section. The steps below still use the old wording.
+---
 
-## Current state
+## 15.1 Which files change
 
-- `geometry.py`: `triangulate_point()`, `compute_axis_alignment()`, `apply_alignment_to_cameras()`, `save_aligned_calibration()` — implemented; not yet connected to UI
-- `widgets/camera_panel.py`: `raw_clicked = Signal(str, float, float)` signal and `set_pick_mode(bool)` method — implemented
-- `widgets/axis_alignment_widget.py` — **not yet created**
-- `widgets/calibration_view.py` — not yet modified to add alignment tab
+| Was | Becomes | Notes |
+|---|---|---|
+| `experiments/{name}/points.csv` | `points.parquet` | wide layout kept (15.2) |
+| `calibrations/{cam}/corners.csv` | `corners.parquet` | same columns |
+| `sync_history.csv` | `sync_history.parquet` | same columns |
+| `trials.csv` | unchanged | edited by hand |
+| `refined/{id}_points.csv` | unchanged | small provenance record of a refinement, kept with its registry `.toml` |
 
-## 15.1 `load_cameras()` fix (`geometry.py`)
+- **CSV is no longer read.** A project with a `points.csv`, `corners.csv` or `sync_history.csv` but no Parquet file is not converted: `Project.load` raises, naming the files and saying the project has to be set up again. This is how the pre-registry layout is handled. There is no conversion code. Before setting BGvPS up again, run **Sync** in the current version so that every manual label is in the mapped `.slp` files.
+- **Dependency:** add `pyarrow` to `pyproject.toml`. It is the pandas Parquet engine, and R's `arrow` package reads the same files.
+- **File names** live in one place, as constants next to their readers: `POINTS_FILE` in `points.py`, `corners_path` in `calibration_io.py` (exists), and `sync_history_path` in `project.py` (exists). The many literal `"points.csv"` paths in `project.py`, `main_window.py`, `setup_project.py` and `synthetic/writers.py` use `POINTS_FILE`.
 
-- [ ] Check whether `load_cameras()` already skips `"alignment"` sections — the skip list may only include `"metadata"`; add `"alignment"` to the skip list if not already present
-- [ ] Add `load_alignment(path) -> tuple[np.ndarray, np.ndarray] | None` — reads `R_align` and `origin` from `[alignment]` section; returns `None` if absent
+## 15.2 `points.parquet` layout (`points.py`)
 
-## 15.2 Axis alignment widget (`widgets/axis_alignment_widget.py`)
+In memory nothing changes: the 5-level row index and the `(view, coord)` column MultiIndex stay. Only the file is different.
 
-- [ ] `AxisAlignmentWidget(QWidget)`:
-  - Trial selector `QComboBox` + frame navigation (prev/next buttons + frame spinbox)
-  - Reuses the existing `CameraGrid` + `FrameProvider` to display trial video frames
-  - Right-side panel: 7 `QPushButton` pick targets (Origin, X near, X far, Y near, Y far, Z near, Z far), a `QTableWidget` showing pick status (✓ / –) per target, and three "Flip" `QCheckBox`es for x/y/z
-  - "Compute" button — runs `compute_axis_alignment()`; shows preview (axis vectors + R_align) in a text area
-  - "Apply & Save" button — calls `save_aligned_calibration()`, writes `[alignment]` section to `calibration.toml`
-  - Pick workflow:
-    1. User clicks a pick-target button → button stays pressed (checked), all `CameraPanel`s enter pick mode (`set_pick_mode(True)`)
-    2. User clicks in any camera panel → `raw_clicked(cam, x, y)` received; stored in a `dict[target, dict[cam, (x, y)]]`
-    3. Each target accumulates clicks across cameras (≥2 cameras needed for triangulation); table cell updated
-    4. Clicking the same button again or pressing Escape cancels pick mode
-  - Frame navigation updates `FrameProvider` and `CameraGrid` directly (no `ProjectState` shared state)
-  - On "Compute":
-    1. For each pick target with ≥2 camera picks: call `triangulate_point(cameras, picks)`
-    2. Pass triangulated points to `compute_axis_alignment(..., flip_x, flip_y, flip_z)`
-    3. Show resulting `R_align` and `origin` in a read-only text area
-  - On "Apply & Save":
-    1. Write `[alignment]` section to `calibration.toml` (`save_aligned_calibration()`)
-    2. Emit `alignment_saved` signal so `CalibrationView` / `LabelView` can reload calibration
+- **On disk the table is flat**, so R and other tools read it without pandas metadata:
+  - the five index levels are ordinary columns: `experiment, trial, frame, instance, bodypart`;
+  - each `(view, coord)` column is named `{view}/{coord}` (`LateralOrtho/x`, `3d/z`). `/` can't be in a camera name, since camera names are folder names.
+- **Types:** these are written with a fixed schema (`points_schema(cameras)`), so an empty store and an all-NaN column also round-trip:
 
-## 15.3 Integrate into calibration view (`widgets/calibration_view.py`)
+  | Column | Type |
+  |---|---|
+  | `experiment, trial, bodypart` | dictionary-encoded string |
+  | `frame, instance` | int64 |
+  | `{cam}/x, y, xr, yr, score`, `3d/x, y, z` | float64 |
+  | `{cam}/state, source` | dictionary-encoded string |
+  | `{cam}/sync` | nullable int64 |
 
-- [ ] Add "Axis Alignment" as a second tab in `CalibrationView` (alongside the existing board detection / calibration tab)
-- [ ] Instantiate `AxisAlignmentWidget` in the new tab
-- [ ] Connect `AxisAlignmentWidget.alignment_saved` → reload cameras in `LabelView` (via `ProjectState` or a direct callback)
+  Because the types are stored, the `astype(str)` fixes in `read_csv_df` for all-digit experiment and trial names are no longer needed.
+- **Row groups:** rows are sorted as now (`sort_points_index`) and written in row groups of about 100k rows, so a reader filtering on `trial` skips the groups it doesn't need. Compression is zstd.
+- **API:**
+  - `PointsStore.from_parquet(path)`, `read_points_df(path, trials=None)` and `to_parquet(path)` replace `from_csv`, `read_csv_df` and `to_csv`.
+  - `trials=` passes a filter to pyarrow. It is there for `experiment_points_df` and the export, but they can keep reading the whole file until timing (15.6) shows a need.
+- **Safe saves:** `_auto_save` and `save_if_changed` currently rename the file to `.csv.bak` and then write. Instead, they write `points.parquet.tmp`, keep the previous file as `points.parquet.bak`, then `os.replace` the temporary file into place. A crash while writing leaves the old file intact. `Project.clear_unavailable` and `apply_merge`, which write inactive experiments' files, use the same helper (`write_points_file(df, path)`).
+
+## 15.3 `corners.parquet` and `sync_history.parquet`
+
+- **Corners (`calibration_io.py`):** `_read_corners_df` and `save_corners` switch to Parquet with the same `CORNER_COLUMNS`. `take` and `detected` are strings, `frame` and `corner_id` int32, and `x, y` float32. `save_corners` already rewrites the whole file, so its logic doesn't change.
+- **Sync history (`project.py`):** `_record_sync` appends with `to_csv(mode="a")`, but Parquet can't be appended to. It reads the history, concatenates the new rows and writes the whole file, with the same temporary-file replace. The file has one row per (sync, experiment, trial), so it stays small.
+
+## 15.4 Export: format and layout (`export.py`, export dialog, CLI)
+
+`ExportOptions` gains two fields:
+
+- `format`: `"parquet"` (default) or `"csv"`;
+- `layout`: `"wide"` (default, the current columns from `export_columns`) or `"long"`.
+
+**Long layout:** one row per (experiment, trial, frame, instance, bodypart, view), with `view` a camera name or `3d`. Columns, in this order: `experiment, trial, frame, instance, bodypart, view, video_frame, x, y, z, state, source, score, xr, yr, error, n_cameras, mean_error, calibration`.
+- Camera rows leave `z`, `n_cameras`, `mean_error` and `calibration` empty.
+- `3d` rows leave `video_frame`, `state`, `source`, `score`, `xr`, `yr` and `error` empty.
+- Units are given in the docs, not in the column names: px for camera rows and cm for `3d` rows, since one `x` column holds both.
+- `not_set` camera rows are left out. A `3d` row is written only where x/y/z are all present.
+
+The long table is built from the same per-experiment wide rows (`experiment_rows`) by `wide_to_long(rows, cameras)`, so the two layouts can't disagree. The filters (`include_predictions`, `only_3d`) work as now, before the reshape.
+
+**File extension:** the format sets the extension. `default_output_path(project, format)` gives `exports/points_{timestamp}.parquet` or `.csv`. A user-supplied path with the wrong or no extension gets the right one (`with_suffix`), and the summary shows the final path.
+
+**Dialog (`widgets/export_dialog.py`):** a **Format** choice (Parquet / CSV) and a **Layout** choice (Wide / Long). Changing the format changes the extension in the path field, and the Browse filter follows the format.
+
+**CLI (`export_cli.py`):** add `--format {parquet,csv}` and `--layout {wide,long}`, and correct the suffix of `-o` the same way.
+
+## 15.5 Tests
+
+- **Points:**
+  - `to_parquet` → `from_parquet` round-trips a populated store exactly: index, columns, dtypes, NaN and every state and source;
+  - an empty store round-trips;
+  - all-digit experiment and trial names come back as strings;
+  - a saved file has the flat column names and reads in pyarrow without pandas.
+- **Safe save:** after a save, the `.bak` file holds the previous contents. A write that fails part way (patched to raise) leaves `points.parquet` unchanged.
+- **CSV refused:** a project with only a `points.csv` raises on load with a message naming it.
+- **Corners, sync history:** existing tests switch to Parquet. Recording two syncs keeps both sets of rows.
+- **Export:**
+  - both formats × both layouts write the documented columns in order;
+  - long rows round-trip to the wide rows;
+  - a path with the wrong suffix is corrected;
+  - the CLI's `--format` and `--layout` work.
+- **Fixtures:**
+  - regenerate the synthetic test project with Parquet, since `synthetic/writers.py` writes `points.parquet`;
+  - the hand-built projects in `test_project_sync.py` and `test_slp_setup.py` write Parquet;
+  - `test_points_paths.py` (spaces, unicode, nested paths) switches to Parquet.
+
+## 15.6 Timing
+
+- **Before:** time reading and writing `points.csv` on BGvPS `PS21`.
+- **After:** time the same with `points.parquet`, and compare the file sizes.
+- Record the numbers here. If Sync is still slow, the remaining options from the Phase 13 note apply: split the store per trial, or write only the SLP files whose cells changed.
+
+## 15.7 Docs
+
+- **`CLAUDE.md`, `docs/design/data_model.md`:** file names, the on-disk column naming (`{view}/{coord}`) and the types. Mark CSV as no longer supported.
+- **`docs/user_workflow.md`:**
+  - the export's format and layout choices;
+  - the long layout's columns, next to the existing wide table;
+  - how to open the files: `pd.read_parquet` and `arrow::read_parquet()` / `arrow::open_dataset()`, and viewers such as Tad or the DuckDB UI.
+- **`docs/setup_from_slp.md`, `docs/design/workflows.md`, `docs/design/architecture.md`:** file names.
+- **`phase_13.md`:** the deferred note points here.
+- The finished phase docs (8–12) are left as written.
+
+## Implementation order
+
+1. 15.6 "before" timing; add `pyarrow`
+2. 15.2: Parquet I/O in `points.py`, the safe-save helper, `POINTS_FILE` everywhere, and refuse CSV on load. Then the points tests and regenerated fixtures
+3. 15.3: corners and sync history, with their tests
+4. 15.4: export format and layout in `export.py`, then the dialog and the CLI, with their tests
+5. 15.6 "after" timing; 15.7 docs

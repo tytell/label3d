@@ -2,7 +2,7 @@
 
 **Goal**: The final step of the workflow. Once the SLEAP model is trained and has run on every frame of every camera, triangulate everything with each experiment's active calibration. Then write one long-format CSV with the 2D and 3D coordinates of all points from all experiments, and bring the mapped SLP files up to date at the same time.
 
-**Status**: Code, tests and docs done; to be checked in the app before marking complete. This replaces the Export tab. Phase 16.1 stays as written for exporting to other pose formats, but it will be reached from the File menu too, not from a tab.
+**Status**: Code, tests and docs done; to be checked in the app before marking complete. This replaces the Export tab. Phase 17.1 stays as written for exporting to other pose formats, but it will be reached from the File menu too, not from a tab.
 
 ---
 
@@ -122,7 +122,7 @@ Finish the Phase 10.9 draft:
 
 ## Deferred: scaling of `points.csv`
 
-Not part of this phase; this is a to-do for when predictions on every frame make the app slow.
+Not part of this phase. Planned as [Phase 15](phase_15.md): Parquet working files.
 
 - **The risk:** `points.csv` is a MultiIndex CSV, read and written in full by every sync and every auto-save. With predictions on every frame it gets large. The largest project so far is `real_OMR/experiments/20260721`: 67,697 rows, 16 MB.
 - **Measure first**, on a project with predictions on every frame. Time these steps separately:

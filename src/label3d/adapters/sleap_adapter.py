@@ -195,7 +195,7 @@ class SleapAdapter(PoseAdapter):
         Targets, in order of precedence:
         - mapping (with root): one file per SlpFileSpec, holding all its videos
         - file_map: cells grouped by their source path
-        - output_dir (Phase 16 export view): one {camera}_{trial}.slp per cell with data
+        - output_dir (Phase 17 export view): one {camera}_{trial}.slp per cell with data
 
         Each file is written once with all of its videos.  If the file already
         exists, its skeleton, videos (matched by basename), suggestions, tracks
