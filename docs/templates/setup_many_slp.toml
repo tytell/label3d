@@ -42,10 +42,10 @@ name = "BGvPS"
 
 [charuco]
 squares_x = 6
-squares_y = 8
+squares_y = 6
 square_length = 30.0
 marker_length = 22.0
-marker_bits = 4
+marker_bits = 5
 dict_size = 50
 
 # Optional. The .slp files' skeletons are used and merged by node name; give a
