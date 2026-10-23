@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +51,7 @@ class SleapAdapter(PoseAdapter):
         mapping: SlpMapping | None = None,
         root: Path | None = None,
         unmatched: list[str] | None = None,
+        progress: Callable[[int, int, str], object] | None = None,
     ) -> pd.DataFrame:
         """Load .slp files and return a points-compatible DataFrame.
 
@@ -67,19 +69,31 @@ class SleapAdapter(PoseAdapter):
         Frames before a video's {cam}_start or after its {cam}_end are dropped.
         If unmatched is given, basenames of videos that match no trial video
         are appended to it.
+
+        progress, if given, is called as progress(done, total, text) with the
+        labeled frames read so far in the current file (total 0 while a file
+        is being opened).
         """
         cells_info = video_cells(trials, cameras)
         cell_ends = _cell_ends(trials, cameras)
         basename_to_cells = basename_lookup(trials, cameras)
         rows: list[dict] = []
 
-        for slp_path, allowed in self._sources(files, mapping, root):
+        sources = self._sources(files, mapping, root)
+        for n_file, (slp_path, allowed) in enumerate(sources, start=1):
+            text = f"Reading {slp_path.name} (file {n_file} of {len(sources)})…"
+            if progress is not None:
+                progress(0, 0, text)
             logger.debug(f"Loading SLEAP file: {slp_path}")
             labels = sio.load_file(str(slp_path))
-            logger.debug(f"{len(labels.labeled_frames)} labeled frames")
+            n_frames = len(labels.labeled_frames)
+            logger.debug(f"{n_frames} labeled frames")
+            step = max(1, n_frames // 100)
             warned: set[str] = set()
 
-            for lf in labels.labeled_frames:
+            for n_done, lf in enumerate(labels.labeled_frames):
+                if progress is not None and n_done % step == 0:
+                    progress(n_done, n_frames, text)
                 if not isinstance(lf.video.filename, str):
                     continue
                 video_basename = Path(lf.video.filename).name

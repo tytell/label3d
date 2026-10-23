@@ -22,6 +22,7 @@ class SlpReadWorker(QThread):
 
     done = Signal(object)  # dict[str, MergeResult]
     error = Signal(str)
+    progress = Signal(int, int, str)  # done, total (0 while busy), text
 
     def __init__(self, project: Project, mapping: SlpMapping | None = None, parent=None):
         super().__init__(parent)
@@ -30,10 +31,16 @@ class SlpReadWorker(QThread):
 
     def run(self):
         try:
-            self.done.emit(self._project.read_slp_for_sync(self._mapping))
+            self.done.emit(
+                self._project.read_slp_for_sync(self._mapping, progress=self._report)
+            )
         except Exception as exc:
             logger.exception("SLP read failed")
             self.error.emit(str(exc))
+
+    def _report(self, done: int, total: int, text: str) -> bool:
+        self.progress.emit(done, total, text)
+        return True
 
 
 class PredictionImportWorker(QThread):
@@ -41,6 +48,7 @@ class PredictionImportWorker(QThread):
 
     done = Signal(object, object)  # dict[str, MergeResult], list[str] unmatched videos
     error = Signal(str)
+    progress = Signal(int, int, str)  # done, total (0 while busy), text
 
     def __init__(self, project: Project, paths: list[Path], parent=None):
         super().__init__(parent)
@@ -49,11 +57,17 @@ class PredictionImportWorker(QThread):
 
     def run(self):
         try:
-            results, unmatched = self._project.read_predictions_for_import(self._paths)
+            results, unmatched = self._project.read_predictions_for_import(
+                self._paths, progress=self._report
+            )
             self.done.emit(results, unmatched)
         except Exception as exc:
             logger.exception("Prediction import failed")
             self.error.emit(str(exc))
+
+    def _report(self, done: int, total: int, text: str) -> bool:
+        self.progress.emit(done, total, text)
+        return True
 
 
 class SlpWriteWorker(QThread):

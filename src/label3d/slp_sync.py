@@ -9,6 +9,8 @@ It is pure (no Qt objects created) and safe to call from a background thread.
 
 from __future__ import annotations
 
+import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -408,6 +410,67 @@ def camera_sources(frame_df: pd.DataFrame | None, cam: str) -> dict[tuple[int, s
     }
 
 
+CameraData = tuple[
+    dict[tuple[int, str], tuple[float, float, str]],  # camera_cells
+    dict[tuple[int, str], float],                      # camera_scores
+    dict[tuple[int, str], str],                        # camera_sources
+]
+NO_CAMERA_DATA: CameraData = ({}, {}, {})
+
+
+def frame_keys(df: pd.DataFrame) -> list[tuple[str, str, int]]:
+    """(experiment, trial, frame) of each row of df, in row order."""
+    idx = df.index
+    return list(zip(
+        idx.get_level_values("experiment").tolist(),
+        idx.get_level_values("trial").tolist(),
+        idx.get_level_values("frame").tolist(),
+    ))
+
+
+def frame_camera_data(
+    df: pd.DataFrame, cameras: list[str]
+) -> dict[tuple[str, str, int], dict[str, CameraData]]:
+    """camera_cells, camera_scores and camera_sources for every frame of df at once.
+
+    Returns (experiment, trial, frame) → camera → (cells, scores, sources),
+    the dicts those functions return for that frame's rows.  A camera with no
+    state column is left out.  Each column is read once, which is far faster
+    than slicing df frame by frame.  df must have a normalized index.
+    """
+    out: dict[tuple[str, str, int], dict[str, CameraData]] = {}
+    if df.empty:
+        return out
+    keys = frame_keys(df)
+    instances = df.index.get_level_values("instance").tolist()
+    bodyparts = df.index.get_level_values("bodypart").tolist()
+    n = len(df)
+    for cam in cameras:
+        if (cam, "state") not in df.columns:
+            continue
+        xs = pd.to_numeric(df[(cam, "x")], errors="coerce").to_numpy(dtype=float).tolist()
+        ys = pd.to_numeric(df[(cam, "y")], errors="coerce").to_numpy(dtype=float).tolist()
+        states = df[(cam, "state")].tolist()
+        scores = (
+            pd.to_numeric(df[(cam, "score")], errors="coerce").to_numpy(dtype=float).tolist()
+            if (cam, "score") in df.columns else [math.nan] * n
+        )
+        sources = df[(cam, "source")].tolist() if (cam, "source") in df.columns else [""] * n
+        for key, i, b, x, y, s, sc, src in zip(
+            keys, instances, bodyparts, xs, ys, states, scores, sources
+        ):
+            by_cam = out.get(key)
+            if by_cam is None:
+                by_cam = out[key] = {}
+            data = by_cam.get(cam)
+            if data is None:
+                data = by_cam[cam] = ({}, {}, {})
+            data[0][(i, b)] = (x, y, s if isinstance(s, str) else "not_set")
+            data[1][(i, b)] = sc
+            data[2][(i, b)] = src if isinstance(src, str) else ""
+    return out
+
+
 def written_instances(
     cells: dict[tuple[int, str], tuple[float, float, str]]
 ) -> list[tuple[int, bool]]:
@@ -421,7 +484,7 @@ def written_instances(
     written: set[int] = set()
     user: set[int] = set()
     for (inst, _), (x, y, state) in cells.items():
-        if state in WRITTEN_STATES and np.isfinite(x) and np.isfinite(y):
+        if state in WRITTEN_STATES and math.isfinite(x) and math.isfinite(y):
             written.add(inst)
         if state in USER_STATES:
             user.add(inst)
@@ -498,7 +561,10 @@ SLEAP_SOURCES = {"set": SOURCE_SLEAP_USER, "predicted": SOURCE_SLEAP_PRED}
 
 
 def compute_merge(
-    store_df: pd.DataFrame, slp_df: pd.DataFrame, sync_id: int | None = None
+    store_df: pd.DataFrame,
+    slp_df: pd.DataFrame,
+    sync_id: int | None = None,
+    progress: Callable[[int, int], object] | None = None,
 ) -> MergeResult:
     """Merge labels read from SLP files into the store DataFrame.
 
@@ -524,6 +590,9 @@ def compute_merge(
     Every cell taken from SLP gets source sleap_user / sleap_pred, the SLP
     score, and sync = sync_id (NaN when sync_id is None).  Frames or cameras
     absent from the SLP data are left unchanged.
+
+    progress, if given, is called as progress(done, total) with the number of
+    SLP frames merged so far.
     """
     store_df = normalize_index(store_df)
     if slp_df.empty:
@@ -535,11 +604,14 @@ def compute_merge(
         c for c in store_df.columns.get_level_values(0).unique()
         if c != "3d" and (c, "state") in slp_df.columns
     ]
-    frame_levels = ["experiment", "trial", "frame"]
-    store_groups = (
-        {k: g for k, g in store_df.groupby(level=frame_levels, sort=False)}
-        if not store_df.empty else {}
-    )
+    slp_frames = frame_camera_data(slp_df, cameras)
+    store_frames = frame_camera_data(store_df, cameras)
+    store_instances: dict[tuple[str, str, int], set[int]] = {}
+    if not store_df.empty:
+        for key, inst in zip(
+            frame_keys(store_df), store_df.index.get_level_values("instance").tolist()
+        ):
+            store_instances.setdefault(key, set()).add(inst)
 
     result = MergeResult(df=store_df, df_overwrite=store_df, sync_id=sync_id)
     updates: dict[tuple[tuple, str], dict] = {}
@@ -551,23 +623,21 @@ def compute_merge(
             "score": score if state == "predicted" else np.nan, "sync": sync_value,
         }
 
-    for key, slp_group in slp_df.groupby(level=frame_levels, sort=False):
-        store_group = store_groups.get(key)
-        frame_instances = (
-            sorted(set(store_group.index.get_level_values("instance").tolist()))
-            if store_group is not None else []
-        )
+    n_frames = len(slp_frames)
+    step = max(1, n_frames // 200)
+    for n_done, (key, slp_by_cam) in enumerate(slp_frames.items()):
+        if progress is not None and n_done % step == 0:
+            progress(n_done, n_frames)
+        store_by_cam = store_frames.get(key, {})
+        frame_instances = sorted(store_instances.get(key, ()))
         next_new = frame_instances[-1] + 1 if frame_instances else 0
 
         for cam in cameras:
-            slp_cells = camera_cells(slp_group, cam)
+            slp_cells, slp_scores, _ = slp_by_cam.get(cam, NO_CAMERA_DATA)
             slp_insts = written_instances(slp_cells)
             if not slp_insts:
                 continue
-            slp_scores = camera_scores(slp_group, cam)
-            store_cells = camera_cells(store_group, cam)
-            store_sources = camera_sources(store_group, cam)
-            store_scores = camera_scores(store_group, cam)
+            store_cells, store_scores, store_sources = store_by_cam.get(cam, NO_CAMERA_DATA)
             store_insts = [inst for inst, _ in written_instances(store_cells)]
             targets = store_insts + [i for i in frame_instances if i not in store_insts]
 
@@ -589,7 +659,7 @@ def compute_merge(
                         continue
                     inst = target(pos)
                     for bp, sx, sy, sstate in slp_by_inst[slp_inst]:
-                        if sstate != "set" or not (np.isfinite(sx) and np.isfinite(sy)):
+                        if sstate != "set" or not (math.isfinite(sx) and math.isfinite(sy)):
                             continue
                         idx = (*key, inst, bp)
                         cx, cy, cstate = store_cells.get((inst, bp), (np.nan, np.nan, "not_set"))
@@ -611,7 +681,7 @@ def compute_merge(
                 for pos, (slp_inst, _) in enumerate(slp_insts):
                     inst = target(pos)
                     for bp, sx, sy, sstate in slp_by_inst[slp_inst]:
-                        if sstate == "predicted" and np.isfinite(sx) and np.isfinite(sy):
+                        if sstate == "predicted" and math.isfinite(sx) and math.isfinite(sy):
                             score = slp_scores.get((slp_inst, bp), np.nan)
                             new_preds[(inst, bp)] = (sx, sy, score)
 
@@ -632,10 +702,14 @@ def compute_merge(
                             and abs(cy - sy) <= PREDICTION_MOVE_PX
                         ):
                             old_score = store_scores.get((inst, bp), np.nan)
+                            # not np.isclose(score, old_score), without its per-call cost
                             if (
                                 store_sources.get((inst, bp)) == SOURCE_SLEAP_PRED
-                                and np.isfinite(score)
-                                and not np.isclose(score, old_score, equal_nan=False)
+                                and math.isfinite(score)
+                                and not (
+                                    math.isfinite(old_score)
+                                    and abs(score - old_score) <= 1e-8 + 1e-5 * abs(old_score)
+                                )
                             ):
                                 updates[(idx, cam)] = {"score": score}
                                 result.n_score_updates += 1
@@ -647,6 +721,8 @@ def compute_merge(
                     result.changed_frames.add(key)
                     result.new_frames.add(key)
 
+    if progress is not None:
+        progress(n_frames, n_frames)
     result.df = _apply_updates(store_df, updates)
     result.df_overwrite = (
         _apply_updates(result.df, conflict_updates) if conflict_updates else result.df

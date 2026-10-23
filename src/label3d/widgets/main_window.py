@@ -636,6 +636,9 @@ class MainWindow(QMainWindow):
         self._import_worker = PredictionImportWorker(
             self._project, [Path(p) for p in paths], parent=self
         )
+        self._import_worker.progress.connect(
+            lambda done, total, text: self._show_progress(progress, done, total, text)
+        )
         self._import_worker.done.connect(
             lambda results, unmatched: self._on_import_read(results, unmatched, progress)
         )
@@ -1357,6 +1360,9 @@ class MainWindow(QMainWindow):
 
         progress = self._busy_dialog("Reading SLP files…", "Loading SLP files")
         self._slp_open_worker = SlpReadWorker(self._project, parent=self)
+        self._slp_open_worker.progress.connect(
+            lambda done, total, text: self._show_progress(progress, done, total, text)
+        )
         self._slp_open_worker.done.connect(
             lambda results: self._on_open_read(results, progress)
         )
@@ -1437,6 +1443,9 @@ class MainWindow(QMainWindow):
 
         progress = self._busy_dialog("Reading SLP files…", "Sync with Sleap")
         self._slp_read_worker = SlpReadWorker(self._project, parent=self)
+        self._slp_read_worker.progress.connect(
+            lambda done, total, text: self._show_progress(progress, done, total, text)
+        )
         self._slp_read_worker.done.connect(
             lambda results: self._on_sync_read(results, progress)
         )
@@ -1537,8 +1546,18 @@ class MainWindow(QMainWindow):
         progress.setWindowTitle(title)
         progress.setMinimumDuration(0)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
+        # Callers close it; reaching the maximum mid-way must not close it
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
         progress.setValue(0)
         return progress
+
+    @staticmethod
+    def _show_progress(progress: QProgressDialog, done: int, total: int, text: str) -> None:
+        """Update a _busy_dialog from a worker; total 0 shows the busy bar."""
+        progress.setMaximum(total)
+        progress.setValue(done)
+        progress.setLabelText(text)
 
     def _do_setup_slp(self) -> None:
         """Edit SLP file assignments, then read old files, merge, and write the new files."""
@@ -1554,6 +1573,9 @@ class MainWindow(QMainWindow):
         # Read the old files first so labels made in SLEAP are not lost
         progress = self._busy_dialog("Reading SLP files…", "Set up Sleap files")
         self._slp_read_worker = SlpReadWorker(self._project, old_mapping, parent=self)
+        self._slp_read_worker.progress.connect(
+            lambda done, total, text: self._show_progress(progress, done, total, text)
+        )
         self._slp_read_worker.done.connect(
             lambda results: self._on_setup_read(results, new_mapping, progress)
         )

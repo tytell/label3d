@@ -644,7 +644,10 @@ class Project:
         return PointsStore.empty_df(self.cameras)
 
     def read_slp_for_sync(
-        self, mapping: SlpMapping | None = None, sync: bool = True
+        self,
+        mapping: SlpMapping | None = None,
+        sync: bool = True,
+        progress: ProgressCallback | None = None,
     ) -> dict[str, MergeResult]:
         """Read SLP files and merge them with each experiment's points.
 
@@ -655,35 +658,49 @@ class Project:
         sync=True gives merged cells the next sync id, so they show as new once
         apply_merge() records the sync.  sync=False (initial import at project
         setup) records sources and scores but marks nothing new.
+
+        progress, if given, is called as progress(done, total, text) while the
+        files are read and merged; its return value is ignored.
         """
         mapping = self.slp_mapping if mapping is None else mapping
         adapter = SleapAdapter()
         if mapping.files:
             slp_df = adapter.load(
-                None, self.trials_df, self.cameras, mapping=mapping, root=self.root
+                None, self.trials_df, self.cameras, mapping=mapping, root=self.root,
+                progress=progress,
             )
         else:
-            slp_df = adapter.load(sorted(self.slp_dir.glob("*.slp")), self.trials_df, self.cameras)
-        return self._merge_by_experiment(slp_df, self.next_sync_id() if sync else None)
+            slp_df = adapter.load(
+                sorted(self.slp_dir.glob("*.slp")), self.trials_df, self.cameras,
+                progress=progress,
+            )
+        return self._merge_by_experiment(
+            slp_df, self.next_sync_id() if sync else None, progress
+        )
 
     def read_predictions_for_import(
-        self, paths: list[Path]
+        self, paths: list[Path], progress: ProgressCallback | None = None
     ) -> tuple[dict[str, MergeResult], list[str]]:
         """Read .slp files from anywhere (e.g. sleap-nn track output) and merge them.
 
         Videos are matched to (experiment, trial, camera) by basename, so a
         file made on another machine still matches.  The files are only read.
         Returns (results by experiment, basenames of videos that matched no
-        trial).  Safe to call from a background thread.
+        trial).  Safe to call from a background thread.  progress is as for
+        read_slp_for_sync.
         """
         unmatched: list[str] = []
         slp_df = SleapAdapter().load(
-            list(paths), self.trials_df, self.cameras, unmatched=unmatched
+            list(paths), self.trials_df, self.cameras, unmatched=unmatched,
+            progress=progress,
         )
-        return self._merge_by_experiment(slp_df, self.next_sync_id()), unmatched
+        return self._merge_by_experiment(slp_df, self.next_sync_id(), progress), unmatched
 
     def _merge_by_experiment(
-        self, slp_df: pd.DataFrame, sync_id: int | None
+        self,
+        slp_df: pd.DataFrame,
+        sync_id: int | None,
+        progress: ProgressCallback | None = None,
     ) -> dict[str, MergeResult]:
         # Nodes outside the skeleton (e.g. ones dropped from every skeleton) are
         # left out, so a .slp file still carrying them doesn't bring them back.
@@ -700,11 +717,20 @@ class Project:
         if skeletons is not None and not slp_df.empty:
             slp_df, dropped = drop_unavailable(slp_df, skeletons)
         results = {}
-        for name in self.experiments:
+        for n_exp, name in enumerate(self.experiments, start=1):
             exp_slp = slp_df
             if not slp_df.empty:
                 exp_slp = slp_df[slp_df.index.get_level_values("experiment") == name]
-            results[name] = compute_merge(self.experiment_points_df(name), exp_slp, sync_id)
+            text = f"Merging {name} (experiment {n_exp} of {len(self.experiments)})…"
+            if progress is not None:
+                progress(0, 0, text)
+            on_frames = (
+                (lambda done, total, text=text: progress(done, total, text))
+                if progress is not None else None
+            )
+            results[name] = compute_merge(
+                self.experiment_points_df(name), exp_slp, sync_id, progress=on_frames
+            )
             results[name].dropped = dropped.get(name, {})
         return results
 
