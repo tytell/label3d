@@ -356,7 +356,7 @@ class TestExecute:
     def test_slp_files_are_copied_not_moved(self, source):
         config = _config(source)
         out = execute_setup(config, classify_slp_files(config))
-        assert (out / "slp" / "cam1.slp").exists()
+        assert (out / "slp" / "cam1" / "cam1.slp").exists()
         assert source["slps"][0].exists()
 
     def test_slp_mapping_written(self, source):
@@ -405,6 +405,62 @@ class TestExecute:
         out = execute_setup(config, assignment)
         project = Project.load(out)
         assert project.video_path("Trial7", "cam1").exists()
+
+
+class TestModelsFolders:
+    """Each .slp file gets a folder of its own in slp/, with its SLEAP models folder."""
+
+    @pytest.fixture
+    def nested(self, source):
+        """labels2/{cam}/{cam}.slp; cam1's folder has a models folder."""
+        root = source["tmp"] / "labels2"
+        for cam in CAMERAS:
+            _make_slp(root / cam / f"{cam}.slp", [source["videos"][(cam, t)] for t in ("Trial1", "Trial2")])
+        model = root / "cam1" / "models" / "run1"
+        model.mkdir(parents=True)
+        (model / "best.ckpt").write_bytes(b"weights")
+        # SLEAP writes the model's training labels as .slp files in its folder
+        _make_slp(model / "labels_gt.train.slp", [source["videos"][("cam1", "Trial1")]])
+        return root
+
+    def test_found_recursively_skipping_models(self, source, nested):
+        assignment = classify_slp_files(_config(source, slp_paths=[nested]))
+        assert not assignment.errors
+        assert sorted(p.name for p in assignment.slp_skeletons) == ["cam1.slp", "cam2.slp"]
+
+    def test_models_folder_copied_beside_its_slp(self, source, nested):
+        config = _config(source, slp_paths=[nested])
+        out = execute_setup(config, classify_slp_files(config))
+        assert (out / "slp" / "cam1" / "cam1.slp").exists()
+        assert (out / "slp" / "cam1" / "models" / "run1" / "best.ckpt").read_bytes() == b"weights"
+        assert not (out / "slp" / "cam2" / "models").exists()
+        assert (nested / "cam1" / "models" / "run1" / "best.ckpt").exists()
+        files = {f["path"] for f in toml.load(out / "project.toml")["slp"]["files"]}
+        assert files == {"slp/cam1/cam1.slp", "slp/cam2/cam2.slp"}
+        assert [p.name for p in Project.load(out).slp_files()] == ["cam1.slp", "cam2.slp"]
+
+    def test_preview_lists_models_folders(self, source, nested):
+        config = _config(source, slp_paths=[nested])
+        text = preview_assignment(config, classify_slp_files(config))
+        assert "slp/cam1/models" in text
+
+    def test_shared_models_folder_is_an_error(self, source):
+        (source["slps"][0].parent / "models").mkdir()
+        assignment = classify_slp_files(_config(source))
+        assert any("models folder and several .slp files" in e for e in assignment.errors)
+
+    def test_clashing_stems_numbered(self, source):
+        slps = [
+            _make_slp(
+                source["tmp"] / folder / "labels.slp",
+                [source["videos"][(cam, t)] for t in ("Trial1", "Trial2")],
+            )
+            for folder, cam in (("a", "cam1"), ("b", "cam2"))
+        ]
+        config = _config(source, slp_paths=slps)
+        out = execute_setup(config, classify_slp_files(config))
+        assert (out / "slp" / "labels" / "labels.slp").exists()
+        assert (out / "slp" / "labels_2" / "labels.slp").exists()
 
 
 class TestCalibration:

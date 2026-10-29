@@ -18,7 +18,7 @@ from aniposelib.cameras import CameraGroup
 from label3d.calibration_registry import REFINED_DIR, camera_dir, save_calibration
 from label3d.project import Project, check_trial_videos, write_trials_csv
 from label3d.skeleton import Skeleton, assign_in_config, merge_skeletons
-from label3d.slp_sync import SlpMapping
+from label3d.slp_sync import MODELS_DIR, SlpMapping, find_slp_files, slp_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +259,8 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         config.match_strategy, data_videos, config
     )
 
+    _check_models_folders(slp_paths, assignment)
+
     # Match SLP files to trials via their embedded video references
     if slp_paths:
         # Build lookup: video_basename -> (trial_name, camera_name)
@@ -412,9 +414,10 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
     """
     assignment = FileAssignment()
 
-    slp_paths = _expand_slp_paths(config.slp_paths)
+    slp_paths = _expand_slp_paths(config.slp_paths, exclude=config.output_dir)
     if not slp_paths:
         raise FileNotFoundError("No .slp files found in the given paths")
+    _check_models_folders(slp_paths, assignment)
 
     search_dirs = [Path(d) for d in config.video_search_dirs]
     logger.debug("SLP files: %s", [str(p) for p in slp_paths])
@@ -568,9 +571,9 @@ def config_from_toml(
     video_search_dirs = [
         Path(d).expanduser().resolve() for d in setup.get("video_search_dirs", [])
     ]
-    # Without slp_files, .slp files in source_dir make this an SLP-first setup,
-    # with source_dir also searched for videos that have moved there.
-    if not slp_files and source_dir.is_dir() and any(source_dir.glob(f"*{SLP_EXTENSION}")):
+    # Without slp_files, .slp files in source_dir or its subfolders make this an
+    # SLP-first setup, with source_dir also searched for videos that have moved there.
+    if not slp_files and source_dir.is_dir() and find_slp_files(source_dir, exclude=output_dir):
         slp_files = [source_dir]
         if source_dir not in video_search_dirs:
             video_search_dirs.append(source_dir)
@@ -743,18 +746,62 @@ def _apply_config_skeleton(config: SetupConfig, assignment: FileAssignment) -> N
     assignment.skeleton = merge_skeletons(skeletons).to_dict()
 
 
-def _expand_slp_paths(paths: list[Path]) -> list[Path]:
-    """Expand directories into the .slp files they contain; keep files as given."""
+def _expand_slp_paths(paths: list[Path], exclude: Path | None = None) -> list[Path]:
+    """Expand directories into the .slp files in them and their subfolders; keep files as given.
+
+    SLEAP model folders and exclude (the project being set up) are not searched.
+    """
     expanded: list[Path] = []
     for path in paths:
         path = Path(path).expanduser()
         if path.is_dir():
-            expanded.extend(sorted(path.glob(f"*{SLP_EXTENSION}")))
+            expanded.extend(find_slp_files(path, exclude=exclude))
         elif path.exists():
             expanded.append(path)
         else:
             raise FileNotFoundError(f"SLP path not found: {path}")
     return expanded
+
+
+def _models_dir(slp_path: Path) -> Path | None:
+    """The SLEAP models folder beside a .slp file, if there is one."""
+    models = slp_path.parent / MODELS_DIR
+    return models if models.is_dir() else None
+
+
+def _check_models_folders(slp_paths: list[Path], assignment: FileAssignment) -> None:
+    """Error for each models folder beside more than one of the .slp files.
+
+    In the project each .slp file has a folder of its own, and a shared models
+    folder can't be split between them.
+    """
+    by_folder: dict[Path, list[Path]] = {}
+    for slp_path in slp_paths:
+        by_folder.setdefault(slp_path.parent, []).append(slp_path)
+    for folder, paths in sorted(by_folder.items()):
+        if len(paths) > 1 and _models_dir(paths[0]) is not None:
+            names = ", ".join(p.name for p in paths)
+            assignment.errors.append(
+                f"'{folder}' has a {MODELS_DIR} folder and several .slp files ({names}); "
+                f"put each .slp file in a folder of its own with its {MODELS_DIR} folder"
+            )
+
+
+def _slp_destinations(assignment: FileAssignment) -> dict[Path, Path]:
+    """Source .slp file -> its path in the project, slp/{stem}/{name}.
+
+    Folders whose stems clash are numbered _2, _3, … in source path order.
+    """
+    sources = sorted({f for cam_files in assignment.slp_files.values() for f in cam_files.values()})
+    destinations: dict[Path, Path] = {}
+    taken: set[str] = set()
+    for source in sources:
+        folder, n = source.stem, 2
+        while folder.lower() in taken:
+            folder, n = f"{source.stem}_{n}", n + 1
+        taken.add(folder.lower())
+        destinations[source] = slp_file_path(folder).parent / source.name
+    return destinations
 
 
 def _find_calibration_toml(dirs: list[Path], camera_names: list[str]) -> Path | None:
@@ -1111,6 +1158,17 @@ def preview_assignment(
                 lines.append(f"  {trial_name}/{cam}: {f.name}")
         lines.append("")
 
+    if assignment.slp_files:
+        models = [
+            (f, rel) for f, rel in _slp_destinations(assignment).items()
+            if _models_dir(f) is not None
+        ]
+        if models:
+            lines.append(f"SLEAP model folders ({len(models)}):")
+            for f, rel in models:
+                lines.append(f"  {_models_dir(f)}  ->  {(rel.parent / MODELS_DIR).as_posix()}")
+            lines.append("")
+
     if assignment.video_remaps and verbosity >= 2:
         lines.append("Video paths remapped:")
         for (old_root, new_root), count in sorted(assignment.video_remaps.items()):
@@ -1209,12 +1267,12 @@ def _slp_mapping_config(assignment: FileAssignment) -> dict | None:
     """
     if not assignment.slp_files:
         return None
+    destinations = _slp_destinations(assignment)
     cell_map: dict[tuple[str, str, str], Path] = {}
     for trial_name in sorted(assignment.slp_files):
         exp = assignment.trial_experiment.get(trial_name, "default")
         for cam in sorted(assignment.slp_files[trial_name]):
-            slp_path = assignment.slp_files[trial_name][cam]
-            cell_map[(exp, trial_name, cam)] = Path("slp") / slp_path.name
+            cell_map[(exp, trial_name, cam)] = destinations[assignment.slp_files[trial_name][cam]]
     return SlpMapping.from_cell_map(cell_map).to_config()
 
 
@@ -1367,19 +1425,21 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         check_trial_videos(df, out, roots, config.camera_names)
         write_trials_csv(out / "trials.csv", df, backup=False)
 
-    # Move/copy SLP files (deduplicate: one slp_path may cover multiple trial+camera pairs).
-    # In reference mode the .slp files are copied, not moved: the source folder
-    # is the user's own, and only videos are left in place.
+    # Move/copy SLP files, each into a folder of its own with the SLEAP models
+    # folder beside it. In reference mode they are copied, not moved: the
+    # source folder is the user's own, and only videos are left in place.
     if assignment.slp_files:
-        slp_dir = out / "slp"
-        slp_dir.mkdir(parents=True, exist_ok=True)
         slp_transfer = _copy_file if reference else transfer
-        seen: set[Path] = set()
-        for trial_name, cam_files in assignment.slp_files.items():
-            for cam, f in cam_files.items():
-                if f not in seen:
-                    seen.add(f)
-                    slp_transfer(str(f), str(slp_dir / f.name))
+        for f, rel in _slp_destinations(assignment).items():
+            dst = out / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            slp_transfer(str(f), str(dst))
+            models = _models_dir(f)
+            if models is not None:
+                if slp_transfer is _copy_file:
+                    shutil.copytree(models, dst.parent / MODELS_DIR, copy_function=_copy_file)
+                else:
+                    _move_file(str(models), str(dst.parent / MODELS_DIR))
 
     # Write project.toml. A setup file skeleton is assigned to every camera;
     # otherwise the skeletons come from the .slp files themselves.

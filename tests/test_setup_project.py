@@ -1103,9 +1103,10 @@ class TestSlpMatching:
         assignment = classify_files(config)
         execute_setup(config, assignment)
 
-        slp_files = list((tmp_path / "out" / "slp").iterdir())
-        assert len(slp_files) == 1
-        assert slp_files[0].name == "both.slp"
+        slp_files = list((tmp_path / "out" / "slp").rglob("*.slp"))
+        assert [p.relative_to(tmp_path / "out").as_posix() for p in slp_files] == [
+            "slp/both/both.slp"
+        ]
 
     def test_corrupt_slp_warns(self, tmp_path):
         """A file with .slp extension that can't be parsed produces a warning."""
