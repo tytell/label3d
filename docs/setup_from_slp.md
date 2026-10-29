@@ -24,6 +24,81 @@ uv sync
 
 Relative paths in the setup file are relative to the folder you run the command from.
 
+## Source folder layouts
+
+SLEAP saves the models it trains in a `models` folder beside the `.slp` file. In the project, each `.slp` file gets a folder of its own in `slp/`, and setup copies its `models` folder along with it, so SLEAP still finds the models when you open the file from the project. Setup searches `source_dir` (or the folders in `slp_files`) and their subfolders for `.slp` files. It does not look inside `models` folders, where SLEAP keeps the training labels of each model as `.slp` files.
+
+### One `.slp` file and its models
+
+```
+BGvPS_flat/
+├── BGvPS_setup.toml
+├── BGvPS_Lateral.v002.slp
+├── models/
+│   ├── 260310_104512.centroid.n=412/
+│   └── 260310_104512.centered_instance.n=412/
+├── Pre-Cal_PS37_Charuco_LateralOrtho_H265.mp4
+├── Post-Cal_PS37_Charuco_LateralOrtho_H265.mp4
+├── PS37_Trial7_LateralOrtho_H265.mp4
+└── ...
+```
+
+becomes
+
+```
+BGvPS/slp/
+└── BGvPS_Lateral.v002/
+    ├── BGvPS_Lateral.v002.slp
+    └── models/
+        ├── 260310_104512.centroid.n=412/
+        └── 260310_104512.centered_instance.n=412/
+```
+
+The `models` folder is optional. Without one, the `.slp` file is copied on its own.
+
+### Several `.slp` files, each with its models
+
+Put each `.slp` file in a folder of its own, with its `models` folder beside it:
+
+```
+BGvPS_flat/
+├── BGvPS_setup.toml
+├── Lateral/
+│   ├── BGvPS_Lateral.v002.slp
+│   └── models/
+├── Ventral/
+│   ├── BGPS_Ventral.v002.slp
+│   └── models/
+├── Pre-Cal_PS37_Charuco_Ventral_H265.mp4
+├── PS37_Trial7_Ventral_H265.mp4
+└── ...
+```
+
+becomes
+
+```
+BGvPS/slp/
+├── BGvPS_Lateral.v002/
+│   ├── BGvPS_Lateral.v002.slp
+│   └── models/
+└── BGPS_Ventral.v002/
+    ├── BGPS_Ventral.v002.slp
+    └── models/
+```
+
+The project folders are named after the `.slp` files, not after their source folders. If two `.slp` files have the same name, the second folder gets `_2`, the third `_3`, and so on.
+
+Several `.slp` files can share one folder only if there is no `models` folder there:
+
+```
+BGvPS_flat/
+├── BGvPS_Lateral.v002.slp
+├── BGPS_Ventral.v002.slp
+└── ...
+```
+
+Each file is still copied into a folder of its own (`slp/BGvPS_Lateral.v002/` and `slp/BGPS_Ventral.v002/`). If the folder also has a `models` folder, setup stops, because it can't tell which models belong to which file. Move each `.slp` file into its own folder with its models first.
+
 ## Setup file keys
 
 All keys go under `[setup]` unless noted otherwise.
