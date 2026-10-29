@@ -212,12 +212,16 @@ class SleapAdapter(PoseAdapter):
         - output_dir (Phase 17 export view): one {camera}_{trial}.slp per cell with data
 
         Each file is written once with all of its videos.  If the file already
-        exists, its skeleton, videos (matched by basename), suggestions, tracks
-        and provenance are kept; labeled frames are replaced.  A new file gets
+        exists, its skeletons, videos (matched by basename), suggestions,
+        tracks, sessions, ROIs, masks and provenance are kept; the labeled
+        frames inside the trials' frame ranges are replaced.  Everything the
+        project does not cover is kept untouched: videos that are not trial
+        videos, with their frames, and the frames of trial videos outside
+        every trial's range.  A new file gets
         its cells' skeleton from skeletons (a ProjectSkeleton), else skeleton
         for every file, else the df's bodyparts; raises ValueError if its cells
-        have different skeletons.  Only the nodes of a file's skeleton are written.  Videos no longer
-        assigned to the file are dropped.  Files are written even when they
+        have different skeletons.  Only the nodes of a file's skeleton are written.  Trial
+        videos no longer assigned to the file are dropped.  Files are written even when they
         have no labeled frames.  Returns the number of files written.
         """
         if trials_df is None:
@@ -226,6 +230,7 @@ class SleapAdapter(PoseAdapter):
         cells_info = {
             cell: info for cell, info in video_cells(trials_df, cameras).items()
         }
+        ranges = _video_ranges(cells_info, _cell_ends(trials_df, cameras))
         df = normalize_index(df)
         trial_groups = (
             {k: g for k, g in df.groupby(level=["experiment", "trial"], sort=False)}
@@ -259,7 +264,7 @@ class SleapAdapter(PoseAdapter):
             key = id(new_skeleton)
             if key not in made:
                 made[key] = _make_skeleton(new_skeleton, df)
-            self._write_file(path, cells, trial_groups, made[key], cells_info, root)
+            self._write_file(path, cells, trial_groups, made[key], cells_info, ranges, root)
         return len(targets)
 
     # -- Internal --------------------------------------------------------------
@@ -291,6 +296,7 @@ class SleapAdapter(PoseAdapter):
         trial_groups: dict[tuple[str, str], pd.DataFrame],
         sio_skeleton,
         cells_info: dict[Cell, tuple[str, int]],
+        ranges: dict[str, list[tuple[int, int | None]]],
         root: Path | None,
     ) -> None:
         existing = sio.load_file(str(path)) if path.exists() else None
@@ -306,7 +312,7 @@ class SleapAdapter(PoseAdapter):
                 if isinstance(video.filename, str):
                     existing_videos[Path(video.filename).name] = video
 
-        videos: list = []
+        written: list = []
         labeled_frames: list = []
         for cell in cells:
             filename, start = cells_info[cell]
@@ -317,30 +323,102 @@ class SleapAdapter(PoseAdapter):
                     if root is not None else filename
                 )
                 video = sio.Video(filename=video_filename, open_backend=False)
-            if not any(v is video for v in videos):
-                videos.append(video)
+            if not any(v is video for v in written):
+                written.append(video)
             labeled_frames.extend(
                 _cell_frames(cell, video, start, trial_groups, skeleton)
             )
 
-        suggestions = []
-        if existing is not None:
-            suggestions = [
-                s for s in existing.suggestions if any(s.video is v for v in videos)
-            ]
-
-        labels = sio.Labels(
-            labeled_frames=labeled_frames,
-            videos=videos,
-            skeletons=[skeleton],
-            tracks=list(existing.tracks) if existing is not None else [],
-            suggestions=suggestions,
-            provenance=dict(existing.provenance) if existing is not None else {},
-        )
+        if existing is None:
+            labels = sio.Labels(
+                labeled_frames=labeled_frames, videos=written, skeletons=[skeleton]
+            )
+        else:
+            labels = _merge_existing(existing, written, labeled_frames, skeleton, ranges, path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_name(path.stem + ".tmp.slp")
         sio.save_file(labels, str(tmp_path), verbose=False)
         os.replace(tmp_path, path)
+
+
+def _video_ranges(
+    cells_info: dict[Cell, tuple[str, int]], cell_ends: dict[Cell, int]
+) -> dict[str, list[tuple[int, int | None]]]:
+    """Trial video basename -> the (first, last) video frames of its trials; last None if open."""
+    ranges: dict[str, list[tuple[int, int | None]]] = {}
+    for cell, (filename, start) in cells_info.items():
+        ranges.setdefault(Path(filename).name, []).append((start, cell_ends.get(cell)))
+    return ranges
+
+
+def _video_name(video) -> str | None:
+    return Path(video.filename).name if isinstance(video.filename, str) else None
+
+
+def _in_ranges(frame_idx: int, ranges: list[tuple[int, int | None]]) -> bool:
+    return any(
+        frame_idx >= first and (last is None or frame_idx <= last) for first, last in ranges
+    )
+
+
+def _merge_existing(
+    existing, written: list, labeled_frames: list, skeleton, ranges, path: Path
+):
+    """Labels with the new frames of the written videos and the rest of existing kept.
+
+    Videos that are not trial videos (their basename is in no trial, or they
+    are image sequences) are kept with all their frames, in the file's order;
+    trial videos are kept only if written, with their frames outside every
+    trial's range.  Suggestions, ROIs and masks of the kept videos are kept,
+    unless they belong to a replaced instance, and sessions whose frames are
+    all kept.
+    """
+    written_ids = {id(v) for v in written}
+    videos = [
+        v for v in existing.videos if id(v) in written_ids or _video_name(v) not in ranges
+    ]
+    videos += [v for v in written if not any(v is k for k in videos)]
+    video_ids = {id(v) for v in videos}
+
+    kept_frames = [
+        lf for lf in existing.labeled_frames
+        if id(lf.video) in video_ids
+        and not _in_ranges(lf.frame_idx, ranges.get(_video_name(lf.video), []))
+    ]
+    kept_frame_ids = {id(lf) for lf in kept_frames}
+    kept_instance_ids = {id(inst) for lf in kept_frames for inst in lf.instances}
+    order = {id(v): i for i, v in enumerate(videos)}
+    frames = sorted(
+        labeled_frames + kept_frames, key=lambda lf: (order[id(lf.video)], lf.frame_idx)
+    )
+
+    def kept(item) -> bool:
+        return (item.video is None or id(item.video) in video_ids) and (
+            item.instance is None or id(item.instance) in kept_instance_ids
+        )
+
+    sessions = []
+    for session in existing.sessions:
+        if all(id(v) in video_ids for v in session.videos) and all(
+            id(lf) in kept_frame_ids
+            for group in session.frame_groups.values()
+            for lf in group.labeled_frames
+        ):
+            sessions.append(session)
+        else:
+            logger.warning(f"{path.name}: dropping a recording session whose frames were rewritten")
+
+    return sio.Labels(
+        labeled_frames=frames,
+        videos=videos,
+        skeletons=list(existing.skeletons) or [skeleton],
+        tracks=list(existing.tracks),
+        suggestions=[s for s in existing.suggestions if id(s.video) in video_ids],
+        sessions=sessions,
+        provenance=dict(existing.provenance),
+        rois=[r for r in existing.rois if kept(r)],
+        masks=[m for m in existing.masks if kept(m)],
+    )
 
 
 def _new_file_skeleton(path: Path, cells: list[Cell], skeletons, skeleton):

@@ -175,6 +175,58 @@ class TestSaveFiles:
         labels = sio.load_file(str(tmp_path / "slp/cam1.slp"))
         assert [Path(v.filename).name for v in labels.videos] == ["cam1_t1.mp4"]
 
+    def test_foreign_video_kept_untouched(self, tmp_path):
+        """A video in no trial keeps its frames and suggestions through a sync."""
+        mapping = _one_file_per_camera()
+        _save(tmp_path, _df({}), mapping)
+        path = tmp_path / "slp/cam1.slp"
+        labels = sio.load_file(str(path))
+        other = sio.Video(filename="/elsewhere/other.mp4", open_backend=False)
+        labels.videos.insert(0, other)
+        pts = np.array([[5.0, 6.0], [7.0, 8.0]], dtype=np.float32)
+        labels.labeled_frames.append(sio.LabeledFrame(
+            video=other, frame_idx=3,
+            instances=[sio.Instance.from_numpy(pts, skeleton=labels.skeleton)],
+        ))
+        labels.suggestions.append(sio.SuggestionFrame(video=other, frame_idx=4))
+        sio.save_file(labels, str(path))
+
+        _save(tmp_path, _df({("t1", 0, 0, "head"): {"cam1": (1, 2, "set")}}), mapping)
+        labels = sio.load_file(str(path))
+        assert [Path(v.filename).name for v in labels.videos] == [
+            "other.mp4", "cam1_t1.mp4", "cam1_t2.mp4"
+        ]
+        (lf,) = _frames_for(labels, "other.mp4")
+        assert lf.frame_idx == 3
+        np.testing.assert_allclose(lf.instances[0].numpy(), pts)
+        assert [(Path(s.video.filename).name, s.frame_idx) for s in labels.suggestions] == [
+            ("other.mp4", 4)
+        ]
+        assert len(_frames_for(labels, "cam1_t1.mp4")) == 1
+
+    def test_frames_outside_trial_range_kept(self, tmp_path):
+        """Frames of a trial video before its start or after its end are kept."""
+        trials = _trials_df({("t1", "cam1"): 10})
+        trials["cam1_end"] = [19, 19]
+        mapping = _one_file_per_camera()
+        df = _df({("t1", 0, 0, "head"): {"cam1": (1, 2, "set")}})
+        _save(tmp_path, df, mapping, trials)
+        path = tmp_path / "slp/cam1.slp"
+        labels = sio.load_file(str(path))
+        video = labels.videos[0]
+        pts = np.array([[5.0, 6.0], [7.0, 8.0]], dtype=np.float32)
+        for frame_idx in (2, 15, 40):
+            labels.labeled_frames.append(sio.LabeledFrame(
+                video=video, frame_idx=frame_idx,
+                instances=[sio.Instance.from_numpy(pts, skeleton=labels.skeleton)],
+            ))
+        sio.save_file(labels, str(path))
+
+        _save(tmp_path, df, mapping, trials)
+        labels = sio.load_file(str(path))
+        # 15 is inside the trial (10-19) and replaced from the points; 10 is frame 0
+        assert [lf.frame_idx for lf in _frames_for(labels, "cam1_t1.mp4")] == [2, 10, 40]
+
     def test_build_file_map_routes_correctly(self, tmp_path):
         _save(tmp_path, _df({}), _one_file_per_camera())
         files = sorted((tmp_path / "slp").glob("*.slp"))
