@@ -30,6 +30,7 @@ from label3d.export import (
     stale_experiments,
     uncalibrated_experiments,
 )
+from label3d.layout import ProjectNeedsUpgrade
 from label3d.project import Project
 from label3d.version import version_string
 
@@ -67,6 +68,9 @@ def main(argv: list[str] | None = None) -> int:
     _app = QCoreApplication.instance() or QCoreApplication([])
     try:
         project = Project.load(args.project)
+    except ProjectNeedsUpgrade as exc:
+        print(f"{exc}\nRun label3d-upgrade {args.project} first.", file=sys.stderr)
+        return 1
     except Exception as exc:
         print(f"Could not load {args.project}: {exc}", file=sys.stderr)
         return 1

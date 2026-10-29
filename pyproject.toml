@@ -23,6 +23,7 @@ dependencies = [
 [project.scripts]
 label3d = "label3d:main"
 label3d-export = "label3d.export_cli:main"
+label3d-upgrade = "label3d.upgrade_cli:main"
 
 [dependency-groups]
 dev = [

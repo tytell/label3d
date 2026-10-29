@@ -404,10 +404,17 @@ def restore_slp_files(
             continue
         report(f"Restoring {rel.as_posix()}")
         shutil.copy2(original, dest)
-        models = original.parent / MODELS_DIR
-        if models.is_dir() and not (dest.parent / MODELS_DIR).exists():
-            shutil.copytree(models, dest.parent / MODELS_DIR)
         messages.append(f"{rel.as_posix()}: restored from {original}")
+        models = original.parent / MODELS_DIR
+        if not models.is_dir() or (dest.parent / MODELS_DIR).exists():
+            continue
+        # As in setup, a models folder is only taken from beside a .slp file of its own
+        if len(list(original.parent.glob("*.slp"))) > 1:
+            messages.append(f"{rel.as_posix()}: {models} is beside several .slp files; "
+                            "not copied")
+        else:
+            shutil.copytree(models, dest.parent / MODELS_DIR)
+            messages.append(f"{rel.as_posix()}: copied {models}")
 
     report("Writing the points to the .slp files")
     project.write_slp_files()
