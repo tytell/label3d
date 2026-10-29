@@ -79,6 +79,7 @@ class LabelView(QWidget):
         self._epipolar_cache: EpipolarCache | None = None
         self._cameras: dict = {}
         self._tri_worker = None  # TriangulationWorker (batch)
+        self._last_camera: str | None = None  # camera of the last clicked point
 
         # Load calibration for epipolar geometry and triangulation
         calib_path = project.calibration_path()
@@ -142,6 +143,7 @@ class LabelView(QWidget):
             panel.point_dragged.connect(self._on_point_dragged)
             panel.point_right_clicked.connect(self._on_point_right_clicked)
             panel.empty_right_clicked.connect(self._on_empty_right_clicked)
+            panel.predicted_double_clicked.connect(self._on_predicted_double_clicked)
             panel.deselect_requested.connect(self._state.deselect)
             # Set up colored legend showing other cameras (fixed in viewport)
             panel.setup_legend(camera_grid.camera_names)
@@ -260,7 +262,31 @@ class LabelView(QWidget):
 
     def _on_point_clicked(self, camera: str, instance: int, bodypart: str):
         """Select the clicked point."""
+        self._last_camera = camera
         self._state.select(instance, bodypart)
+
+    def _is_locked(self, camera: str, instance: int) -> bool:
+        """True, with a status message, if instance is predicted in camera."""
+        store = self._state.points_store
+        if store is None or not store.is_predicted_instance(
+            self._state.current_trial, self._state.current_frame, instance, camera
+        ):
+            return False
+        self._show_status(f"Prediction in {camera}: double-click it to edit")
+        return True
+
+    def _on_predicted_double_clicked(self, camera: str, instance: int) -> None:
+        """Make a user instance from the prediction in one camera, as SLEAP does."""
+        store = self._state.points_store
+        if store is None:
+            return
+        trial = self._state.current_trial
+        frame = self._state.current_frame
+        if not store.make_user_instance(trial, frame, instance, camera):
+            return
+        self._last_camera = camera
+        self._show_status(f"User instance made from the prediction in {camera}")
+        self._state.points_changed.emit(trial, frame, instance, "")
 
     def _on_point_dragged(
         self, camera: str, instance: int, bodypart: str, x: float, y: float
@@ -272,7 +298,7 @@ class LabelView(QWidget):
 
         trial = self._state.current_trial
         frame = self._state.current_frame
-        if not self._can_place(camera, bodypart):
+        if self._is_locked(camera, instance) or not self._can_place(camera, bodypart):
             return
 
         store.set_point(trial, frame, instance, bodypart, camera, x, y, state="set")
@@ -290,7 +316,7 @@ class LabelView(QWidget):
 
         trial = self._state.current_trial
         frame = self._state.current_frame
-        if not self._can_place(camera, bodypart):
+        if self._is_locked(camera, instance) or not self._can_place(camera, bodypart):
             return
         pt = store.get_point(trial, frame, instance, bodypart, camera)
 
@@ -401,7 +427,10 @@ class LabelView(QWidget):
             shortcut.activated.connect(callback)
 
     def _delete_selected_point(self):
-        """Reset the selected point to not_set in all cameras."""
+        """Reset the selected point to not_set in all cameras where it is a user point.
+
+        Cameras where the instance is a prediction are left alone.
+        """
         store = self._state.points_store
         if store is None:
             return
@@ -414,24 +443,63 @@ class LabelView(QWidget):
         trial = self._state.current_trial
         frame = self._state.current_frame
 
-        for cam in self._camera_grid.camera_names:
+        cameras = [
+            cam for cam in self._camera_grid.camera_names
+            if not store.is_predicted_instance(trial, frame, inst, cam)
+        ]
+        if not cameras:
+            self._show_status("Predictions can't be edited: double-click one to edit it")
+            return
+        for cam in cameras:
             store.delete_point(trial, frame, inst, bp, cam)
         self._state.points_changed.emit(trial, frame, inst, bp)
 
     def _delete_instance(self):
-        """Delete the selected instance."""
+        """Delete the selected instance in one camera: the one under the mouse,
+        else the one where a point was last clicked.
+
+        A prediction hidden under it comes back, as in SLEAP.
+        """
+        panel = self._camera_grid.panel_under_mouse()
+        camera = panel.camera_name if panel is not None else self._last_camera
+        if camera is None:
+            self._show_status("Click a point in a camera first")
+            return
+        self._delete_instance_in(
+            [camera], f"Deleted instance in {camera}", f"No instance in {camera}"
+        )
+
+    def _delete_instance_all_cameras(self):
+        """Delete the selected instance in every camera."""
+        self._delete_instance_in(
+            self._camera_grid.camera_names, "Deleted instance in all cameras", ""
+        )
+
+    def _delete_instance_in(self, cameras: list[str], done: str, none: str) -> None:
         store = self._state.points_store
         if store is None:
             return
 
         inst = self._state.selected_instance
         if inst < 0:
+            self._show_status("Select an instance first")
             return
 
         trial = self._state.current_trial
         frame = self._state.current_frame
-        store.delete_instance(trial, frame, inst)
-        self._state.deselect()
+        labeled = [
+            cam for cam in cameras
+            if inst in store.get_instances_for_camera(trial, frame, cam)
+        ]
+        if not labeled:
+            if none:
+                self._show_status(none)
+            return
+        for cam in labeled:
+            store.delete_instance_in_camera(trial, frame, inst, cam)
+        if inst not in store.get_instances(trial, frame):
+            self._state.deselect()
+        self._show_status(done)
         self._state.points_changed.emit(trial, frame, inst, "")
 
     def accept_selected_point(self) -> None:
@@ -592,7 +660,7 @@ class LabelView(QWidget):
 
         if strategy == "reprojected":
             instance = self._state.selected_instance
-            if instance < 0 or not self._cameras:
+            if instance < 0 or not self._cameras or self._is_locked(camera_name, instance):
                 return
             coords = init_reprojected(
                 store,
@@ -683,6 +751,9 @@ class LabelView(QWidget):
 
         any_fallback = False
         for cam_name in cam_names:
+            # a prediction stays as it is (double-click it to edit)
+            if store.is_predicted_instance(trial, frame, new_instance, cam_name):
+                continue
             cam = self._cameras.get(cam_name)
             frame_size = (
                 cam.size if cam is not None and cam.size[0] > 0 else (10000, 10000)
@@ -742,6 +813,8 @@ class LabelView(QWidget):
         filled_any = False
 
         for cam_name in self._camera_grid.camera_names:
+            if store.is_predicted_instance(trial, frame, instance, cam_name):
+                continue
             coords = init_reprojected(
                 store,
                 store.experiment_name,

@@ -25,6 +25,7 @@ from label3d.slp_sync import (
     Cell,
     SlpMapping,
     camera_cells,
+    camera_hidden,
     camera_scores,
     normalize_index,
     video_cells,
@@ -62,9 +63,10 @@ class SleapAdapter(PoseAdapter):
 
         Within each frame and camera, instances with no finite points are
         skipped and the rest are numbered 0, 1, … in file order. A prediction
-        that a user instance was corrected from (its from_predicted) is
-        skipped too: as in SLEAP, the correction replaces it rather than
-        becoming a second instance.
+        that a user instance was made from (its from_predicted) is not an
+        instance of its own: as in SLEAP, the user instance replaces it, and
+        the prediction is kept as that instance's hidden prediction (px, py,
+        pscore), which comes back if the user instance is deleted.
 
         Frames before a video's {cam}_start or after its {cam}_end are dropped.
         If unmatched is given, basenames of videos that match no trial video
@@ -140,6 +142,10 @@ class SleapAdapter(PoseAdapter):
                             else np.full(len(pts), np.nan)
                         )
                         source = SOURCE_SLEAP_PRED if is_predicted else SOURCE_SLEAP_USER
+                        hidden = (
+                            {} if is_predicted or inst.from_predicted is None
+                            else _prediction_points(inst.from_predicted)
+                        )
 
                         for node_idx, node_name in enumerate(inst.skeleton.node_names):
                             if finite[node_idx]:
@@ -153,6 +159,7 @@ class SleapAdapter(PoseAdapter):
                                 y_val = np.nan
                                 score = np.nan
 
+                            px, py, pscore = hidden.get(node_name, (np.nan, np.nan, np.nan))
                             rows.append({
                                 "experiment": experiment_name,
                                 "trial": trial_name,
@@ -165,6 +172,9 @@ class SleapAdapter(PoseAdapter):
                                 "state": state,
                                 "source": source if state != "not_set" else "",
                                 "score": score,
+                                "px": px,
+                                "py": py,
+                                "pscore": pscore,
                             })
                         inst_idx += 1
 
@@ -470,6 +480,7 @@ def _cell_frames(
     for frame_idx, frame_df in group.groupby(level="frame", sort=True):
         cells = camera_cells(frame_df, cam)
         scores = camera_scores(frame_df, cam)
+        hidden = camera_hidden(frame_df, cam)
         instances = []
         for inst, is_user in written_instances(cells):
             # not_visible points are written as NaN (SLEAP's "not visible")
@@ -483,20 +494,50 @@ def _cell_frames(
                     score = scores.get((inst, bp), np.nan)
                     point_scores[bp_idx] = score if np.isfinite(score) else 1.0
             if is_user:
-                instances.append(sio.Instance.from_numpy(pts, skeleton=skeleton))
+                # The prediction hidden under the user instance is written too,
+                # linked by from_predicted, so SLEAP hides it as its own GUI does
+                pred = None
+                pred_pts = np.full((len(node_names), 2), np.nan, dtype=np.float32)
+                pred_scores = np.zeros(len(node_names), dtype=np.float64)
+                for bp_idx, bp in enumerate(node_names):
+                    if (inst, bp) in hidden:
+                        px, py, pscore = hidden[(inst, bp)]
+                        pred_pts[bp_idx] = [px, py]
+                        pred_scores[bp_idx] = pscore if np.isfinite(pscore) else 1.0
+                if np.isfinite(pred_pts).all(axis=1).any():
+                    pred = _predicted_instance(pred_pts, pred_scores, skeleton)
+                    instances.append(pred)
+                instances.append(
+                    sio.Instance.from_numpy(pts, skeleton=skeleton, from_predicted=pred)
+                )
             else:
-                visible = np.isfinite(pts).all(axis=1)
-                instances.append(sio.PredictedInstance.from_numpy(
-                    pts,
-                    skeleton=skeleton,
-                    point_scores=point_scores,
-                    score=float(point_scores[visible].mean()) if visible.any() else 0.0,
-                ))
+                instances.append(_predicted_instance(pts, point_scores, skeleton))
         if instances:
             labeled_frames.append(sio.LabeledFrame(
                 video=video, frame_idx=int(frame_idx) + start, instances=instances
             ))
     return labeled_frames
+
+
+def _predicted_instance(pts: np.ndarray, point_scores: np.ndarray, skeleton):
+    """A PredictedInstance whose score is the mean of its visible points' scores."""
+    visible = np.isfinite(pts).all(axis=1)
+    return sio.PredictedInstance.from_numpy(
+        pts,
+        skeleton=skeleton,
+        point_scores=point_scores,
+        score=float(point_scores[visible].mean()) if visible.any() else 0.0,
+    )
+
+
+def _prediction_points(pred) -> dict[str, tuple[float, float, float]]:
+    """Node name → (x, y, score) of a PredictedInstance's visible points."""
+    pts = pred.numpy(scores=True)
+    return {
+        name: (float(pts[i, 0]), float(pts[i, 1]), float(pts[i, 2]))
+        for i, name in enumerate(pred.skeleton.node_names)
+        if np.isfinite(pts[i, :2]).all()
+    }
 
 
 def _cell_ends(trials: pd.DataFrame, cameras: list[str]) -> dict[Cell, int]:
@@ -549,9 +590,7 @@ def _rows_to_dataframe(
         key = (r.get("experiment", "default"), r["trial"], r["frame"], r["instance"], r["bodypart"])
         if key not in keys:
             keys[key] = {}
-        keys[key][r["camera"]] = (
-            r["x"], r["y"], r["state"], r.get("source", ""), r.get("score", np.nan)
-        )
+        keys[key][r["camera"]] = r
 
     # Build column MultiIndex
     col_tuples = []
@@ -568,11 +607,8 @@ def _rows_to_dataframe(
     for key, cam_data in keys.items():
         row_vals = []
         for cam in cameras:
-            if cam in cam_data:
-                x, y, state, source, score = cam_data[cam]
-                row_vals.extend([x, y, np.nan, np.nan, state, source, score, np.nan])
-            else:
-                row_vals.extend([np.nan, np.nan, np.nan, np.nan, "not_set", "", np.nan, np.nan])
+            r = cam_data.get(cam, {"state": "not_set", "source": ""})
+            row_vals.extend(r.get(coord, np.nan) for coord in CAM_COORDS)
         # 3d columns: NaN (caller fills after triangulation)
         row_vals.extend([np.nan, np.nan, np.nan])
         data.append(row_vals)

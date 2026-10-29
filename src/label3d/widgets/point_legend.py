@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
@@ -22,8 +23,11 @@ from label3d.widgets.point_item import (
     ERROR_OK_PX,
     NEW_HALF_SIZE,
     NEW_PEN,
+    SCORE_HIGH,
+    SCORE_LOW,
     ColorMode,
     point_style,
+    score_color,
 )
 
 ICON_SIZE = 28
@@ -50,6 +54,12 @@ SOURCE_COLORS = [
     (COLOR_SOURCE[SOURCE_SLEAP_USER], "Labeled in SLEAP"),
     (COLOR_SOURCE[SOURCE_SLEAP_PRED], "Predicted by SLEAP"),
 ]
+
+SCORE_STEPS = 5
+SCORE_COLORS = [
+    (score_color(score), f"Score {score:.2f}")
+    for score in np.linspace(SCORE_HIGH, SCORE_LOW, SCORE_STEPS)
+] + [(COLOR_NONE, "No score (user label)")]
 
 SLIDER_TICKS = [
     (SLIDER_COLOR_USER, "User labels"),
@@ -122,6 +132,7 @@ class PointLegend(QWidget):
         self._color_titles: dict[ColorMode, str] = {
             ColorMode.ERROR: "Color: reprojection error",
             ColorMode.SOURCE: "Color: source",
+            ColorMode.SCORE: "Color: prediction score",
         }
 
         layout.addWidget(self._section(
@@ -135,6 +146,10 @@ class PointLegend(QWidget):
         layout.addWidget(self._section(
             ColorMode.SOURCE.value, self._color_titles[ColorMode.SOURCE],
             [(point_icon("set", color), text) for color, text in SOURCE_COLORS],
+        ))
+        layout.addWidget(self._section(
+            ColorMode.SCORE.value, self._color_titles[ColorMode.SCORE],
+            [(point_icon("set", color), text) for color, text in SCORE_COLORS],
         ))
         layout.addWidget(self._section(
             "marks", "Marks",

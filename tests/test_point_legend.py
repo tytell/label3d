@@ -31,3 +31,11 @@ def test_point_icon_uses_marker_color(qapp):
     assert center == QColor(COLOR_GOOD)
     ring = point_icon("predicted", COLOR_GOOD).toImage().pixelColor(ICON_SIZE // 2, ICON_SIZE // 2)
     assert ring != QColor(COLOR_GOOD)  # a ring is hollow
+
+
+def test_score_mode_shows_score_gradient(qapp):
+    legend = PointLegend()
+    legend.set_color_mode(ColorMode.SCORE)
+    entries = legend.visible_entries()
+    assert {"Score 1.00", "Score 0.50", "Score 0.00", "No score (user label)"} <= set(entries)
+    assert "Error < 5 px" not in entries

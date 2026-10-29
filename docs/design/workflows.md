@@ -234,7 +234,7 @@ Before labeling, user must either:
   - Previous / Next new frame       Shift+[ / Shift+]   (crosses trials)
 
 > View
-  - Color points by > Reprojection error / Source
+  - Color points by > Reprojection error / Source / Prediction score
   - Show legend
   - Cameras / Layout (Grid / Horizontal / Vertical) / Zoom
 
@@ -246,7 +246,8 @@ Before labeling, user must either:
   - Accept point        A         clear the selected point's new mark
   - Accept frame        Shift+A   clear every new mark in the frame
   - Triangulate all experiments...
-  - Delete instance     Ctrl+Backspace
+  - Delete instance     Ctrl+Backspace         in the camera under the mouse (else the last clicked)
+  - Delete instance in all cameras  Ctrl+Shift+Backspace
 ```
 
 ### Switching calibrations
@@ -277,7 +278,7 @@ The **skeleton is drawn** on every camera panel for every frame, except nodes th
 
 ### Point coloring
 
-**View > Color points by** chooses between reprojection error (the default) and source. The choice is saved with the session.
+**View > Color points by** chooses between reprojection error (the default), source and prediction score. The choice is saved with the session.
 
 By **reprojection error**:
 
@@ -297,7 +298,9 @@ By **source**:
 | Orange | Labeled by a user in SLEAP |
 | Light blue | Predicted by SLEAP |
 
-In both modes, a **white square** around a point marks it as new since the latest sync. Correcting the point, or accepting it (`A`, `Shift+A`), removes the square.
+By **prediction score**: SLEAP's per-point score on a gradient from red (0) through yellow (0.5) to green (1), clamped outside that range. Points with no score, which includes every user label, are grey.
+
+In every mode, a **white square** around a point marks it as new since the latest sync. Correcting the point, or accepting it (`A`, `Shift+A`), removes the square.
 
 ### Legend
 
@@ -368,7 +371,8 @@ After every SLEAP read that brings in points, a summary dialog lists new SLEAP l
 |---|---|
 | `Ctrl+I` | Add instance (average if possible, random otherwise) |
 | `Ctrl+Shift+I` | Add instance: random unconditionally |
-| `Ctrl+Backspace` | Delete selected instance |
+| `Ctrl+Backspace` | Delete selected instance in the camera under the mouse (else the camera last clicked); a hidden SLEAP prediction comes back |
+| `Ctrl+Shift+Backspace` | Delete selected instance in all cameras |
 | `A` | Accept selected point (clear its new mark in every camera) |
 | `Shift+A` | Accept every point in the frame |
 | `Ctrl+C` / `Ctrl+V` | Copy / paste instance |
@@ -377,8 +381,9 @@ After every SLEAP read that brings in points, a summary dialog lists new SLEAP l
 
 | Action | How |
 |---|---|
-| Place / move point | Left-click in any camera panel |
-| Delete point | `Backspace` while bodypart selected |
+| Place / move point | Left-click and drag in any camera panel; a click without a drag only selects |
+| Edit a prediction | Double-click a predicted point: makes a user instance from the prediction in that camera only. Until then predicted instances can be selected (epipolar lines) but not moved, deleted point by point or marked not visible |
+| Delete point | `Backspace` while bodypart selected (cameras where the instance is a prediction are skipped) |
 | Mark as not visible | Right-click on placed point |
 | Move whole instance | `Alt`+drag any point |
 
@@ -451,7 +456,7 @@ Written by **Sync** and by **Export points...**, one file per entry in the `[slp
 - `Skeleton` built from bodypart names and edges
 - `Video` reference set to matching file from `trials.csv`
 - One `LabeledFrame` per labeled frame
-- `Instance` (user) or `PredictedInstance` (predicted) per instance; `NaN` → invisible
+- `Instance` (user) or `PredictedInstance` (predicted) per instance; `NaN` → invisible. A user instance with a hidden prediction (`px, py, pscore`) is written with that `PredictedInstance` beside it and linked by `from_predicted`, so SLEAP hides the prediction
 - Saved via `sleap_io.save_file(labels, path)`
 
 Exporting to other pose formats is Phase 17.1.

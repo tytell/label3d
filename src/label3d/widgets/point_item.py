@@ -40,6 +40,12 @@ SOURCE_NAMES = {
     SOURCE_SLEAP_PRED: "SLEAP prediction",
 }
 
+# Prediction score gradient (View > Color points by > Prediction score):
+# red at SCORE_LOW, yellow halfway, green at SCORE_HIGH, clamped outside.
+# Points with no score (user labels) are COLOR_NONE.
+SCORE_LOW = 0.0
+SCORE_HIGH = 1.0
+
 # Square outline around points that are new since the latest sync
 NEW_PEN = QPen(QColor(255, 255, 255), 1.5)
 NEW_HALF_SIZE = POINT_RADIUS + 4
@@ -48,6 +54,7 @@ NEW_HALF_SIZE = POINT_RADIUS + 4
 class ColorMode(Enum):
     ERROR = "error"
     SOURCE = "source"
+    SCORE = "score"
 
 
 # Selection outline
@@ -64,6 +71,22 @@ def _error_color(error: float | None) -> QColor:
     if error < ERROR_BAD_PX:
         return COLOR_OK
     return COLOR_BAD
+
+
+def score_color(score: float | None) -> QColor:
+    """Map a SLEAP prediction score to red → yellow → green; grey for no score."""
+    if score is None or math.isnan(score):
+        return COLOR_NONE
+    t = min(max((score - SCORE_LOW) / (SCORE_HIGH - SCORE_LOW), 0.0), 1.0)
+    if t < 0.5:
+        lo, hi, f = COLOR_BAD, COLOR_OK, t / 0.5
+    else:
+        lo, hi, f = COLOR_OK, COLOR_GOOD, (t - 0.5) / 0.5
+    return QColor(
+        round(lo.red() + f * (hi.red() - lo.red())),
+        round(lo.green() + f * (hi.green() - lo.green())),
+        round(lo.blue() + f * (hi.blue() - lo.blue())),
+    )
 
 
 def point_style(state: str, color: QColor, selected: bool = False) -> tuple[QBrush, QPen, float]:
@@ -197,6 +220,8 @@ class PointItem(QGraphicsEllipseItem):
         """Update visual appearance based on state and selection."""
         if self._color_mode is ColorMode.SOURCE:
             color = COLOR_SOURCE.get(self._source, COLOR_NONE)
+        elif self._color_mode is ColorMode.SCORE:
+            color = score_color(self._score)
         else:
             color = _error_color(self._error)
         self._new_marker.setVisible(

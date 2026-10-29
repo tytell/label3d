@@ -104,6 +104,9 @@ class CameraPanel(QGraphicsView):
 
     Left-click on a point to select it. Click-and-drag to move.
     Click on empty space to deselect. Right-click toggles not-visible.
+    Points of a predicted instance can be selected but not moved;
+    double-clicking one asks for a user instance made from the prediction.
+    Double-clicking elsewhere resets the zoom.
     """
 
     ZOOM_FACTOR = 1.15
@@ -122,6 +125,8 @@ class CameraPanel(QGraphicsView):
     deselect_requested = Signal()
     # (camera_name, x, y) — raw pixel click in pick mode
     raw_clicked = Signal(str, float, float)
+    # (camera_name, instance) — double-click on a point of a predicted instance
+    predicted_double_clicked = Signal(str, int)
 
     def __init__(self, camera_name: str, parent=None):
         super().__init__(parent)
@@ -506,7 +511,18 @@ class CameraPanel(QGraphicsView):
             self.zoom_out()
 
     def mouseDoubleClickEvent(self, event):
-        """Double-click to reset zoom."""
+        """Double-click a predicted point to edit its instance; elsewhere reset zoom."""
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._charuco_overlay is None
+            and not self._pick_mode
+        ):
+            hit = self._skeleton_overlay.hit_test(self.mapToScene(event.position().toPoint()))
+            if hit is not None:
+                if self._skeleton_overlay.is_locked(hit[0]):
+                    self.predicted_double_clicked.emit(self._camera_name, hit[0])
+                event.accept()
+                return
         self._hide_line_labels()
         self._label_debounce.start()
         self.fit_view()
@@ -545,8 +561,10 @@ class CameraPanel(QGraphicsView):
             if hit is not None:
                 inst, bp = hit
                 self.point_clicked.emit(self._camera_name, inst, bp)
-                self._dragging = hit
-                self._drag_start_pos = scene_pos
+                # Predicted instances are locked: select only, no drag
+                if not self._skeleton_overlay.is_locked(inst):
+                    self._dragging = hit
+                    self._drag_start_pos = scene_pos
                 event.accept()
             else:
                 # Clicked on empty space — deselect and allow pan
@@ -582,13 +600,14 @@ class CameraPanel(QGraphicsView):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent):
-        """Commit drag position to the data store."""
+        """Commit drag position to the data store; a click without a move changes nothing."""
         if self._dragging is not None and event.button() == Qt.MouseButton.LeftButton:
             scene_pos = self.mapToScene(event.position().toPoint())
             inst, bp = self._dragging
-            self.point_dragged.emit(
-                self._camera_name, inst, bp, scene_pos.x(), scene_pos.y()
-            )
+            if scene_pos != self._drag_start_pos:
+                self.point_dragged.emit(
+                    self._camera_name, inst, bp, scene_pos.x(), scene_pos.y()
+                )
             self._dragging = None
             self._drag_start_pos = None
             event.accept()

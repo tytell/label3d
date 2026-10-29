@@ -104,10 +104,13 @@ If a label you made in label3d was also changed in SLEAP, label3d asks which ver
   - light blue: predicted by SLEAP
 
   Hover over a point to see its source, score and which sync brought it in.
+- **View > Color points by > Prediction score** colours predictions by SLEAP's score: green near 1, yellow around 0.5, red near 0. User labels have no score and are grey.
 - **Legend:** the panel below the Points list explains every shape and colour, and switches along with **Color points by**. Hide it with **View > Show legend**.
 
 ### Correcting and accepting
 
+- **Predictions are locked**, as in SLEAP. You can click a predicted point to select it and see its epipolar lines, but you can't move it.
+- **Correct a prediction:** double-click it. That camera gets a user instance copied from the prediction, which you can then drag. Other cameras are not changed. The prediction is kept underneath: delete the user instance (`Ctrl+Backspace` with the mouse over that camera) and the prediction comes back. `Ctrl+Shift+Backspace` deletes the instance in every camera.
 - **Correct a point:** drag it to the right place. It becomes a user label from label3d and loses its new mark.
 - **Accept a point that's already right:** select it and press `A`. Press `Shift+A` to accept every point in the frame. Accepting only clears the new mark; a prediction stays a prediction.
 - **Add labels where the model fails.** These frames are the most useful ones for the next round of training.

@@ -204,7 +204,7 @@ spread_baseline_pct = 0.05
 
 One Parquet file per experiment, storing both 2D and 3D data (Phase 15). label3d no longer reads the CSV working files (`points.csv`, `corners.csv`, `sync_history.csv`): `Project.load` refuses a project that has one without its Parquet file, and the project is set up again.
 
-In memory, as below. Rows indexed by `(experiment, trial, frame, instance, bodypart)`. Columns grouped by **view**: each real camera has `(x, y, xr, yr, state, source, score, sync)` coords; `"3d"` pseudo-camera has `(x, y, z)`.
+In memory, as below. Rows indexed by `(experiment, trial, frame, instance, bodypart)`. Columns grouped by **view**: each real camera has `(x, y, xr, yr, state, source, score, sync, px, py, pscore)` coords; `"3d"` pseudo-camera has `(x, y, z)`.
 
 ```
                                           cam0                          cam1                3d
@@ -214,7 +214,7 @@ PS18       trial1 7      0         head       95   205             predicted  sl
 ```
 
 Column structure is a 2-level `MultiIndex (view, coord)`:
-- Real cameras: `coord` ∈ `{x, y, xr, yr, state, source, score, sync}` — clicked coords, reprojected coords, point state, and provenance
+- Real cameras: `coord` ∈ `{x, y, xr, yr, state, source, score, sync, px, py, pscore}` — clicked coords, reprojected coords, point state, provenance, and the hidden prediction
 - `3d` pseudo-camera: `coord` ∈ `{x, y, z}` — triangulated world coords
 
 **Provenance columns** (per camera):
@@ -226,6 +226,10 @@ Column structure is a 2-level `MultiIndex (view, coord)`:
 | `sync` | sync id or NaN | The sync read that last brought the point in from SLEAP. Cleared when the user corrects or accepts the point. |
 
 A point is **new** when its `sync` equals the latest id in the sync history.
+
+**Hidden prediction** (per camera): `px`, `py`, `pscore` hold the SLEAP prediction under a user instance, as SLEAP's `from_predicted` does. Double-clicking a predicted instance in a camera makes a user instance there: every predicted point is copied as `set` (source `label3d`) and the prediction moves to `px, py, pscore`. Deleting the user instance in that camera (or deleting its last user point) brings the prediction back. Sync writes the hidden prediction as a `PredictedInstance` with the user `Instance` linked to it, and reading a `.slp` file fills these columns from each user instance's `from_predicted`. They are NaN where no prediction is hidden, and are not exported.
+
+An instance is **predicted** in a camera when it has predicted points there and no user points (`set`, `not_visible`). Predicted instances can be selected (for their epipolar lines) but not edited until they are double-clicked.
 
 **Point state values:**
 
@@ -242,7 +246,7 @@ A point is **new** when its `sync` equals the latest id in the sync history.
 |---|---|
 | `experiment`, `trial`, `bodypart` | string |
 | `frame`, `instance` | int64 |
-| `{cam}/x, y, xr, yr, score, sync`, `3d/x, y, z` | float64 |
+| `{cam}/x, y, xr, yr, score, sync, px, py, pscore`, `3d/x, y, z` | float64 |
 | `{cam}/state`, `{cam}/source` | string |
 
 Rows are sorted by (experiment, trial, frame, instance) and stored in row groups of 100,000, zstd-compressed, so reading one trial skips the rest. A save writes `points.parquet.tmp`, keeps the previous file as `points.parquet.bak` and then moves the new file into place (`write_points_file`, `parquet_io.write_table`).
@@ -256,7 +260,7 @@ df = read_points_df(path)                        # flat file -> MultiIndex DataF
 df = read_points_df(path, trials=["trial1"])     # only some trials
 
 # Access one camera
-cam0 = df["cam0"]                          # columns: x, y, xr, yr, state, source, score, sync
+cam0 = df["cam0"]                          # columns: x, y, xr, yr, state, source, score, sync, px, py, pscore
 
 # Access 3D
 xyz = df["3d"][["x", "y", "z"]]                         # world coords, shape (n_rows, 3)

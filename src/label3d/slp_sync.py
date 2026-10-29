@@ -19,15 +19,16 @@ import numpy as np
 import pandas as pd
 
 from label3d.points import (
+    HIDDEN_COORDS,
     INDEX_NAMES,
     SOURCE_SLEAP_PRED,
     SOURCE_SLEAP_USER,
     TEXT_COORDS,
+    USER_STATES,
 )
 
 Cell = tuple[str, str, str]  # (experiment, trial, camera)
 
-USER_STATES = ("set", "not_visible")
 WRITTEN_STATES = ("set", "predicted")
 COORD_TOL = 0.01  # pixels
 
@@ -446,12 +447,33 @@ def camera_sources(frame_df: pd.DataFrame | None, cam: str) -> dict[tuple[int, s
     }
 
 
+def camera_hidden(
+    frame_df: pd.DataFrame | None, cam: str
+) -> dict[tuple[int, str], tuple[float, float, float]]:
+    """Return (instance, bodypart) → (px, py, pscore), the prediction hidden under a
+    user instance, for one camera in one frame.  Points with none are left out."""
+    if frame_df is None or frame_df.empty or (cam, "px") not in frame_df.columns:
+        return {}
+    instances = frame_df.index.get_level_values("instance")
+    bodyparts = frame_df.index.get_level_values("bodypart")
+    cols = [
+        pd.to_numeric(frame_df[(cam, c)], errors="coerce").to_numpy(dtype=float)
+        for c in HIDDEN_COORDS
+    ]
+    return {
+        (int(i), str(b)): (float(px), float(py), float(ps))
+        for i, b, px, py, ps in zip(instances, bodyparts, *cols)
+        if math.isfinite(px) and math.isfinite(py)
+    }
+
+
 CameraData = tuple[
     dict[tuple[int, str], tuple[float, float, str]],  # camera_cells
     dict[tuple[int, str], float],                      # camera_scores
     dict[tuple[int, str], str],                        # camera_sources
+    dict[tuple[int, str], tuple[float, float, float]], # camera_hidden
 ]
-NO_CAMERA_DATA: CameraData = ({}, {}, {})
+NO_CAMERA_DATA: CameraData = ({}, {}, {}, {})
 
 
 def frame_keys(df: pd.DataFrame) -> list[tuple[str, str, int]]:
@@ -467,9 +489,10 @@ def frame_keys(df: pd.DataFrame) -> list[tuple[str, str, int]]:
 def frame_camera_data(
     df: pd.DataFrame, cameras: list[str]
 ) -> dict[tuple[str, str, int], dict[str, CameraData]]:
-    """camera_cells, camera_scores and camera_sources for every frame of df at once.
+    """camera_cells, camera_scores, camera_sources and camera_hidden for every frame
+    of df at once.
 
-    Returns (experiment, trial, frame) → camera → (cells, scores, sources),
+    Returns (experiment, trial, frame) → camera → (cells, scores, sources, hidden),
     the dicts those functions return for that frame's rows.  A camera with no
     state column is left out.  Each column is read once, which is far faster
     than slicing df frame by frame.  df must have a normalized index.
@@ -492,18 +515,25 @@ def frame_camera_data(
             if (cam, "score") in df.columns else [math.nan] * n
         )
         sources = df[(cam, "source")].tolist() if (cam, "source") in df.columns else [""] * n
-        for key, i, b, x, y, s, sc, src in zip(
-            keys, instances, bodyparts, xs, ys, states, scores, sources
+        hidden = [
+            pd.to_numeric(df[(cam, c)], errors="coerce").to_numpy(dtype=float).tolist()
+            if (cam, c) in df.columns else [math.nan] * n
+            for c in HIDDEN_COORDS
+        ]
+        for key, i, b, x, y, s, sc, src, px, py, ps in zip(
+            keys, instances, bodyparts, xs, ys, states, scores, sources, *hidden
         ):
             by_cam = out.get(key)
             if by_cam is None:
                 by_cam = out[key] = {}
             data = by_cam.get(cam)
             if data is None:
-                data = by_cam[cam] = ({}, {}, {})
+                data = by_cam[cam] = ({}, {}, {}, {})
             data[0][(i, b)] = (x, y, s if isinstance(s, str) else "not_set")
             data[1][(i, b)] = sc
             data[2][(i, b)] = src if isinstance(src, str) else ""
+            if math.isfinite(px) and math.isfinite(py):
+                data[3][(i, b)] = (px, py, ps)
     return out
 
 
@@ -617,7 +647,11 @@ def compute_merge(
         store missing / not_set / predicted  → take SLP
         store set, different coords          → conflict
         store not_visible                    → conflict
-        SLP point missing (NaN)              → keep store
+        SLP point missing (NaN)              → keep store, except that a
+                                               store prediction is cleared
+
+      The prediction hidden under each SLP user instance (its from_predicted)
+      replaces the one hidden under the store instance, without conflicts.
 
     - Otherwise SLP predictions replace the store's predictions for that camera.
       A stored prediction within PREDICTION_MOVE_PX keeps its x/y, source and
@@ -669,11 +703,13 @@ def compute_merge(
         next_new = frame_instances[-1] + 1 if frame_instances else 0
 
         for cam in cameras:
-            slp_cells, slp_scores, _ = slp_by_cam.get(cam, NO_CAMERA_DATA)
+            slp_cells, slp_scores, _, slp_hidden = slp_by_cam.get(cam, NO_CAMERA_DATA)
             slp_insts = written_instances(slp_cells)
             if not slp_insts:
                 continue
-            store_cells, store_scores, store_sources = store_by_cam.get(cam, NO_CAMERA_DATA)
+            store_cells, store_scores, store_sources, store_hidden = store_by_cam.get(
+                cam, NO_CAMERA_DATA
+            )
             store_insts = [inst for inst, _ in written_instances(store_cells)]
             targets = store_insts + [i for i in frame_instances if i not in store_insts]
 
@@ -695,16 +731,32 @@ def compute_merge(
                         continue
                     inst = target(pos)
                     for bp, sx, sy, sstate in slp_by_inst[slp_inst]:
-                        if sstate != "set" or not (math.isfinite(sx) and math.isfinite(sy)):
-                            continue
                         idx = (*key, inst, bp)
+                        new_hidden = slp_hidden.get((slp_inst, bp))
+                        if not _same_hidden(store_hidden.get((inst, bp)), new_hidden):
+                            px, py, ps = new_hidden or (np.nan, np.nan, np.nan)
+                            updates.setdefault((idx, cam), {}).update(
+                                {"px": px, "py": py, "pscore": ps}
+                            )
+                            result.changed_frames.add(key)
                         cx, cy, cstate = store_cells.get((inst, bp), (np.nan, np.nan, "not_set"))
+                        if sstate != "set" or not (math.isfinite(sx) and math.isfinite(sy)):
+                            if cstate == "predicted":
+                                # the SLEAP user instance has no point here
+                                updates.setdefault((idx, cam), {}).update({
+                                    "x": np.nan, "y": np.nan, "state": "not_set",
+                                    "source": "", "score": np.nan, "sync": np.nan,
+                                })
+                                result.changed_frames.add(key)
+                            continue
                         same = abs(cx - sx) <= COORD_TOL and abs(cy - sy) <= COORD_TOL
                         if cstate in ("set", "predicted") and same:
                             # predicted points in a user instance come back as set
                             continue
                         if cstate in ("not_set", "predicted"):
-                            updates[(idx, cam)] = taken(sx, sy, "set", np.nan)
+                            updates.setdefault((idx, cam), {}).update(
+                                taken(sx, sy, "set", np.nan)
+                            )
                             result.count(key, "new_user")
                             result.changed_frames.add(key)
                             result.new_frames.add(key)
@@ -764,6 +816,19 @@ def compute_merge(
         _apply_updates(result.df, conflict_updates) if conflict_updates else result.df
     )
     return result
+
+
+def _same_hidden(
+    a: tuple[float, float, float] | None, b: tuple[float, float, float] | None
+) -> bool:
+    """True when two hidden predictions (px, py, pscore) are the same, None for none."""
+    if a is None or b is None:
+        return a is b
+    if abs(a[0] - b[0]) > COORD_TOL or abs(a[1] - b[1]) > COORD_TOL:
+        return False
+    if math.isfinite(a[2]) != math.isfinite(b[2]):
+        return False
+    return not math.isfinite(a[2]) or abs(a[2] - b[2]) <= 1e-6
 
 
 def _apply_updates(

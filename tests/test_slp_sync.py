@@ -185,11 +185,13 @@ class TestProjectMapping:
 MCAMS = ["cam1", "cam2"]
 
 
-def _cam_values(x, y, state, source=None, score=NAN, sync=NAN) -> list:
+def _cam_values(
+    x, y, state, source=None, score=NAN, sync=NAN, px=NAN, py=NAN, pscore=NAN
+) -> list:
     """One camera's CAM_COORDS values; source defaults to label3d for labeled states."""
     if source is None:
         source = "label3d" if state in ("set", "predicted", "not_visible") else ""
-    return [x, y, NAN, NAN, state, source, score, sync]
+    return [x, y, NAN, NAN, state, source, score, sync, px, py, pscore]
 
 
 def _df(cells: dict) -> pd.DataFrame:

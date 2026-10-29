@@ -49,6 +49,7 @@ def _points_df() -> pd.DataFrame:
                 x = 10.0 + 100 * t_i + 10 * b_i + c_i
                 y = 20.0 + 100 * t_i + 10 * b_i + c_i
                 vals += [x, y, np.nan, np.nan, "set", "label3d", np.nan, np.nan]
+                vals += [np.nan, np.nan, np.nan]  # no hidden prediction
             vals += [np.nan, np.nan, np.nan]
             rows.append(vals)
     return pd.DataFrame(rows, index=pd.MultiIndex.from_tuples(index, names=INDEX_NAMES),

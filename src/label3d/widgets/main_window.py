@@ -299,6 +299,7 @@ class MainWindow(QMainWindow):
         for mode, label in (
             (ColorMode.ERROR, "Reprojection error"),
             (ColorMode.SOURCE, "Source"),
+            (ColorMode.SCORE, "Prediction score"),
         ):
             action = color_menu.addAction(label)
             action.setCheckable(True)
@@ -445,8 +446,21 @@ class MainWindow(QMainWindow):
         self._action_delete_instance.setShortcut(
             QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Backspace)
         )
+        self._action_delete_instance.setToolTip(
+            "Delete the selected instance in the camera under the mouse"
+            " (or where a point was last clicked); a SLEAP prediction comes back"
+        )
         self._action_delete_instance.triggered.connect(
             self._label_view._delete_instance
+        )
+        self._action_delete_instance_all = inst_menu.addAction(
+            "Delete instance in all cameras"
+        )
+        self._action_delete_instance_all.setShortcut(
+            QKeySequence(Qt.Modifier.CTRL | Qt.Modifier.SHIFT | Qt.Key.Key_Backspace)
+        )
+        self._action_delete_instance_all.triggered.connect(
+            self._label_view._delete_instance_all_cameras
         )
 
     def _update_instances_menu(self) -> None:

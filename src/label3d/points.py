@@ -2,12 +2,22 @@
 
 The DataFrame uses a 5-level row MultiIndex (experiment, trial, frame, instance, bodypart)
 and a 2-level column MultiIndex (view, coord).  Real cameras have coords
-{x, y, xr, yr, state, source, score, sync}; the "3d" pseudo-camera has coords {x, y, z}.
+{x, y, xr, yr, state, source, score, sync, px, py, pscore}; the "3d" pseudo-camera
+has coords {x, y, z}.
 
 source is where a point's x/y came from (label3d, sleap_user, sleap_pred); score
 is SLEAP's per-point score for predictions; sync is the id of the sync read
 that last brought the point in from SLEAP, cleared when the user corrects or
 accepts it.  A point is *new* when its sync equals the project's latest sync id.
+
+px, py and pscore hold the SLEAP prediction hidden under a user instance, as
+SLEAP's from_predicted does: a user instance made from a prediction (by
+double-clicking it) keeps the prediction there, and deleting the user instance
+brings the prediction back.  They are NaN where no prediction is hidden.
+
+An instance is *predicted* in a camera when it has predicted points there and
+no user points (set or not_visible).  Predicted instances are not edited
+directly: make_user_instance() turns one into a user instance first.
 """
 
 from __future__ import annotations
@@ -23,15 +33,18 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from label3d.parquet_io import write_table
 
 
-CAM_COORDS = ["x", "y", "xr", "yr", "state", "source", "score", "sync"]
+CAM_COORDS = ["x", "y", "xr", "yr", "state", "source", "score", "sync", "px", "py", "pscore"]
 THREE_D_COORDS = ["x", "y", "z"]
-FLOAT_COORDS = ("x", "y", "xr", "yr", "score", "sync")
+FLOAT_COORDS = ("x", "y", "xr", "yr", "score", "sync", "px", "py", "pscore")
+# The prediction hidden under a user instance
+HIDDEN_COORDS = ("px", "py", "pscore")
 TEXT_COORDS = ("state", "source")
 
 SOURCE_LABEL3D = "label3d"
 SOURCE_SLEAP_USER = "sleap_user"
 SOURCE_SLEAP_PRED = "sleap_pred"
 LABELED_STATES = ("set", "predicted", "not_visible")
+USER_STATES = ("set", "not_visible")
 INDEX_NAMES = ["experiment", "trial", "frame", "instance", "bodypart"]
 # Levels the index is kept sorted on.  Bodyparts are left in skeleton order,
 # so the lexsort depth is 4: enough for every partial-key .loc lookup.
@@ -62,6 +75,9 @@ class PointData(NamedTuple):
     source: str = ""
     score: float = np.nan
     sync: float = np.nan  # sync id, NaN when not from a sync or already reviewed
+    px: float = np.nan  # prediction hidden under a user instance
+    py: float = np.nan
+    pscore: float = np.nan
 
 
 class PointsStore(QObject):
@@ -215,6 +231,9 @@ class PointsStore(QObject):
                     source = row[(cam, "source")]
                     score = row[(cam, "score")]
                     sync = row[(cam, "sync")]
+                    px = row[(cam, "px")]
+                    py = row[(cam, "py")]
+                    pscore = row[(cam, "pscore")]
                 except KeyError:
                     continue
                 cam_data[cam] = PointData(
@@ -226,6 +245,9 @@ class PointsStore(QObject):
                     source=str(source) if pd.notna(source) else "",
                     score=float(score) if pd.notna(score) else np.nan,
                     sync=float(sync) if pd.notna(sync) else np.nan,
+                    px=float(px) if pd.notna(px) else np.nan,
+                    py=float(py) if pd.notna(py) else np.nan,
+                    pscore=float(pscore) if pd.notna(pscore) else np.nan,
                 )
             self._cache[(int(instance), str(bodypart))] = cam_data
 
@@ -291,20 +313,26 @@ class PointsStore(QObject):
     def delete_point(
         self, trial: str, frame: int, instance: int, bodypart: str, camera: str
     ) -> None:
-        """Remove a point (set to not_set with NaN coords)."""
+        """Remove a point (set to not_set with NaN coords).
+
+        If that leaves the instance with no user points in camera, the
+        prediction hidden under it (if any) comes back.
+        """
         idx = (self._experiment_name, trial, frame, instance, bodypart)
         if idx not in self._df.index:
             return
-        self._df.at[idx, (camera, "x")] = np.nan
-        self._df.at[idx, (camera, "y")] = np.nan
-        self._df.at[idx, (camera, "xr")] = np.nan
-        self._df.at[idx, (camera, "yr")] = np.nan
-        self._df.at[idx, (camera, "state")] = "not_set"
-        self._df.at[idx, (camera, "source")] = ""
-        self._df.at[idx, (camera, "score")] = np.nan
-        self._df.at[idx, (camera, "sync")] = np.nan
+        self._clear_point(idx, camera)
+        if not self._has_user_points(trial, frame, instance, camera):
+            self._restore_prediction(trial, frame, instance, camera)
         self._mark_changed()
         self._invalidate_cache(trial, frame)
+
+    def _clear_point(self, idx: tuple, camera: str) -> None:
+        """Set one point to not_set with NaN coords; its hidden prediction is kept."""
+        for coord in ("x", "y", "xr", "yr", "score", "sync"):
+            self._df.at[idx, (camera, coord)] = np.nan
+        self._df.at[idx, (camera, "state")] = "not_set"
+        self._df.at[idx, (camera, "source")] = ""
 
     def accept_points(
         self,
@@ -373,6 +401,119 @@ class PointsStore(QObject):
 
     # -- Instance-level API ----------------------------------------------------
 
+    def _instance_states(
+        self, trial: str, frame: int, instance: int, camera: str
+    ) -> list[str]:
+        try:
+            rows = self._df.loc[(self._experiment_name, trial, frame, instance)]
+        except KeyError:
+            return []
+        if (camera, "state") not in rows.columns:
+            return []
+        return rows[(camera, "state")].tolist()
+
+    def _has_user_points(self, trial: str, frame: int, instance: int, camera: str) -> bool:
+        return any(
+            s in USER_STATES for s in self._instance_states(trial, frame, instance, camera)
+        )
+
+    def is_predicted_instance(
+        self, trial: str, frame: int, instance: int, camera: str
+    ) -> bool:
+        """True when instance has predicted points in camera and no user points."""
+        states = self._instance_states(trial, frame, instance, camera)
+        return "predicted" in states and not any(s in USER_STATES for s in states)
+
+    def make_user_instance(
+        self, trial: str, frame: int, instance: int, camera: str
+    ) -> bool:
+        """Turn a predicted instance into a user instance in one camera.
+
+        As SLEAP does on double-click: every predicted point is copied as a
+        user point (set, source label3d), and the prediction is kept as the
+        hidden prediction (px, py, pscore), so deleting the user instance
+        brings it back.  Returns False if the instance is not predicted there.
+        """
+        if not self.is_predicted_instance(trial, frame, instance, camera):
+            return False
+        rows = self._df.loc[(self._experiment_name, trial, frame, instance)]
+        for bp in rows.index:
+            idx = (self._experiment_name, trial, frame, instance, bp)
+            for coord in HIDDEN_COORDS:
+                self._df.at[idx, (camera, coord)] = np.nan
+            if self._df.at[idx, (camera, "state")] != "predicted":
+                continue
+            self._df.at[idx, (camera, "px")] = self._df.at[idx, (camera, "x")]
+            self._df.at[idx, (camera, "py")] = self._df.at[idx, (camera, "y")]
+            self._df.at[idx, (camera, "pscore")] = self._df.at[idx, (camera, "score")]
+            self._df.at[idx, (camera, "state")] = "set"
+            self._set_label3d(idx, camera)
+        self._mark_changed()
+        self._invalidate_cache(trial, frame)
+        return True
+
+    def _restore_prediction(
+        self, trial: str, frame: int, instance: int, camera: str
+    ) -> bool:
+        """Bring back the prediction hidden under instance in camera, clearing the rest.
+
+        Every point of the instance in camera becomes the hidden prediction's
+        point (predicted, source sleap_pred, its score) or not_set where the
+        prediction has none.  Returns False, changing nothing, if no
+        prediction is hidden there.
+        """
+        try:
+            rows = self._df.loc[(self._experiment_name, trial, frame, instance)]
+        except KeyError:
+            return False
+        if (camera, "px") not in rows.columns or not rows[(camera, "px")].notna().any():
+            return False
+        for bp in rows.index:
+            idx = (self._experiment_name, trial, frame, instance, bp)
+            px = self._df.at[idx, (camera, "px")]
+            py = self._df.at[idx, (camera, "py")]
+            pscore = self._df.at[idx, (camera, "pscore")]
+            self._clear_point(idx, camera)
+            if pd.notna(px) and pd.notna(py):
+                self._df.at[idx, (camera, "x")] = px
+                self._df.at[idx, (camera, "y")] = py
+                self._df.at[idx, (camera, "state")] = "predicted"
+                self._df.at[idx, (camera, "source")] = SOURCE_SLEAP_PRED
+                self._df.at[idx, (camera, "score")] = pscore
+            for coord in HIDDEN_COORDS:
+                self._df.at[idx, (camera, coord)] = np.nan
+        return True
+
+    def delete_instance_in_camera(
+        self, trial: str, frame: int, instance: int, camera: str
+    ) -> None:
+        """Delete an instance's points in one camera.
+
+        The prediction hidden under it comes back, as in SLEAP; otherwise its
+        points there become not_set.  The instance's rows are dropped once it
+        has nothing left in any camera.
+        """
+        try:
+            rows = self._df.loc[(self._experiment_name, trial, frame, instance)]
+        except KeyError:
+            return
+        if not self._restore_prediction(trial, frame, instance, camera):
+            for bp in rows.index:
+                self._clear_point((self._experiment_name, trial, frame, instance, bp), camera)
+        self._drop_if_empty(trial, frame, instance)
+        self._mark_changed()
+        self._invalidate_cache(trial, frame)
+
+    def _drop_if_empty(self, trial: str, frame: int, instance: int) -> None:
+        """Drop an instance's rows when no camera has a point or a hidden prediction."""
+        rows = self._df.loc[(self._experiment_name, trial, frame, instance)]
+        for cam in self.cameras:
+            if rows[(cam, "state")].isin(LABELED_STATES).any():
+                return
+            if rows[(cam, "px")].notna().any():
+                return
+        self.delete_instance(trial, frame, instance)
+
     def add_instance(self, trial: str, frame: int, bodyparts: list[str]) -> int:
         """Add a new empty instance.  Returns the new instance index."""
         existing = self.get_instances(trial, frame)
@@ -385,7 +526,7 @@ class PointsStore(QObject):
         return new_idx
 
     def delete_instance(self, trial: str, frame: int, instance: int) -> None:
-        """Delete all rows for an instance in a frame."""
+        """Delete all rows for an instance in a frame, hidden predictions included."""
         try:
             to_drop = self._df.loc[(self._experiment_name, trial, frame, instance)].index
             full_idx = pd.MultiIndex.from_tuples(
@@ -417,6 +558,9 @@ class PointsStore(QObject):
             for cam in self.cameras:
                 if self._df.at[new_key, (cam, "state")] in LABELED_STATES:
                     self._set_label3d(new_key, cam)
+                # a prediction belongs to its own frame
+                for coord in HIDDEN_COORDS:
+                    self._df.at[new_key, (cam, coord)] = np.nan
         self._mark_changed()
         self._invalidate_cache(trial, dst_frame)
         return new_idx
@@ -631,6 +775,8 @@ class PointsStore(QObject):
             row[(cam, "source")] = ""
             row[(cam, "score")] = np.nan
             row[(cam, "sync")] = np.nan
+            for coord in HIDDEN_COORDS:
+                row[(cam, coord)] = np.nan
         row[("3d", "x")] = np.nan
         row[("3d", "y")] = np.nan
         row[("3d", "z")] = np.nan

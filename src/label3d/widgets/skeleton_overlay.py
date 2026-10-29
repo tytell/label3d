@@ -44,6 +44,8 @@ class SkeletonOverlay:
 
         # Track which items are active this frame
         self._active_points: set[tuple[int, str]] = set()
+        # Instances that are predicted in this camera: shown, but not editable
+        self._locked: set[int] = set()
         self._show_non_selected: bool = True
         self.color_mode: ColorMode = ColorMode.ERROR
 
@@ -73,6 +75,7 @@ class SkeletonOverlay:
         coordinates are placed at a default position.
         """
         self._active_points.clear()
+        self._locked.clear()
 
         if points_store is None or skeleton is None or not trial:
             self._hide_all()
@@ -85,6 +88,8 @@ class SkeletonOverlay:
 
         # Update point items for each instance and bodypart
         for inst in instances:
+            if points_store.is_predicted_instance(trial, frame, inst, cam):
+                self._locked.add(inst)
             # Skip non-selected instances if toggled off
             if not self._show_non_selected and inst != selected_instance and selected_instance >= 0:
                 continue
@@ -259,6 +264,10 @@ class SkeletonOverlay:
             and item.isVisible()
             and item.state in ("set", "predicted")
         ]
+
+    def is_locked(self, instance: int) -> bool:
+        """True when instance is predicted in this camera (double-click to edit)."""
+        return instance in self._locked
 
     def get_point_item(self, instance: int, bodypart: str) -> PointItem | None:
         """Get the PointItem for a given (instance, bodypart), if it exists."""
