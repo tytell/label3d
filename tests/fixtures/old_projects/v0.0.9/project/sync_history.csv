@@ -1,0 +1,3 @@
+id,timestamp,kind,experiment,trial,n_new_user,n_new_pred,n_updated_pred,n_conflicts,n_frames
+1,2026-10-29T15:50:00,sync,exp1,trial1,12,30,0,0,7
+1,2026-10-29T15:50:00,sync,exp2,trial1,12,30,0,0,7

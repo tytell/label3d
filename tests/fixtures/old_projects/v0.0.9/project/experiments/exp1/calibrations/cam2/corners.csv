@@ -1,0 +1,4 @@
+take,frame,corner_id,x,y,detected
+PreCal,0,0,10.5,30.0,True
+PreCal,0,1,20.25,31.5,True
+PreCal,5,0,11.0,29.75,False

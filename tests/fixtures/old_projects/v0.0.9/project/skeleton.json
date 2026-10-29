@@ -1,0 +1,39 @@
+{
+  "nodes": [
+    "snout",
+    "left_eye",
+    "dorsal"
+  ],
+  "edges": [
+    [
+      "snout",
+      "left_eye"
+    ],
+    [
+      "snout",
+      "dorsal"
+    ],
+    [
+      "left_eye",
+      "dorsal"
+    ]
+  ],
+  "symmetries": [],
+  "node_offsets_cm": {
+    "snout": [
+      2.5,
+      0.0,
+      -0.3
+    ],
+    "left_eye": [
+      0.8,
+      0.7,
+      1.0
+    ],
+    "dorsal": [
+      0.2,
+      0.0,
+      2.2
+    ]
+  }
+}

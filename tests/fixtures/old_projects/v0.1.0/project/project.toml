@@ -1,0 +1,50 @@
+[project]
+name = "old_synthetic"
+
+[charuco]
+squares_x = 6
+squares_y = 6
+square_length = 24.33
+marker_length = 17.0
+marker_bits = 5
+dict_size = 50
+
+[slp]
+[[slp.files]]
+path = "slp/cam1.slp"
+[[slp.files.blocks]]
+experiment = "exp1"
+trials = [ "trial1",]
+cameras = [ "cam1",]
+
+[[slp.files.blocks]]
+experiment = "exp2"
+trials = [ "trial1",]
+cameras = [ "cam1",]
+
+
+[[slp.files]]
+path = "slp/cam2.slp"
+[[slp.files.blocks]]
+experiment = "exp1"
+trials = [ "trial1",]
+cameras = [ "cam2",]
+
+[[slp.files.blocks]]
+experiment = "exp2"
+trials = [ "trial1",]
+cameras = [ "cam2",]
+
+
+[skeleton.node_offsets_cm]
+snout = [ 2.5, 0.0, -0.3,]
+left_eye = [ 0.8, 0.7, 1.0,]
+dorsal = [ 0.2, 0.0, 2.2,]
+
+[calibration.active]
+exp1 = "ground-truth_20261029-155003"
+exp2 = "ground-truth_20261029-155003"
+
+[calibration.triangulated_with]
+exp1 = "ground-truth_20261029-155003"
+exp2 = "ground-truth_20261029-155003"
