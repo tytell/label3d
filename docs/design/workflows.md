@@ -438,7 +438,7 @@ The format sets the extension: `-o` gets it if it has another (`with_format_suff
 
 then `x.cm, y.cm, z.cm, n_cameras, mean_error.px, calibration`. Units follow a dot (`UNIT_2D`, `UNIT_3D` in `export.py`); columns without one are unitless.
 
-- `video_frame = {cam}_start + frame`, from `trials.csv`.
+- `video_frame = {cam}_start + frame`, from `trials.csv`; both 0-based, as in the points file (the GUI and `trials.csv` number frames from 1).
 - `error`, `n_cameras`, `mean_error` (`mean_reprojection_errors`) and `calibration` (`triangulated_with`) are computed at export; they are not stored in the points files. `sync` is not exported.
 - A camera's cells are blank where its state is `not_set` (or it's a prediction and **Include predictions** is off). The 3D columns are blank where x/y/z are missing; triangulation clears them for points seen by fewer than 2 cameras, so they are never stale. A row is left out only when no camera has a point and there is no 3D point.
 

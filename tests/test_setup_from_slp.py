@@ -337,9 +337,11 @@ class TestExecute:
         config = _config(source)
         out = execute_setup(config, classify_slp_files(config))
         df = pd.read_csv(out / "trials.csv")
-        assert (df["cam1_end"] == 4).all()      # _make_video writes 5 frames
+        assert (df["cam1_end"] == 5).all()      # _make_video writes 5 frames, numbered from 1
+        assert (df["cam1_start"] == 1).all()
         assert df["cam1_mtime"].str.endswith("Z").all()
         assert not (out / "trials.csv.bak").exists()
+        assert toml.load(out / "project.toml")["trials"]["frame_base"] == 1
 
     def test_project_toml_records_video_root(self, source):
         config = _config(source)

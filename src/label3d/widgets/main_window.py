@@ -38,6 +38,7 @@ from label3d.workers.triangulation_worker import (
 
 from label3d.calibration_registry import entry_summary, entry_tree, find_calibration
 from label3d.export import describe_slp_changes, format_summary, stale_experiments
+from label3d.frames import shown_frame
 from label3d.geometry import load_cameras
 from label3d.points import POINTS_FILE, PointsStore
 from label3d.project import Project
@@ -1110,7 +1111,7 @@ class MainWindow(QMainWindow):
         if errors:
             mean_err = float(np.mean(errors))
             self._status_bar.showMessage(
-                f"Trial: {trial} — frame {frame} — reprojection error: {mean_err:.2f} px"
+                f"Trial: {trial} — frame {shown_frame(frame)} — reprojection error: {mean_err:.2f} px"
             )
 
     # -- Settings persistence ------------------------------------------------

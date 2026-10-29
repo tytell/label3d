@@ -28,6 +28,7 @@ from label3d.calibration_registry import (
     list_calibrations,
     registry_dir,
 )
+from label3d.frames import FRAME_BASE
 from label3d.parquet_io import write_table
 from label3d.points import (
     CAM_COORDS,
@@ -225,10 +226,24 @@ class Project:
         if not trials_path.exists():
             raise FileNotFoundError(f"trials.csv not found at {trials_path}")
 
-        # experiment and trial names are keys everywhere downstream (dict keys,
-        # path components, points file index levels), so they must stay strings —
-        # an all-digit name like "20260619" is otherwise inferred as int64.
-        trials_df = pd.read_csv(trials_path, dtype={"experiment": str, "trial": str})
+        # --- project.toml at project root ---
+        # Read first: [trials] frame_base says how trials.csv numbers frames, and
+        # [video_roots] is needed to resolve video paths below.
+        config: dict = {}
+        config_path = root / "project.toml"
+        if config_path.exists():
+            config = toml.load(config_path)
+
+        # A trials.csv from before frame_base was recorded is 0-based; it is
+        # converted to FRAME_BASE once, keeping the original as trials.csv.bak
+        file_base = config.get("trials", {}).get("frame_base", 0)
+        trials_df = read_trials_csv(trials_path, frame_base=file_base)
+        if file_base != FRAME_BASE:
+            logger.info(f"Renumbering frames in {trials_path} to start at {FRAME_BASE}")
+            write_trials_csv(trials_path, trials_df)
+            if config_path.exists():
+                config.setdefault("trials", {})["frame_base"] = FRAME_BASE
+                _write_config(root, config)
         cameras = _extract_cameras(trials_df.columns.tolist())
 
         # --- CSV working files are no longer read; refuse before opening videos ---
@@ -240,13 +255,6 @@ class Project:
                 + "\nSet the project up again."
             )
 
-        # --- project.toml at project root ---
-        # Read before the experiment loop: [video_roots] is needed to resolve
-        # video paths while trial lengths are computed below.
-        config: dict = {}
-        config_path = root / "project.toml"
-        if config_path.exists():
-            config = toml.load(config_path)
         video_roots = {
             str(name): Path(str(value)).expanduser()
             for name, value in config.get("video_roots", {}).items()
@@ -1242,19 +1250,39 @@ def _legacy_csv_files(root: Path, trials_df: pd.DataFrame) -> list[Path]:
             if (folder / old).exists() and not (folder / new).exists()]
 
 
-def write_trials_csv(path: Path, trials_df: pd.DataFrame, backup: bool = True) -> None:
-    """Write trials.csv, keeping frame numbers as integers.
+def _is_frame_column(col) -> bool:
+    return str(col).endswith(("_start", "_end"))
 
-    With backup, the first rewrite of an existing file keeps the original as
-    trials.csv.bak.
+
+def read_trials_csv(path: Path, frame_base: int = FRAME_BASE) -> pd.DataFrame:
+    """Read trials.csv with 0-based _start/_end frames.
+
+    The file numbers frames from frame_base (FRAME_BASE, as the GUI shows them;
+    0 in projects written before that).
+    """
+    # experiment and trial names are keys everywhere downstream (dict keys,
+    # path components, points file index levels), so they must stay strings —
+    # an all-digit name like "20260619" is otherwise inferred as int64.
+    df = pd.read_csv(path, dtype={"experiment": str, "trial": str})
+    for col in df.columns:
+        if _is_frame_column(col):
+            df[col] = pd.to_numeric(df[col], errors="coerce") - frame_base
+    return df
+
+
+def write_trials_csv(path: Path, trials_df: pd.DataFrame, backup: bool = True) -> None:
+    """Write trials.csv from 0-based frames, numbering them from FRAME_BASE.
+
+    Frame numbers are written as integers.  With backup, the first rewrite of
+    an existing file keeps the original as trials.csv.bak.
     """
     backup_path = path.with_name(path.name + ".bak")
     if backup and path.exists() and not backup_path.exists():
         shutil.copy2(path, backup_path)
     out = trials_df.copy()
     for col in out.columns:
-        if str(col).endswith(("_start", "_end")):
-            out[col] = pd.to_numeric(out[col], errors="coerce").astype("Int64")
+        if _is_frame_column(col):
+            out[col] = pd.to_numeric(out[col], errors="coerce").astype("Int64") + FRAME_BASE
     out.to_csv(path, index=False)
 
 

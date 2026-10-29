@@ -61,6 +61,7 @@ In the **Label** tab:
 - **Place it:** click in each camera view. After the first camera, epipolar lines show where the point should be in the others.
 - **Not visible:** right-click a point to mark it not visible in that camera.
 - **Navigate:** `→` / `←` step frames, and `]` / `[` jump between labelled frames.
+- **Frame numbers start at 1** in the app, and in the `_start` / `_end` columns of `trials.csv`. Exported files and the `.slp` files count from 0, as SLEAP does, so frame 1 in the app is frame 0 there.
 
 When you've labelled a set of frames, choose **File > Sync with Sleap** (`Ctrl+S`). This writes your labels into the `.slp` files.
 
@@ -164,7 +165,7 @@ It runs the same checks. It stops with an error (exit code 1) if an experiment's
 
 #### Wide layout
 
-One row per point: experiment, trial, frame, instance and bodypart, as in the project's points files. Each camera has its own set of columns, named with the camera as a prefix (for example `LateralOrtho_x.px`), followed by the 3D point. Units follow a dot: `.px` for pixels, `.cm` for the 3D coordinates. The columns are always in this order.
+One row per point: experiment, trial, frame, instance and bodypart, as in the project's points files. Frame numbers in exports count from 0, one less than the app shows. Each camera has its own set of columns, named with the camera as a prefix (for example `LateralOrtho_x.px`), followed by the 3D point. Units follow a dot: `.px` for pixels, `.cm` for the 3D coordinates. The columns are always in this order.
 
 | Column | Meaning |
 |---|---|

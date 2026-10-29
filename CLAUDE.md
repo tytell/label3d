@@ -17,6 +17,7 @@ A PySide6 desktop app for 3D point labeling across multiple synchronized calibra
 - **World frame**: x forward, z up, y right; **Camera frame**: OpenCV convention (X right, Y down, Z forward)
 - **Coordinates stored as raw pixels**; undistortion applied on the fly when needed for geometry
 - **Video sync**: offset is implicit — `cam_start` values in `trials.csv` encode per-camera frame offset, no separate column
+- **Frame numbers**: 0-based in memory, working files, exports and `.slp` files; **1-based** wherever the user sees or types them — the GUI and the `_start`/`_end` columns of `trials.csv` (`frames.py`: `FRAME_BASE`, `shown_frame`, `stored_frame`; `read_trials_csv` / `write_trials_csv` convert; `[trials] frame_base = 1` in `project.toml` marks a converted project)
 
 ## Data files (hierarchical layout — all projects)
 

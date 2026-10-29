@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
+from label3d.frames import shown_frame
 from label3d.state import ProjectState
 from label3d.widgets.frame_slider import FrameSlider
 
@@ -34,7 +35,7 @@ class FrameControls(QWidget):
             layout.addWidget(btn)
 
         # Frame label
-        self._frame_label = QLabel("0 / 0")
+        self._frame_label = QLabel(f"{shown_frame(0)} / {shown_frame(0)}")
         self._frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._frame_label.setMinimumWidth(100)
         layout.addWidget(self._frame_label)
@@ -86,7 +87,7 @@ class FrameControls(QWidget):
 
     def _update_label(self):
         self._frame_label.setText(
-            f"{self._state.current_frame} / {self._state.max_frame}"
+            f"{shown_frame(self._state.current_frame)} / {shown_frame(self._state.max_frame)}"
         )
 
     def _setup_shortcuts(self):

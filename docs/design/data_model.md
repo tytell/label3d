@@ -190,10 +190,10 @@ spread_baseline_pct = 0.05
 | PS18 | PostCal | True | PS18_PostCal_cam0.mp4 | 0 | | PS18_PostCal_cam1.mp4 | 0 | | … |
 | PS19 | trial1 | False | cam0_t1.mp4 | 0 | 600 | cam1_t1.mp4 | 0 | 600 | … |
 
-- `_start` / `_end`: frame indices into the video file (inclusive). Blank = start (0) / end of file.
+- `_start` / `_end`: frames of the video file (inclusive), **numbered from 1** as the GUI shows them (`frames.FRAME_BASE`). Blank = start / end of file. `read_trials_csv` / `write_trials_csv` convert to and from the 0-based frames used everywhere in memory, in the working files, in exports and in `.slp` files. `project.toml` records `[trials] frame_base = 1`; a project without it has a 0-based `trials.csv` (written before the change), which `Project.load()` converts once, keeping the original as `trials.csv.bak`. Frame ranges in `[calibration.ranges]` stay 0-based.
 - `_mtime`: the video's modification time when its `_end` was recorded (UTC, `2026-07-23T22:52:38Z`).
 - **Filled in on load.** `Project.load()` checks every video (`check_trial_videos`). A blank `_end` is set to the video's last frame, and a blank `_mtime` to its modification time, and `trials.csv` is rewritten (the original is kept once as `trials.csv.bak`). Counting frames means opening each video, which is slow on a network share, so this happens once; later loads only check that each file exists and compare its time. A video whose time differs from `_mtime` gets a warning when the project opens, and nothing is changed. Project setup fills both columns when it writes `trials.csv`. The app shows a progress dialog when opening takes more than half a second.
-- The per-camera offset is **implicit**: global frame `N` maps to video frame `_start + N` for each camera.
+- The per-camera offset is **implicit**: global frame `N` maps to video frame `_start + N` for each camera (both 0-based, in memory).
 - **Trial length** = `min(_end_i - _start_i + 1)` across all cameras. Blank `_end` resolved via `cv2.CAP_PROP_FRAME_COUNT`.
 - Camera ID columns must match the `name` field values in the calibration files.
 - Any column that is not `experiment`, `trial`, `is_calibration`, or a `*_start` / `*_end` / `*_mtime` suffix is taken to be a camera name — new metadata columns must be added to `project.NON_CAMERA_COLUMNS`, new per-camera suffixes to `project.CAMERA_COLUMN_SUFFIXES`.

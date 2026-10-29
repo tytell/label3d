@@ -16,6 +16,7 @@ import toml
 from aniposelib.cameras import CameraGroup
 
 from label3d.calibration_registry import REFINED_DIR, camera_dir, save_calibration
+from label3d.frames import FRAME_BASE
 from label3d.project import Project, check_trial_videos, write_trials_csv
 from label3d.skeleton import Skeleton, assign_in_config, merge_skeletons
 from label3d.slp_sync import MODELS_DIR, SlpMapping, find_slp_files, slp_file_path
@@ -1557,6 +1558,8 @@ def write_project_toml(
     """
     config_data: dict = {
         "project": {"name": project_name},
+        # trials.csv is written with frames numbered from FRAME_BASE
+        "trials": {"frame_base": FRAME_BASE},
     }
     if charuco:
         config_data["charuco"] = charuco

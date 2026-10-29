@@ -11,7 +11,7 @@ import pytest
 import toml
 
 from label3d import project as project_module
-from label3d.project import LoadCancelled, Project
+from label3d.project import LoadCancelled, Project, read_trials_csv, write_trials_csv
 from tests.conftest import TEST_PROJECT, requires_test_project
 
 
@@ -231,7 +231,7 @@ class TestVideoCheck:
         root = self._project(tmp_path)
         proj = Project.load(root)
         df = pd.read_csv(root / "trials.csv")
-        assert df["cam1_end"].tolist() == [9, 9]
+        assert df["cam1_end"].tolist() == [10, 10]  # 10 frames, numbered from 1
         assert df["cam1_mtime"].str.endswith("Z").all()
         assert list(df.columns[:6]) == [
             "experiment", "trial", "cam1", "cam1_start", "cam1_end", "cam1_mtime",
@@ -278,3 +278,52 @@ class TestVideoCheck:
 
         with pytest.raises(LoadCancelled):
             Project.load(self._project(tmp_path / "again"), progress=lambda *a: False)
+
+
+class TestTrialsFrameBase:
+    """trials.csv numbers frames from 1; in memory they are 0-based."""
+
+    def test_round_trip(self, tmp_path):
+        df = pd.DataFrame({
+            "experiment": ["e"], "trial": ["t"], "cam1": ["a.mp4"],
+            "cam1_start": [0], "cam1_end": [9],
+        })
+        write_trials_csv(tmp_path / "trials.csv", df, backup=False)
+        raw = pd.read_csv(tmp_path / "trials.csv")
+        assert (raw["cam1_start"].item(), raw["cam1_end"].item()) == (1, 10)
+        back = read_trials_csv(tmp_path / "trials.csv")
+        assert (back["cam1_start"].item(), back["cam1_end"].item()) == (0, 9)
+
+    def test_blank_end_stays_blank(self, tmp_path):
+        df = pd.DataFrame({
+            "experiment": ["e"], "trial": ["t"], "cam1": ["a.mp4"],
+            "cam1_start": [0], "cam1_end": [""],
+        })
+        write_trials_csv(tmp_path / "trials.csv", df, backup=False)
+        assert pd.isna(read_trials_csv(tmp_path / "trials.csv")["cam1_end"].item())
+
+    def test_old_file_is_read_as_0_based(self, tmp_path):
+        pd.DataFrame({"trial": ["t"], "cam1_start": [3]}).to_csv(
+            tmp_path / "trials.csv", index=False
+        )
+        assert read_trials_csv(tmp_path / "trials.csv", frame_base=0)["cam1_start"].item() == 3
+
+
+@requires_test_project
+def test_old_project_is_renumbered_on_load(tmp_path):
+    """A project without [trials] frame_base has a 0-based trials.csv, converted once."""
+    _copy_project_without(TEST_PROJECT, tmp_path, exclude=set())
+    config = toml.load(tmp_path / "project.toml")
+    config.pop("trials", None)
+    with open(tmp_path / "project.toml", "w") as f:
+        toml.dump(config, f)
+    old = read_trials_csv(tmp_path / "trials.csv")
+    old.to_csv(tmp_path / "trials.csv", index=False)  # 0-based, as before
+    (tmp_path / "trials.csv.bak").unlink(missing_ok=True)
+
+    proj = Project.load(tmp_path)
+    assert proj.trial_length("trial1") == 10
+    raw = pd.read_csv(tmp_path / "trials.csv")
+    assert raw["cam1_start"].tolist() == [1, 1] and raw["cam1_end"].tolist() == [10, 10]
+    assert toml.load(tmp_path / "project.toml")["trials"]["frame_base"] == 1
+    assert (tmp_path / "trials.csv.bak").exists()

@@ -65,6 +65,7 @@ from label3d.calibration_registry import (
     rename_calibration,
     save_calibration,
 )
+from label3d.frames import shown_frame, stored_frame
 from label3d.geometry import EpipolarCache, cameras_from_cgroup
 from label3d.project import Project
 from label3d.video import VideoReader
@@ -419,11 +420,12 @@ class CalibrationView(QWidget):
         detect_form.addRow("Video frame step:", self._skip_spin)
 
         # Per-take frame range; also shown as draggable brackets on the slider.
+        # The spin boxes show frames numbered from FRAME_BASE.
         self._range_take_label = QLabel("—")
         self._start_spin = QSpinBox()
         self._end_spin = QSpinBox()
         for sb in (self._start_spin, self._end_spin):
-            sb.setRange(0, 0)
+            sb.setRange(shown_frame(0), shown_frame(0))
             sb.setKeyboardTracking(False)
         self._start_spin.setToolTip(
             "First synchronized frame of this take used for calibration."
@@ -812,21 +814,25 @@ class CalibrationView(QWidget):
     def _take_by_name(self, name: str | None) -> CalibrationTake | None:
         return next((t for t in self._takes if t.name == name), None)
 
+    def _spin_range(self) -> tuple[int, int]:
+        """The 0-based (start, end) in the range spin boxes."""
+        return stored_frame(self._start_spin.value()), stored_frame(self._end_spin.value())
+
     def _on_range_spin_changed(self) -> None:
-        start, end = self._start_spin.value(), self._end_spin.value()
+        start, end = self._spin_range()
         # Keep start <= end by moving whichever spin box was not edited.
         if start > end:
             other = self._end_spin if self.sender() is self._start_spin else self._start_spin
             other.blockSignals(True)
-            other.setValue(start if other is self._end_spin else end)
+            other.setValue(shown_frame(start if other is self._end_spin else end))
             other.blockSignals(False)
-            start, end = self._start_spin.value(), self._end_spin.value()
+            start, end = self._spin_range()
         self._set_take_range(start, end)
 
     def _on_slider_bounds_changed(self, start: int, end: int) -> None:
         for sb, value in ((self._start_spin, start), (self._end_spin, end)):
             sb.blockSignals(True)
-            sb.setValue(value)
+            sb.setValue(shown_frame(value))
             sb.blockSignals(False)
         self._set_take_range(start, end)
 
@@ -855,7 +861,8 @@ class CalibrationView(QWidget):
         take = self._take_by_name(self._slider_take())
         if take is not None:
             self._log_msg(
-                f"Range of {take.name}: frames {take.start}-{take.end}. Detected "
+                f"Range of {take.name}: frames {shown_frame(take.start)}-"
+                f"{shown_frame(take.end) if take.end is not None else 'end'}. Detected "
                 "frames outside it are left out of calibration; to cover frames "
                 "that were not detected, run Detect Corners again."
             )
@@ -1601,8 +1608,8 @@ class CalibrationView(QWidget):
         end = last if take.end is None else max(start, min(take.end, last))
         for sb, value in ((self._start_spin, start), (self._end_spin, end)):
             sb.blockSignals(True)
-            sb.setRange(0, last)
-            sb.setValue(value)
+            sb.setRange(shown_frame(0), shown_frame(last))
+            sb.setValue(shown_frame(value))
             sb.blockSignals(False)
         self._slider.set_bounds(start, end)
 
@@ -1644,8 +1651,8 @@ class CalibrationView(QWidget):
             if isinstance(framenum, tuple):
                 take_name, fi = framenum
                 if len(self._takes) > 1:
-                    return f"{take_name}, frame {fi}", (take_name, fi)
-                return f"Frame {fi}", (take_name, fi)
+                    return f"{take_name}, frame {shown_frame(fi)}", (take_name, fi)
+                return f"Frame {shown_frame(fi)}", (take_name, fi)
 
         return f"{frame_idx + 1}", None
 
