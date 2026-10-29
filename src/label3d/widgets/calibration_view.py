@@ -885,10 +885,13 @@ class CalibrationView(QWidget):
             board_params=self._board_params(),
             takes=self._takes,
             skip=self._skip,
+            ask_on_empty=True,
         )
         self._detection_worker.progress.connect(self._log_msg)
         self._detection_worker.camera_done.connect(self._on_camera_done)
         self._detection_worker.frame_progress.connect(self._on_frame_progress)
+        self._detection_worker.no_corners.connect(self._on_no_corners)
+        self._detection_worker.cancelled.connect(self._on_detect_cancelled)
         self._detection_worker.finished.connect(self._on_detect_finished)
         self._detection_worker.error_occurred.connect(self._on_error)
         self._progress_bar.setRange(0, 100)
@@ -901,6 +904,25 @@ class CalibrationView(QWidget):
         lbl = self._cam_count_labels.get(cam_name)
         if lbl:
             lbl.setText(str(n_dets))
+
+    def _on_no_corners(self, cam_name: str, take_name: str):
+        reply = QMessageBox.warning(
+            self,
+            "No corners detected",
+            f"No Charuco corners were detected in any frame of {cam_name} "
+            f"[{take_name}].\n\nContinue detecting corners in the other videos? "
+            "Stopping discards this whole detection run.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        self._detection_worker.resume(reply == QMessageBox.StandardButton.Yes)
+
+    def _on_detect_cancelled(self):
+        self._log_msg("=== Corner detection stopped — nothing saved ===")
+        self._progress_bar.setVisible(False)
+        self._progress_label.setVisible(False)
+        self._detect_btn.setEnabled(True)
+        self._rescan_raw_media()
 
     def _on_frame_progress(self, label: str, current: int, total: int):
         self._progress_label.setText(label)

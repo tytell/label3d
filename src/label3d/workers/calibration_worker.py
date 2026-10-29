@@ -9,6 +9,7 @@ Workflow:
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -100,6 +101,9 @@ class DetectionWorker(QThread):
         progress(str)                         — log message
         camera_done(cam, n)                   — camera name, detection count
         frame_progress(label, current, total)  — label, frames processed in current video
+        no_corners(cam, take)                 — a take's video had no corners in any
+                                                frame; detection waits for resume()
+        cancelled()                           — resume(False) stopped detection
         finished(all_rows, cam_sizes)
             all_rows:  dict[cam_name, list[row]]        — detection rows per camera
             cam_sizes: dict[cam_name, (w, h)]           — frame size per camera
@@ -107,11 +111,17 @@ class DetectionWorker(QThread):
 
     ``skip`` strides video input: exactly every Nth frame is decoded and
     searched for corners.
+
+    With ``ask_on_empty`` a take with no corners in any frame emits
+    ``no_corners`` and blocks until ``resume`` is called; otherwise it only
+    logs a warning.
     """
 
     progress = Signal(str)
     camera_done = Signal(str, int)      # cam_name, n_dets
     frame_progress = Signal(str, int, int)  # label, current_frame, total_frames
+    no_corners = Signal(str, str)       # cam_name, take_name
+    cancelled = Signal()
     finished = Signal(dict, dict)               # all_rows, cam_sizes
     error_occurred = Signal(str)
 
@@ -121,6 +131,7 @@ class DetectionWorker(QThread):
         board_params: dict,
         takes: list[CalibrationTake],
         skip: int = 20,
+        ask_on_empty: bool = False,
         parent=None,
     ):
         super().__init__(parent)
@@ -128,6 +139,14 @@ class DetectionWorker(QThread):
         self._board_params = board_params
         self._takes = takes
         self._skip = skip
+        self._ask_on_empty = ask_on_empty
+        self._resume = threading.Event()
+        self._continue = True
+
+    def resume(self, keep_going: bool) -> None:
+        """Answer a ``no_corners`` pause: carry on, or stop and keep nothing."""
+        self._continue = keep_going
+        self._resume.set()
 
     def run(self):
         try:
@@ -169,8 +188,28 @@ class DetectionWorker(QThread):
                             cam_sizes[cam_name] = size
 
                     self.progress.emit(f"  {cam_name} [{take.name}]: detecting corners...")
-                    rows = self._detect_video(board, tv, take)
+                    rows, n_searched = self._detect_video(board, tv, take)
                     all_rows[cam_name].extend(rows)
+
+                    n_corners = sum(len(r["corners"]) for r in rows)
+                    n_found = len(rows)
+                    self.progress.emit(
+                        f"  {cam_name} [{take.name}]: {n_corners} corners in "
+                        f"{n_found}/{n_searched} frames "
+                        f"({n_searched - n_found}/{n_searched} frames with no corners)"
+                    )
+                    if n_found == 0:
+                        self.progress.emit(
+                            f"  Warning: no corners detected in any frame of "
+                            f"{cam_name} [{take.name}]"
+                        )
+                        if self._ask_on_empty:
+                            self._resume.clear()
+                            self.no_corners.emit(cam_name, take.name)
+                            self._resume.wait()
+                            if not self._continue:
+                                self.cancelled.emit()
+                                return
 
             for cam_name in self._cam_names:
                 n = len(all_rows[cam_name])
@@ -182,8 +221,12 @@ class DetectionWorker(QThread):
         except Exception as exc:
             self.error_occurred.emit(str(exc))
 
-    def _detect_video(self, board, tv: TakeVideo, take: CalibrationTake) -> list:
+    def _detect_video(
+        self, board, tv: TakeVideo, take: CalibrationTake
+    ) -> tuple[list, int]:
         """Detect corners on every ``self._skip``-th frame of one take's video.
+
+        Returns the detection rows and the number of frames searched.
 
         Frame numbers in the returned rows are *synchronized* take frames (video
         frame minus the camera's start offset), so merge_rows pairs frames that
@@ -208,6 +251,7 @@ class DetectionWorker(QThread):
         self.frame_progress.emit(label, 0, span)
 
         v_rows: list = []
+        n_searched = 0
         framenum = 0
         last_emit = -update_every
         while True:
@@ -226,6 +270,7 @@ class DetectionWorker(QThread):
                 self.frame_progress.emit(label, framenum - start, span)
                 last_emit = framenum
             corners, ids = board.detect_image(frame)
+            n_searched += 1
             if corners is not None and len(corners) > 0:
                 v_rows.append(
                     {
@@ -239,7 +284,7 @@ class DetectionWorker(QThread):
         cap.release()
         end = span or max(0, framenum - start)
         self.frame_progress.emit(label, end, end)
-        return board.fill_points_rows(v_rows)
+        return board.fill_points_rows(v_rows), n_searched
 
 
 

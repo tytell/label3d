@@ -376,7 +376,7 @@ class TestSynchronizedFrames:
         worker = DetectionWorker(["cam1", "cam2"], {}, [offset_take], skip=5)
         board = _AlwaysDetects()
         frames = {
-            cam: [r["framenum"] for r in worker._detect_video(board, tv, offset_take)]
+            cam: [r["framenum"] for r in worker._detect_video(board, tv, offset_take)[0]]
             for cam, tv in offset_take.videos.items()
         }
         assert frames["cam1"] == [("PreCal", s) for s in (0, 5, 10, 15)]
@@ -433,7 +433,7 @@ class TestTakeRange:
         worker = DetectionWorker(["cam1", "cam2"], {}, [offset_take], skip=5)
         board = _AlwaysDetects()
         for tv in offset_take.videos.values():
-            frames = [r["framenum"][1] for r in worker._detect_video(board, tv, offset_take)]
+            frames = [r["framenum"][1] for r in worker._detect_video(board, tv, offset_take)[0]]
             # Strides from the range start, so both cameras sample the same instants
             assert frames == [4, 9]
 
