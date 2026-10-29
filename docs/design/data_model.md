@@ -197,7 +197,7 @@ spread_baseline_pct = 0.05
 | PS18 | PostCal | True | PS18_PostCal_cam0.mp4 | 0 | | PS18_PostCal_cam1.mp4 | 0 | | … |
 | PS19 | trial1 | False | cam0_t1.mp4 | 0 | 600 | cam1_t1.mp4 | 0 | 600 | … |
 
-- `_start` / `_end`: frames of the video file (inclusive), **numbered from 1** as the GUI shows them (`frames.FRAME_BASE`). Blank = start / end of file. `read_trials_csv` / `write_trials_csv` convert to and from the 0-based frames used everywhere in memory, in the working files, in exports and in `.slp` files. `project.toml` records `[trials] frame_base = 1`; a project without it has a 0-based `trials.csv` (written before the change), which `Project.load()` converts once, keeping the original as `trials.csv.bak`. Frame ranges in `[calibration.ranges]` stay 0-based.
+- `_start` / `_end`: frames of the video file (inclusive), **numbered from 1** as the GUI shows them (`frames.FRAME_BASE`). Blank = start / end of file. `read_trials_csv` / `write_trials_csv` convert to and from the 0-based frames used everywhere in memory, in the working files, in exports and in `.slp` files. `project.toml` records `[trials] frame_base = 1`; a project without it has a 0-based `trials.csv` (written before 0.3.0), which the upgrade converts, keeping the original as `trials.csv.bak` ([phase_20.md](phases/phase_20.md)). Frame ranges in `[calibration.ranges]` stay 0-based.
 - `_mtime`: the video's modification time when its `_end` was recorded (UTC, `2026-07-23T22:52:38Z`).
 - **Filled in on load.** `Project.load()` checks every video (`check_trial_videos`). A blank `_end` is set to the video's last frame, and a blank `_mtime` to its modification time, and `trials.csv` is rewritten (the original is kept once as `trials.csv.bak`). Counting frames means opening each video, which is slow on a network share, so this happens once; later loads only check that each file exists and compare its time. A video whose time differs from `_mtime` gets a warning when the project opens, and nothing is changed. Project setup fills both columns when it writes `trials.csv`. The app shows a progress dialog when opening takes more than half a second.
 - The per-camera offset is **implicit**: global frame `N` maps to video frame `_start + N` for each camera (both 0-based, in memory).
@@ -209,7 +209,7 @@ spread_baseline_pct = 0.05
 
 ### Primary storage: `points.parquet`
 
-One Parquet file per experiment, storing both 2D and 3D data (Phase 15). label3d no longer reads the CSV working files (`points.csv`, `corners.csv`, `sync_history.csv`): `Project.load` refuses a project that has one without its Parquet file, and the project is set up again.
+One Parquet file per experiment, storing both 2D and 3D data (Phase 15). label3d no longer reads the CSV working files (`points.csv`, `corners.csv`, `sync_history.csv`, `refined/*_points.csv`) of 0.0.9 projects: `Project.load` asks for an upgrade, which converts them ([phase_20.md](phases/phase_20.md)).
 
 In memory, as below. Rows indexed by `(experiment, trial, frame, instance, bodypart)`. Columns grouped by **view**: each real camera has `(x, y, xr, yr, state, source, score, sync, px, py, pscore)` coords; `"3d"` pseudo-camera has `(x, y, z)`.
 
@@ -304,7 +304,7 @@ edges = [["snout", "left_eye"]]
 symmetries = []
 ```
 
-An older project's `skeleton.json` is copied once into `project.toml` (assigned to every camera) and then ignored.
+A 0.0.9 project's `skeleton.json` is moved into `project.toml` (assigned to every camera) by the upgrade.
 
 A node available in fewer than 2 cameras of a trial is never triangulated (it can still be labelled in 2D): triangulation counts a camera's point only where its skeleton has the node. Points left in a cell whose skeleton lacks the node (after a skeleton changed) are kept in the points file but hidden, not triangulated, not written to `.slp` and left out of the export; **File > Remove points outside the skeletons...** deletes them (`Project.remove_points_outside`). SLP points of nodes a cell's skeleton lacks are dropped on import and counted in the sync summary.
 

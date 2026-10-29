@@ -17,6 +17,22 @@ Each `.slp` file has a folder of its own in `slp/`, so that the `models` folder 
 
 A `.slp` file can hold more than the project: videos of other experiments, or frames outside a trial. Sync leaves those alone, so the file still has them when you open it in SLEAP.
 
+## Opening a project from an older label3d
+
+label3d records its version in each project's `project.toml`. A project made before that (label3d 0.2.0 or earlier) is upgraded the first time you open it: a dialog lists what changes, and **Upgrade** does it. Every file that changes is first copied to `upgrade_backup/` in the project; if anything goes wrong, the project is put back as it was. Delete `upgrade_backup/` once you have checked the upgraded project.
+
+**The `.slp` files.** Before 0.2.0, **Sync** cut the project's `.slp` files down to the project: videos of other experiments and frames outside the trials were lost. The upgrade puts them back from the `.slp` files the project was set up from. For each file, choose its original:
+
+- **Earliest Sync backup** (the default, when there is one): the copy in `slp/backup/` from before the first Sync. It is the original if setup copied the file into the project and nothing was changed in SLEAP before that Sync.
+- **Search folder...** finds the originals by name in a folder and its subfolders; **Choose file...** picks one.
+- **Keep the project's copy** when there is no original; what was dropped stays lost.
+
+The project's labels go into the original's frames for the project's trials; everything else in it is kept, and its `models` folder is copied along. A label you placed over a SLEAP prediction gets that prediction back underneath it, as label3d does now.
+
+From the command line: `uv run label3d-upgrade <project> --slp-source <folder>` (or `--slp-from-backup`, or `--keep-slp`); add `-n` to see what it would do.
+
+Projects from before the calibration registry (with `calibration.toml` or `calibration_takes/` in an experiment) can't be upgraded; set them up again.
+
 ## 1. Set up a project
 
 There are two ways to start:

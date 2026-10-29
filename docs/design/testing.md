@@ -14,6 +14,8 @@ Tests use **pytest** (`tests/` directory, run with `uv run pytest`). A session-s
 | `tests/test_points_paths.py` | OS-level path robustness: spaces, unicode, separators, missing paths |
 | `tests/test_adapters.py` | Adapter registry, `SleapAdapter` load/save, basename matching edge cases |
 | `tests/test_project_loading.py` | `Project.load()` integration: skeleton/points wiring, missing files, error messages |
+| `tests/test_version.py` | Version and commit, `[label3d]` in `project.toml`, refusing newer projects |
+| `tests/test_upgrade.py` | Detecting old layouts and upgrading the 0.0.9 and 0.1.0 fixture projects (`tests/fixtures/old_projects/`, made by those versions with `make_old_projects.py`): conversions, restored `.slp` files, backup and roll back, `label3d-upgrade`, the dialog |
 
 ## Key testing conventions
 

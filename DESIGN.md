@@ -31,6 +31,7 @@ A cross-platform desktop app for:
 | [docs/design/phases/phase_16.md](docs/design/phases/phase_16.md) | Phase 16 — Axis alignment (deferred; partially implemented) |
 | [docs/design/phases/phase_17_18.md](docs/design/phases/phase_17_18.md) | Phases 17–18: Export to other pose formats, Polish and robustness (deferred) |
 | [docs/design/phases/phase_19.md](docs/design/phases/phase_19.md) | Phase 19 — Multi-instance support and cross-camera matching (deferred) |
+| [docs/design/phases/phase_20.md](docs/design/phases/phase_20.md) | Phase 20 — Project versions and upgrades (implemented; to be checked in the app) |
 | [docs/design/phases/archive/phases_1_7.md](docs/design/phases/archive/phases_1_7.md) | Phases 1–7 (completed; archived for reference) |
 
 ---

@@ -19,6 +19,13 @@ A PySide6 desktop app for 3D point labeling across multiple synchronized calibra
 - **Video sync**: offset is implicit — `cam_start` values in `trials.csv` encode per-camera frame offset, no separate column
 - **Frame numbers**: 0-based in memory, working files, exports and `.slp` files; **1-based** wherever the user sees or types them — the GUI and the `_start`/`_end` columns of `trials.csv` (`frames.py`: `FRAME_BASE`, `shown_frame`, `stored_frame`; `read_trials_csv` / `write_trials_csv` convert; `[trials] frame_base = 1` in `project.toml` marks a converted project)
 
+## Versions and upgrades (Phase 20)
+
+- `pyproject.toml` has the package version; `version.py` gives it with the git commit, and `LAYOUT_VERSION` (0.3.0), the project layout the code writes. Tags `v0.0.9` (`088c44f`, CSV working files), `v0.1.0` (`8c09482`), `v0.2.0` (`33d9095`)
+- `project.toml` starts with `# label3d 0.3.0 (hash)` and has `[label3d] project_version, written_by`; every write goes through `version.write_project_toml`. Setup and upgrades write `project_version`
+- A project without `project_version` is matched by its files (`layout.py`); `Project.load` raises `ProjectNeedsUpgrade` and the app offers the upgrade (`upgrade.py`, `widgets/upgrade_dialog.py`, `uv run label3d-upgrade`). Before 0.2.0, Sync dropped videos and frames outside the project from the `.slp` files; the upgrade restores them from the originals. Changed files are backed up to `upgrade_backup/`
+- Test projects built by hand in the old style go through `tests.helpers.make_current`; old-version fixtures are in `tests/fixtures/old_projects/` (made from git worktrees of the tagged versions)
+
 ## Data files (hierarchical layout — all projects)
 
 ```
@@ -32,7 +39,7 @@ project/
 
 - `trials.csv` — **global**, at project root; columns `experiment, trial, is_calibration, cam0, cam0_start, cam0_end, cam0_mtime, cam1, …`; blank `_end` / `_mtime` cells are measured and written back on load (`check_trial_videos`), so later loads don't open the videos; trial names are local to each experiment (disambiguated by the `experiment` column). `is_calibration = True` rows are **calibration takes** (one synchronized calibration recording, e.g. `PreCal` / `PostCal`); their videos live in `calibrations/{cam}/`, not `videos/`. Any column that is not `experiment`, `trial`, `is_calibration` or a `*_start`/`*_end`/`*_mtime` suffix is read as a camera name
 - `experiments/{name}/calibrations/` — the calibration registry (`calibration_registry.py`): every solution as an aniposelib `CameraGroup.dump()` file with provenance in `[metadata]`; refinements in `refined/`. The one in use is `[calibration.active]` in `project.toml`, and the one the 3D points came from is `[calibration.triangulated_with]`. Projects with the pre-registry layout (`calibration.toml`, `calibration_takes/`, `calibration/{cam}/`) are not supported; they are set up again
-- **Working files are Parquet** (Phase 15): points, corners, sync history and refinement records. CSV versions are not read; a project that has one is refused on load and set up again. `trials.csv` stays CSV
+- **Working files are Parquet** (Phase 15): points, corners, sync history and refinement records. CSV versions (0.0.9 projects) are converted by the upgrade. `trials.csv` stays CSV
 - `calibrations/{cam}/corners.parquet` — every take's detected corners for one camera; columns `take, frame, corner_id, x, y, detected`
 - **Calibration is video-only** — image-based calibration is deprecated and raises
 - `experiments/{name}/videos/` — video files for that experiment's trials (no trials.csv here)
@@ -60,9 +67,10 @@ uv run python generate_synthetic.py synthetic_config.toml
 ```
 uv run label3d          # launches the app
 uv run label3d-export <project>   # Parquet/CSV export, no GUI
+uv run label3d-upgrade <project> --slp-source <dir>   # upgrade an old project, no GUI
 uv run python <script>  # run any script in the project venv
 ```
 
 ## Implementation phases
 
-Phases 1–12 complete. Phase 13, batch triangulation and export ([phase_13.md](docs/design/phases/phase_13.md)), is implemented and awaiting a check in the app. Phase 14, per-camera skeletons ([phase_14.md](docs/design/phases/phase_14.md)), is implemented and awaiting a check in the app. Phase 15, Parquet working files ([phase_15.md](docs/design/phases/phase_15.md)), is implemented and awaiting a check in the app. Deferred: axis alignment ([phase_16.md](docs/design/phases/phase_16.md); geometry helpers and CameraPanel pick mode exist, the UI widget does not), export to other pose formats and polish ([phase_17_18.md](docs/design/phases/phase_17_18.md)), multi-instance support ([phase_19.md](docs/design/phases/phase_19.md)). [docs/design/phases/phase_12.md](docs/design/phases/phase_12.md) covers the finished calibration refinement with labelled points, [phase_11.md](docs/design/phases/phase_11.md) the finished calibration registry, [phase_10.md](docs/design/phases/phase_10.md) the finished point provenance and review work, [phase_9.md](docs/design/phases/phase_9.md) the finished calibration-take work, [phase_8.md](docs/design/phases/phase_8.md) the finished SLP sync work.
+Phases 1–12 complete. Phase 13, batch triangulation and export ([phase_13.md](docs/design/phases/phase_13.md)), is implemented and awaiting a check in the app. Phase 14, per-camera skeletons ([phase_14.md](docs/design/phases/phase_14.md)), is implemented and awaiting a check in the app. Phase 15, Parquet working files ([phase_15.md](docs/design/phases/phase_15.md)), is implemented and awaiting a check in the app. Phase 20, project versions and upgrades ([phase_20.md](docs/design/phases/phase_20.md)), is implemented and awaiting a check in the app. Deferred: axis alignment ([phase_16.md](docs/design/phases/phase_16.md); geometry helpers and CameraPanel pick mode exist, the UI widget does not), export to other pose formats and polish ([phase_17_18.md](docs/design/phases/phase_17_18.md)), multi-instance support ([phase_19.md](docs/design/phases/phase_19.md)). [docs/design/phases/phase_12.md](docs/design/phases/phase_12.md) covers the finished calibration refinement with labelled points, [phase_11.md](docs/design/phases/phase_11.md) the finished calibration registry, [phase_10.md](docs/design/phases/phase_10.md) the finished point provenance and review work, [phase_9.md](docs/design/phases/phase_9.md) the finished calibration-take work, [phase_8.md](docs/design/phases/phase_8.md) the finished SLP sync work.
