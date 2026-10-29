@@ -10,10 +10,12 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QFileDialog, QProgressDialog
 
+from label3d.layout import ProjectNeedsUpgrade
 from label3d.project import LoadCancelled, Project
 from label3d.state import ProjectState
 from label3d.version import version_string
 from label3d.widgets.main_window import MainWindow
+from label3d.widgets.upgrade_dialog import upgrade_project
 
 
 STARTUP_DIALOG_DELAY_MS = 500
@@ -54,6 +56,26 @@ def run(project_dir: str | Path | None = None):
 
     project_dir = Path(project_dir)
 
+    try:
+        project = _load(app, project_dir)
+    except ProjectNeedsUpgrade as e:
+        if not upgrade_project(e.plan):
+            print("The project was not upgraded.", file=sys.stderr)
+            sys.exit(1)
+        project = _load(app, project_dir)
+
+    state = ProjectState()
+    window = MainWindow(project, state)
+    window.show()
+
+    sys.exit(app.exec())
+
+
+def _load(app: QApplication, project_dir: Path) -> Project:
+    """Load the project with a progress dialog; exit on an error or Cancel.
+
+    ProjectNeedsUpgrade is raised to the caller.
+    """
     # Checking the videos can be slow on a network share, and very slow the
     # first time (frame counts). The dialog appears only once loading has
     # taken about half a second.
@@ -73,7 +95,7 @@ def run(project_dir: str | Path | None = None):
         return not dialog.wasCanceled()
 
     try:
-        project = Project.load(project_dir, progress=progress)
+        return Project.load(project_dir, progress=progress)
     except LoadCancelled:
         print("Cancelled while opening the project.", file=sys.stderr)
         sys.exit(1)
@@ -82,9 +104,3 @@ def run(project_dir: str | Path | None = None):
         sys.exit(1)
     finally:
         dialog.close()
-
-    state = ProjectState()
-    window = MainWindow(project, state)
-    window.show()
-
-    sys.exit(app.exec())

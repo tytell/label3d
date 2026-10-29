@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 import sleap_io as sio
 import toml
+from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
 
 from label3d import export_cli, upgrade, upgrade_cli
 from label3d.layout import (
@@ -35,6 +36,7 @@ from label3d.points import read_points_df
 from label3d.project import Project
 from label3d.upgrade import earliest_backup, find_originals, read_points_csv, run_upgrade
 from label3d.version import LAYOUT_VERSION
+from label3d.widgets.upgrade_dialog import UpgradeDialog, upgrade_project
 
 FIXTURES = Path(__file__).parent / "fixtures" / "old_projects"
 VERSIONS = ["0.0.9", "0.1.0"]
@@ -387,3 +389,51 @@ class TestUpgradeCli:
         root, _ = _copy("0.1.0", tmp_path)
         assert export_cli.main([str(root)]) == 1
         assert "label3d-upgrade" in capsys.readouterr().err
+
+
+# -- In the app ----------------------------------------------------------------------
+
+
+class TestUpgradeDialog:
+    def test_defaults_to_the_earliest_backup(self, tmp_path, qapp):
+        root, _ = _copy("0.1.0", tmp_path)
+        dialog = UpgradeDialog(plan_upgrade(root))
+        sources = dialog.sources()
+        assert list(sources) == [Path("slp/cam1.slp"), Path("slp/cam2.slp")]
+        assert all(src.parent.parent == root / "slp" / "backup" for src in sources.values())
+
+    def test_search_folder_selects_the_originals(self, tmp_path, qapp, monkeypatch):
+        root, originals = _copy("0.1.0", tmp_path)
+        dialog = UpgradeDialog(plan_upgrade(root))
+        monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(originals))
+        dialog._search_folder()
+        assert dialog.sources() == {Path("slp/cam1.slp"): originals / "cam1.slp",
+                                    Path("slp/cam2.slp"): originals / "cam2.slp"}
+
+    def test_no_restore_section_without_files_to_restore(self, tmp_path, qapp):
+        root, _ = _copy("0.0.9", tmp_path)
+        config = toml.load(root / "project.toml")
+        config.pop("slp")
+        (root / "project.toml").write_text(toml.dumps(config))
+        assert UpgradeDialog(plan_upgrade(root)).sources() == {}
+
+    def test_upgrade_project_runs_the_worker(self, tmp_path, qapp, monkeypatch):
+        root, _ = _copy("0.1.0", tmp_path)
+        monkeypatch.setattr(UpgradeDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+        shown = []
+        monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+        assert upgrade_project(plan_upgrade(root))
+        assert "restored from" in shown[0]
+        assert Project.load(root).config["label3d"]["project_version"] == LAYOUT_VERSION
+
+    def test_failed_upgrade_is_reported(self, tmp_path, qapp, monkeypatch):
+        root, _ = _copy("0.1.0", tmp_path)
+        before = _digests(root)
+        monkeypatch.setattr(UpgradeDialog, "exec", lambda self: QDialog.DialogCode.Accepted)
+        monkeypatch.setattr(upgrade, "_renumber_frames",
+                            lambda *a: (_ for _ in ()).throw(RuntimeError("stopped")))
+        errors = []
+        monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: errors.append(a[2]))
+        assert not upgrade_project(plan_upgrade(root))
+        assert "stopped" in errors[0]
+        assert _digests(root) == before
