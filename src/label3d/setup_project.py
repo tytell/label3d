@@ -15,6 +15,7 @@ import sleap_io as sio
 import toml
 from aniposelib.cameras import CameraGroup
 
+from label3d import version
 from label3d.calibration_registry import REFINED_DIR, camera_dir, save_calibration
 from label3d.frames import FRAME_BASE
 from label3d.project import Project, check_trial_videos, write_trials_csv
@@ -1575,8 +1576,7 @@ def write_project_toml(
         config_data["skeleton"] = skeleton
 
     path = project_dir / "project.toml"
-    with open(path, "w") as f:
-        toml.dump(config_data, f)
+    version.write_project_toml(path, config_data, new_project=True)
     return path
 
 

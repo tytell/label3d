@@ -66,6 +66,11 @@ Project
 Optional project-level configuration file. Loaded by `Project.load()` into `project.config: dict`.
 
 ```toml
+# label3d 0.3.0 (b9b76dc)
+[label3d]
+project_version = "0.3.0"    # layout version; written by setup and upgrades only
+written_by = "0.3.0 (b9b76dc)"   # app version and commit that last wrote this file
+
 [project]
 name = "my_experiment"
 
@@ -90,6 +95,8 @@ PS18 = "charuco-all_20260901-101500"
 [calibration.triangulated_with]   # experiment -> id the 3D points were computed with
 PS18 = "charuco-all_20260901-101500"
 ```
+
+`[label3d]` and the comment line are written by `version.write_project_toml`, which every writer of `project.toml` goes through; the comment is put back each time, since the `toml` package drops comments. A project without `project_version` was made before 0.3.0. `Project.load()` refuses a project whose `project_version` is newer than `version.LAYOUT_VERSION`. Versions and upgrades are in [phase_20.md](phases/phase_20.md).
 
 `[calibration.active]` and `[calibration.triangulated_with]` are written by `Project.set_active_calibration()` and `Project.set_triangulated_with()`. When the two differ for an experiment, the Label tab warns that its 3D points are stale.
 

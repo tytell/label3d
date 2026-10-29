@@ -54,6 +54,7 @@ from label3d.slp_sync import (
     compute_merge,
     find_slp_files,
 )
+from label3d.version import check_not_newer, write_project_toml
 
 
 # Per-camera trials.csv columns: {cam}_start, {cam}_end, {cam}_mtime. Any other
@@ -233,6 +234,7 @@ class Project:
         config_path = root / "project.toml"
         if config_path.exists():
             config = toml.load(config_path)
+        check_not_newer(config)
 
         # A trials.csv from before frame_base was recorded is 0-based; it is
         # converted to FRAME_BASE once, keeping the original as trials.csv.bak
@@ -984,8 +986,7 @@ def _migrate_skeleton_json(root: Path, config: dict, cameras: list[str]) -> None
 
 
 def _write_config(root: Path, config: dict) -> None:
-    with open(root / "project.toml", "w") as f:
-        toml.dump(config, f)
+    write_project_toml(root / "project.toml", config)
 
 
 def _pointer(config: dict, table: str, experiment: str) -> str | None:

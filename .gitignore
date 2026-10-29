@@ -5,6 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
+src/label3d/_build_info.py
 
 # Virtual environments
 .venv

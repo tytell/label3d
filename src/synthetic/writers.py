@@ -8,7 +8,9 @@ import pandas as pd
 import toml
 from aniposelib.cameras import Camera, CameraGroup
 
+from label3d import version
 from label3d.calibration_registry import CalibrationEntry, registry_dir, save_calibration
+from label3d.frames import FRAME_BASE
 from label3d.points import write_points_file
 
 
@@ -115,7 +117,7 @@ def write_project_toml(
     node_offsets go to [skeleton.node_offsets_cm]; assigned_skeletons (dicts
     with name, cameras, nodes, edges, symmetries) to [[skeleton.assigned]].
     """
-    data: dict = {"project": {"name": project_name}}
+    data: dict = {"project": {"name": project_name}, "trials": {"frame_base": FRAME_BASE}}
     if charuco:
         data["charuco"] = charuco
     skeleton: dict = {}
@@ -130,8 +132,7 @@ def write_project_toml(
             "active": dict(calibrations),
             "triangulated_with": dict(calibrations),
         }
-    with open(output_path, "w") as f:
-        toml.dump(data, f)
+    version.write_project_toml(output_path, data, new_project=True)
     print(f"  {output_path}")
 
 

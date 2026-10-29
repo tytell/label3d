@@ -31,6 +31,7 @@ from label3d.export import (
     uncalibrated_experiments,
 )
 from label3d.project import Project
+from label3d.version import version_string
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -39,6 +40,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Export every point of a label3d project to one Parquet or CSV file "
         "and write the mapped SLP files.",
     )
+    parser.add_argument("--version", action="version",
+                        version=f"label3d-export {version_string()}")
     parser.add_argument("project", type=Path, help="project folder")
     parser.add_argument("-o", "--output", type=Path,
                         help="output file; its extension is set by --format "

@@ -43,6 +43,7 @@ from label3d.geometry import load_cameras
 from label3d.points import POINTS_FILE, PointsStore
 from label3d.project import Project
 from label3d.state import ProjectState
+from label3d.version import project_version, version_string
 from label3d.video import FrameProvider
 from label3d.widgets.calibration_view import CalibrationView
 from label3d.widgets.camera_grid import CameraGrid, LayoutMode
@@ -224,6 +225,9 @@ class MainWindow(QMainWindow):
 
         # Label3D menu
         app_menu = menu_bar.addMenu("Label3D")
+        about_action = app_menu.addAction("About label3d")
+        about_action.setMenuRole(QAction.MenuRole.AboutRole)
+        about_action.triggered.connect(self._show_about)
         quit_action = app_menu.addAction("Quit")
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
@@ -596,6 +600,15 @@ class MainWindow(QMainWindow):
             if trial in with_new:
                 self._go_to_trial_frame(trial, min(store.get_new_frames(trial)))
                 return
+
+    def _show_about(self) -> None:
+        recorded = project_version(self._project.config) or "older than 0.3.0"
+        QMessageBox.about(
+            self,
+            "About label3d",
+            f"label3d {version_string()}\n\n"
+            f"Project {self._project.root.name}: layout version {recorded}",
+        )
 
     def _show_sync_summary(self, results=None, unmatched: list[str] | None = None) -> None:
         """Show what the latest sync brought in, if the merge just applied recorded one."""

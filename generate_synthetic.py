@@ -50,6 +50,7 @@ from pathlib import Path
 
 import numpy as np
 
+from label3d.frames import shown_frame
 from label3d.points import POINTS_FILE
 from synthetic import (
     build_cameras,
@@ -223,8 +224,8 @@ def main():
         trial_row: dict = {"experiment": exp_name, "trial": trial_name}
         for cam_name in cam_names:
             trial_row[cam_name] = f"{cam_name}_{exp_name}_{trial_name}.mp4"
-            trial_row[f"{cam_name}_start"] = 0
-            trial_row[f"{cam_name}_end"] = num_frames - 1
+            trial_row[f"{cam_name}_start"] = shown_frame(0)
+            trial_row[f"{cam_name}_end"] = shown_frame(num_frames - 1)
         all_trial_rows.append(trial_row)
 
         # Accumulate per-camera labeled frames for unified .slp files

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QProgressDialog
 
 from label3d.project import LoadCancelled, Project
 from label3d.state import ProjectState
+from label3d.version import version_string
 from label3d.widgets.main_window import MainWindow
 
 
@@ -27,6 +28,7 @@ def run(project_dir: str | Path | None = None):
     parser = argparse.ArgumentParser(prog="label3d")
     parser.add_argument("project_dir", nargs="?", help="Project directory")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--version", action="version", version=f"label3d {version_string()}")
     args = parser.parse_args()
 
     logging.basicConfig(

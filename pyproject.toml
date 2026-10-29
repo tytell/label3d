@@ -1,6 +1,6 @@
 [project]
 name = "label3d"
-version = "0.1.0"
+version = "0.3.0"
 description = "3D point labeling across multiple synchronized calibrated video streams"
 readme = "README.md"
 authors = [
@@ -31,6 +31,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
 
 [build-system]
 requires = ["hatchling"]
