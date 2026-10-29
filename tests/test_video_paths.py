@@ -13,6 +13,7 @@ import pytest
 import toml
 
 from label3d.project import Project, _resolve_video
+from tests.helpers import make_current
 
 
 def _write_project(
@@ -35,7 +36,7 @@ def _write_project(
     if video_roots:
         config["video_roots"] = video_roots
     (root / "project.toml").write_text(toml.dumps(config))
-    return root
+    return make_current(root)
 
 
 class TestResolveVideo:

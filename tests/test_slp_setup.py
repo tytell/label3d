@@ -14,6 +14,7 @@ import toml
 from label3d.points import PointsStore, read_points_df
 from label3d.project import Project
 from label3d.slp_sync import SlpBlock, SlpFileSpec, SlpMapping, SlpMappingEditor
+from tests.helpers import make_current
 
 EXP = "exp1"
 CAMERAS = ["cam0", "cam1", "cam2"]
@@ -166,7 +167,7 @@ def _make_project(tmp_path: Path) -> Project:
         {"nodes": ["head", "tail"], "edges": [["head", "tail"]], "symmetries": []}
     ))
     (tmp_path / "project.toml").write_text('[project]\nname = "demo"\n')
-    return Project.load(tmp_path)
+    return Project.load(make_current(tmp_path))
 
 
 def _labeled_project(tmp_path: Path) -> Project:

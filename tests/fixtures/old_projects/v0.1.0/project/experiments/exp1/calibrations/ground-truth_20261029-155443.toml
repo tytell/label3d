@@ -15,8 +15,8 @@ rotation = [ 0.881636660706669, -1.8343551427213818, 1.5701124190708429,]
 translation = [ 0.0, -1.7763568394002505e-15, 64.80740698407861,]
 
 [metadata]
-id = "ground-truth_20261029-154950"
+id = "ground-truth_20261029-155443"
 label = "ground-truth"
-created = "2026-10-29T15:49:50"
+created = "2026-10-29T15:54:43"
 method = "imported"
 parent = ""

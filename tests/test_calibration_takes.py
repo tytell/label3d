@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 import pandas as pd
 import pytest
+import toml
 from aniposelib.cameras import Camera, CameraGroup
 
 from label3d.calibration_compare import noise_adjusted_thresholds, run_spread
@@ -35,6 +36,7 @@ from label3d.widgets.calibration_view import (
 from label3d.widgets.frame_slider import FrameSlider
 from label3d.workers import calibration_worker
 from label3d.workers.calibration_worker import DetectionWorker
+from tests.helpers import make_current
 
 CAMERAS = ["cam1", "cam2"]
 
@@ -62,7 +64,7 @@ def _write_project(root: Path, calib_names: dict[str, dict[str, str]]) -> Path:
         cam_dir.mkdir(parents=True)
         for cam_files in calib_names.values():
             (cam_dir / cam_files[cam]).write_bytes(b"\x00" * 32)
-    return root
+    return make_current(root)
 
 
 class TestTakePairing:
@@ -451,9 +453,9 @@ class TestTakeRange:
 
     def test_build_takes_applies_saved_range(self, tmp_path, qapp):
         _write_project(tmp_path, {"PreCal": {"cam1": "p1.mp4", "cam2": "p2.mp4"}})
-        (tmp_path / "project.toml").write_text(
-            '[calibration.ranges.exp1.PreCal]\nstart = 10\nend = 50\n'
-        )
+        config = toml.load(tmp_path / "project.toml")
+        config["calibration"] = {"ranges": {"exp1": {"PreCal": {"start": 10, "end": 50}}}}
+        (tmp_path / "project.toml").write_text(toml.dumps(config))
         take = build_takes(Project.load(tmp_path))[0]
         assert (take.start, take.end) == (10, 50)
 

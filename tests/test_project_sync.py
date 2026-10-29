@@ -25,6 +25,7 @@ from label3d.points import (
 from label3d.project import Project
 from label3d.skeleton import Skeleton
 from label3d.workers.triangulation_worker import AllExperimentsTriangulationWorker
+from tests.helpers import make_current
 
 sleap_io = pytest.importorskip("sleap_io", reason="sleap_io not installed")
 
@@ -86,7 +87,7 @@ def project(tmp_path: Path, qapp) -> Project:
     (root / "project.toml").write_text(toml.dumps(config))
 
     write_points_file(_points_df(), exp_dir / "points.parquet")
-    return Project.load(root)
+    return Project.load(make_current(root))
 
 
 class TestSyncRoundTrip:

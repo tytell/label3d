@@ -417,12 +417,11 @@ def _set_config(project: Project, **sections) -> None:
 
 
 class TestProjectSkeletons:
-    def test_skeleton_json_moves_to_project_toml(self, project):
+    def test_assigned_skeleton_gives_every_camera_its_nodes(self, project):
         section = toml.load(project.root / "project.toml")["skeleton"]
         [entry] = section["assigned"]
         assert entry["nodes"] == SYNC_NODES
         assert entry["cameras"] == SYNC_CAMS
-        assert (project.root / "skeleton.json").exists()
         assert project.skeletons.by_camera["cam0"].nodes == SYNC_NODES
 
     def test_file_skeleton_per_camera(self, project):

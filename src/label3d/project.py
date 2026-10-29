@@ -20,19 +20,16 @@ logger = logging.getLogger(__name__)
 from sleap_io.io.slp import read_videos
 
 from label3d.adapters.sleap_adapter import SleapAdapter, basename_lookup
-from label3d.calibration_io import CORNERS_FILE, LEGACY_CORNERS_FILE
 from label3d.calibration_registry import (
     CalibrationEntry,
     camera_dir,
     find_calibration,
     list_calibrations,
-    registry_dir,
 )
 from label3d.frames import FRAME_BASE
 from label3d.parquet_io import write_table
 from label3d.points import (
     CAM_COORDS,
-    LEGACY_POINTS_FILE,
     POINTS_FILE,
     PointsStore,
     read_points_df,
@@ -54,6 +51,7 @@ from label3d.slp_sync import (
     compute_merge,
     find_slp_files,
 )
+from label3d.layout import ProjectNeedsUpgrade, plan_upgrade
 from label3d.version import check_not_newer, write_project_toml
 
 
@@ -88,7 +86,6 @@ SYNC_HISTORY_SCHEMA = pa.schema([
     for name in SYNC_HISTORY_COLUMNS
 ])
 SYNC_HISTORY_FILE = "sync_history.parquet"
-LEGACY_SYNC_HISTORY_FILE = "sync_history.csv"  # no longer read; a project with one is set up again
 
 
 @dataclass
@@ -210,13 +207,20 @@ class Project:
         self._attach_latest_sync()
 
     @classmethod
-    def load(cls, path: Path, progress: ProgressCallback | None = None) -> Project:
+    def load(
+        cls, path: Path, progress: ProgressCallback | None = None, check_version: bool = True
+    ) -> Project:
         """Load a project from a directory.
 
         Every video in trials.csv is checked first (check_trial_videos): blank
         end frames and modification times are measured and written back, so
         later loads don't open the videos. progress, if given, is called once
         per video; returning False raises LoadCancelled.
+
+        A project made by an older label3d raises ProjectNeedsUpgrade before any
+        video is opened (upgrade.run_upgrade upgrades it); one that needs
+        nothing more than its version recorded gets it here. check_version=False
+        skips this, for the upgrade itself once the files are converted.
         """
         root = Path(path)
         if not root.is_dir():
@@ -228,34 +232,22 @@ class Project:
             raise FileNotFoundError(f"trials.csv not found at {trials_path}")
 
         # --- project.toml at project root ---
-        # Read first: [trials] frame_base says how trials.csv numbers frames, and
-        # [video_roots] is needed to resolve video paths below.
+        # Read first: it records the layout version, and [video_roots] is
+        # needed to resolve video paths below.
         config: dict = {}
         config_path = root / "project.toml"
         if config_path.exists():
             config = toml.load(config_path)
         check_not_newer(config)
+        if check_version and config_path.exists():
+            plan = plan_upgrade(root, config)
+            if plan is not None and plan.steps:
+                raise ProjectNeedsUpgrade(plan)
+            if plan is not None:
+                write_project_toml(config_path, config, new_project=True)
 
-        # A trials.csv from before frame_base was recorded is 0-based; it is
-        # converted to FRAME_BASE once, keeping the original as trials.csv.bak
-        file_base = config.get("trials", {}).get("frame_base", 0)
-        trials_df = read_trials_csv(trials_path, frame_base=file_base)
-        if file_base != FRAME_BASE:
-            logger.info(f"Renumbering frames in {trials_path} to start at {FRAME_BASE}")
-            write_trials_csv(trials_path, trials_df)
-            if config_path.exists():
-                config.setdefault("trials", {})["frame_base"] = FRAME_BASE
-                _write_config(root, config)
+        trials_df = read_trials_csv(trials_path)
         cameras = _extract_cameras(trials_df.columns.tolist())
-
-        # --- CSV working files are no longer read; refuse before opening videos ---
-        legacy = _legacy_csv_files(root, trials_df)
-        if legacy:
-            raise ValueError(
-                "This project stores its working files as CSV, which label3d no longer reads:\n  "
-                + "\n  ".join(str(p) for p in legacy)
-                + "\nSet the project up again."
-            )
 
         video_roots = {
             str(name): Path(str(value)).expanduser()
@@ -317,9 +309,6 @@ class Project:
 
         active_experiment = experiment_names[0]
         active = experiments[active_experiment]
-
-        # --- skeleton.json of older projects moves to project.toml ---
-        _migrate_skeleton_json(root, config, cameras)
 
         # --- points file inside active experiment folder ---
         points: PointsStore | None = None
@@ -843,20 +832,26 @@ class Project:
         for name, result in results.items():
             if not result.has_changes and not (overwrite and result.conflicts):
                 continue
-            df = result.df_overwrite if overwrite else result.df
-            exp = self.experiments[name]
-            if name == self.active_experiment:
-                if self.points is None:
-                    self.points = PointsStore.create_empty(
-                        cameras=self.cameras, bodyparts=[], experiment_name=name
-                    )
-                    self.points._save_path = exp.root / POINTS_FILE
-                self.points.replace_df(df)
-                self.points.save_if_changed()
-            else:
-                exp.root.mkdir(parents=True, exist_ok=True)
-                write_points_file(df, exp.root / POINTS_FILE)
+            self.store_experiment_df(name, result.df_overwrite if overwrite else result.df)
         self._attach_latest_sync()
+
+    def store_experiment_df(self, name: str, df: pd.DataFrame) -> None:
+        """Replace an experiment's points: the active store in memory and its file, or the file.
+
+        Must be called from the main thread (may create a PointsStore).
+        """
+        exp = self.experiments[name]
+        if name == self.active_experiment:
+            if self.points is None:
+                self.points = PointsStore.create_empty(
+                    cameras=self.cameras, bodyparts=[], experiment_name=name
+                )
+                self.points._save_path = exp.root / POINTS_FILE
+            self.points.replace_df(df)
+            self.points.save_if_changed()
+        else:
+            exp.root.mkdir(parents=True, exist_ok=True)
+            write_points_file(df, exp.root / POINTS_FILE)
 
     def write_slp_files(self, mapping: SlpMapping | None = None) -> int:
         """Write all experiments' points to the mapped SLP files.  Returns files written.
@@ -967,22 +962,6 @@ class Project:
         trial = self.get_trial(trial_name)
         _, start, _ = trial.camera_videos[camera]
         return start
-
-
-def _migrate_skeleton_json(root: Path, config: dict, cameras: list[str]) -> None:
-    """Copy an old project's skeleton.json into project.toml, once.
-
-    The skeleton is assigned to every camera and its offsets go to
-    [skeleton.node_offsets_cm]. The file is left in place and no longer read.
-    """
-    path = root / "skeleton.json"
-    if "skeleton" in config or not path.exists():
-        return
-    skeleton = Skeleton.from_json(path)
-    section = assign_in_config({}, skeleton, list(cameras), list(cameras))
-    config["skeleton"] = section
-    _write_config(root, config)
-    logger.info("Copied skeleton.json into project.toml [skeleton]")
 
 
 def _write_config(root: Path, config: dict) -> None:
@@ -1231,24 +1210,6 @@ def check_trial_videos(
     if progress is not None:
         progress(len(cells), len(cells), "Opening project…")
     return check
-
-
-def _legacy_csv_files(root: Path, trials_df: pd.DataFrame) -> list[Path]:
-    """CSV working files (points, corners, sync history) that have no Parquet file."""
-    if "experiment" in trials_df.columns:
-        names = sorted(trials_df["experiment"].dropna().unique().tolist())
-    else:
-        names = ["default"]
-    pairs = [(root, LEGACY_SYNC_HISTORY_FILE, SYNC_HISTORY_FILE)]
-    for name in names:
-        exp_dir = root / "experiments" / name
-        pairs.append((exp_dir, LEGACY_POINTS_FILE, POINTS_FILE))
-        calibrations = registry_dir(exp_dir)
-        if calibrations.is_dir():
-            pairs += [(d, LEGACY_CORNERS_FILE, CORNERS_FILE)
-                      for d in sorted(calibrations.iterdir()) if d.is_dir()]
-    return [folder / old for folder, old, new in pairs
-            if (folder / old).exists() and not (folder / new).exists()]
 
 
 def _is_frame_column(col) -> bool:

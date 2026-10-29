@@ -37,9 +37,9 @@ cameras = [ "cam2",]
 
 
 [calibration.active]
-exp1 = "ground-truth_20261029-154950"
-exp2 = "ground-truth_20261029-154950"
+exp1 = "ground-truth_20261029-155435"
+exp2 = "ground-truth_20261029-155435"
 
 [calibration.triangulated_with]
-exp1 = "ground-truth_20261029-154950"
-exp2 = "ground-truth_20261029-154950"
+exp1 = "ground-truth_20261029-155435"
+exp2 = "ground-truth_20261029-155435"

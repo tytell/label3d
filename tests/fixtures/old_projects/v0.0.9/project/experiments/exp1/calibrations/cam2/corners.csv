@@ -1,4 +1,4 @@
 take,frame,corner_id,x,y,detected
-PreCal,0,0,10.5,30.0,True
-PreCal,0,1,20.25,31.5,True
-PreCal,5,0,11.0,29.75,False
+PreCal,0,0,10.5,30.0,2026-10-01T12:00:00
+PreCal,0,1,20.25,31.5,2026-10-01T12:00:00
+PreCal,5,0,11.0,29.75,2026-10-01T12:00:00

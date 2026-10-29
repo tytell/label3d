@@ -11,7 +11,9 @@ import pytest
 import toml
 
 from label3d import project as project_module
+from label3d.layout import ProjectNeedsUpgrade
 from label3d.project import LoadCancelled, Project, read_trials_csv, write_trials_csv
+from label3d.version import LAYOUT_VERSION
 from tests.conftest import TEST_PROJECT, requires_test_project
 
 
@@ -147,26 +149,20 @@ class TestLoadErrors:
             Project.load(f)
 
     @requires_test_project
-    @pytest.mark.parametrize("legacy", [
-        "sync_history.csv",
-        "experiments/exp1/calibrations/cam1/corners.csv",
+    @pytest.mark.parametrize("legacy, step", [
+        ("sync_history.csv", "sync_history"),
+        ("experiments/exp1/calibrations/cam1/corners.csv", "corners"),
+        ("experiments/exp1/points.csv", "points"),
     ])
-    def test_other_csv_working_files_refused(self, tmp_path, legacy):
+    def test_csv_working_files_need_an_upgrade(self, tmp_path, legacy, step):
+        """An unversioned project with a CSV working file was made by 0.0.9."""
         _copy_project_without(TEST_PROJECT, tmp_path, exclude=set())
-        (tmp_path / legacy).parent.mkdir(parents=True, exist_ok=True)
+        _unversion(tmp_path)
         (tmp_path / legacy).write_text("x\n")
-        with pytest.raises(ValueError, match=legacy.rsplit("/", 1)[-1]):
+        with pytest.raises(ProjectNeedsUpgrade) as exc_info:
             Project.load(tmp_path)
-
-    @requires_test_project
-    def test_points_csv_refused(self, tmp_path):
-        """A project that still has points.csv and no points.parquet is set up again."""
-        _copy_project_without(TEST_PROJECT, tmp_path,
-                               exclude={"experiments/exp1/points.parquet"})
-        (tmp_path / "experiments/exp1/points.csv").write_text("x\n")
-        with pytest.raises(ValueError, match="points.csv") as exc_info:
-            Project.load(tmp_path)
-        assert "set the project up again" in str(exc_info.value).lower()
+        assert exc_info.value.plan.from_version == "0.0.9"
+        assert step in exc_info.value.plan.steps
 
 
 # ---------------------------------------------------------------------------
@@ -310,20 +306,31 @@ class TestTrialsFrameBase:
 
 
 @requires_test_project
-def test_old_project_is_renumbered_on_load(tmp_path):
-    """A project without [trials] frame_base has a 0-based trials.csv, converted once."""
+def test_unnumbered_project_needs_an_upgrade(tmp_path):
+    """A project without [trials] frame_base has a 0-based trials.csv; the upgrade converts it."""
     _copy_project_without(TEST_PROJECT, tmp_path, exclude=set())
-    config = toml.load(tmp_path / "project.toml")
+    config = _unversion(tmp_path)
     config.pop("trials", None)
-    with open(tmp_path / "project.toml", "w") as f:
-        toml.dump(config, f)
-    old = read_trials_csv(tmp_path / "trials.csv")
-    old.to_csv(tmp_path / "trials.csv", index=False)  # 0-based, as before
-    (tmp_path / "trials.csv.bak").unlink(missing_ok=True)
+    (tmp_path / "project.toml").write_text(toml.dumps(config))
+    with pytest.raises(ProjectNeedsUpgrade) as exc_info:
+        Project.load(tmp_path)
+    assert "frame_numbers" in exc_info.value.plan.steps
 
-    proj = Project.load(tmp_path)
-    assert proj.trial_length("trial1") == 10
-    raw = pd.read_csv(tmp_path / "trials.csv")
-    assert raw["cam1_start"].tolist() == [1, 1] and raw["cam1_end"].tolist() == [10, 10]
-    assert toml.load(tmp_path / "project.toml")["trials"]["frame_base"] == 1
-    assert (tmp_path / "trials.csv.bak").exists()
+
+@requires_test_project
+def test_unversioned_project_needing_nothing_gets_its_version(tmp_path):
+    _copy_project_without(TEST_PROJECT, tmp_path, exclude=set())
+    _unversion(tmp_path)
+    for slp in (tmp_path / "slp").glob("*.slp"):
+        (tmp_path / "slp" / slp.stem).mkdir()
+        slp.rename(tmp_path / "slp" / slp.stem / slp.name)
+    Project.load(tmp_path)
+    assert toml.load(tmp_path / "project.toml")["label3d"]["project_version"] == LAYOUT_VERSION
+
+
+def _unversion(root: Path) -> dict:
+    """Make root look like a project from before versions were recorded."""
+    config = toml.load(root / "project.toml")
+    config.pop("label3d", None)
+    (root / "project.toml").write_text(toml.dumps(config))
+    return config
