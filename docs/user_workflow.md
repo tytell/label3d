@@ -13,6 +13,10 @@ This guide walks through a label3d project from start to finish. You label point
 
 label3d keeps your labels in each experiment's `points.parquet`. The `.slp` files in the project's `slp/` folder are copies of those labels that SLEAP can read. **Sync with Sleap** keeps the two in step.
 
+Each `.slp` file has a folder of its own in `slp/`, so that the `models` folder SLEAP trains into sits beside it. Setup copies an existing `models` folder along with its `.slp` file. If a folder holds several `.slp` files and a `models` folder, setup stops: put each `.slp` file in its own folder with its models first.
+
+A `.slp` file can hold more than the project: videos of other experiments, or frames outside a trial. Sync leaves those alone, so the file still has them when you open it in SLEAP.
+
 ## 1. Set up a project
 
 There are two ways to start:

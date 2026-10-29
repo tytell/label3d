@@ -30,8 +30,8 @@ All keys go under `[setup]` unless noted otherwise.
 
 | Key | Meaning |
 |---|---|
-| `source_dir` | Every `.slp` file in the folder is used, and the videos there that no `.slp` file refers to become trials too. |
-| `slp_files` | If your `.slp` files are in a different folder, or you only want to use some of the `.slp` files, you can list the filenames or folder names here. |
+| `source_dir` | Every `.slp` file in the folder and its subfolders is used, and the videos there that no `.slp` file refers to become trials too. |
+| `slp_files` | If your `.slp` files are in a different folder, or you only want to use some of the `.slp` files, you can list the filenames or folder names here. Folders are searched with their subfolders. |
 | `output_dir` | The new project folder. It must not exist yet. |
 | `camera_names` | Each video is matched to a camera by its filename, then by its parent folder's name. |
 | `camera_aliases` | `{ camera = ["other name", ...] }`. Other names a camera has in filenames. The longest matching name or alias wins. |

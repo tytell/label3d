@@ -9,7 +9,7 @@ A PySide6 desktop app for 3D point labeling across multiple synchronized calibra
 1. **Calibrate** — detect Charuco board corners across cameras, run bundle adjustment via aniposelib
 2. **Label** — display synchronized video frames, click to place skeleton keypoints, view epipolar lines and reprojection errors in real time (the 3D view panel is hidden; `SHOW_3D_VIEW` in `label_view.py`)
 3. **Export** — **Sync** writes the mapped `.slp` files for SLEAP training/inference; at the end, **File > Export points...** (or `uv run label3d-export`) writes every point, 2D and 3D, to one Parquet or CSV file, in a wide or long layout
-4. **Re-import** — train a SLEAP model on the exported `.slp` files, run inference, drop the resulting `.slp` predictions back into `project/slp/`, then import again. Repeat from step 2 to review, correct, and add more ground-truth labels
+4. **Re-import** — train a SLEAP model on the exported `.slp` files, run inference, drop the resulting `.slp` predictions back into `project/slp/` (or a subfolder), then import again. Repeat from step 2 to review, correct, and add more ground-truth labels
 
 ## Key conventions
 
@@ -38,7 +38,7 @@ project/
 - `experiments/{name}/points.parquet` — in memory a pandas DataFrame with row index `(experiment, trial, frame, instance, bodypart)` (5-level); column MultiIndex `(view, coord)` where cameras have `{x, y, xr, yr, state, source, score, sync}` and `"3d"` pseudo-camera has `{x, y, z}`; `state` ∈ `{set, predicted, not_set, not_visible}`; `source` ∈ `{label3d, sleap_user, sleap_pred}`; `sync` is the id of the sync that brought a point in (a point is new when it equals the latest id). On disk it is flat: the index levels are columns and each column is named `{view}/{coord}` (`read_points_df`, `write_points_file` in `points.py`)
 - `sync_history.parquet` — at project root; one row per (sync, experiment, trial) for each SLEAP read that brought in points
 - **Skeletons** — no `skeleton.json`: each camera's skeleton comes from its `.slp` files or from `[[skeleton.assigned]]` in `project.toml` (File > Load skeleton...), with `[skeleton.node_offsets_cm]`; nodes are matched by name and the project skeleton is their union. A node a camera's skeleton lacks can't be labelled there and doesn't count for triangulation. Rules in [docs/design/data_model.md](docs/design/data_model.md#skeletons-phase-14)
-- `slp/` — imported `.slp` files (global, at project root)
+- `slp/` — imported `.slp` files (global, at project root), each in its own folder, `slp/{stem}/{name}.slp`, with SLEAP's `models/` folder beside it. Found recursively, leaving out `models/` and `backup/` (`find_slp_files` in `slp_sync.py`). Sync rewrites only the project's part of a file: videos not in `trials.csv`, and frames outside a trial's `_start`–`_end`, are kept untouched
 - `exports/` — point files (Parquet or CSV, wide or long) from **File > Export points...** / `label3d-export` (`export.py`; columns in [docs/user_workflow.md](docs/user_workflow.md#export-columns))
 
 ## External dependencies cloned locally (not in repo)

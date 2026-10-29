@@ -218,8 +218,12 @@ and multi-instance handling match what the in-app import produces. No merge logi
 Order of operations in `execute_setup()`:
 
 1. Write `trials.csv`, `project.toml` (including `[video_roots]`; `[skeleton]` only from a setup file).
-2. Copy the `.slp` files into `slp/`. These are small, and the project format expects them
-   there; only videos are referenced in place.
+2. Copy each `.slp` file into a folder of its own, `slp/{stem}/{name}.slp` (stems that clash
+   are numbered `_2`, `_3`, …), with the SLEAP `models/` folder beside the source file, if
+   there is one. These are small (apart from the models), and the project format expects
+   them there; only videos are referenced in place. Source folders are searched recursively,
+   leaving out `models/` and the output folder. A `models/` folder beside several `.slp` files
+   is an error (`_check_models_folders`): it can't be split between their folders.
 3. Build an `SlpMapping` from `assignment.slp_files` via `SlpMapping.from_cell_map()`, with paths
    relative to the project root, and write it as the `[slp]` section of `project.toml`.
 4. Reopen the project with `Project.load()`, then for each experiment run
