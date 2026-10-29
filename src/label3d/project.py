@@ -45,7 +45,14 @@ from label3d.skeleton import (
     assign_in_config,
     assigned_skeletons,
 )
-from label3d.slp_sync import MergeResult, SlpMapping, compute_merge
+from label3d.slp_sync import (
+    BACKUP_DIR,
+    MODELS_DIR,
+    MergeResult,
+    SlpMapping,
+    compute_merge,
+    find_slp_files,
+)
 
 
 # Per-camera trials.csv columns: {cam}_start, {cam}_end, {cam}_mtime. Any other
@@ -419,6 +426,10 @@ class Project:
     def slp_dir(self) -> Path:
         return self.root / "slp"
 
+    def slp_files(self) -> list[Path]:
+        """The .slp files in slp/ and its subfolders, leaving out models and backups."""
+        return find_slp_files(self.slp_dir, skip=(MODELS_DIR, BACKUP_DIR))
+
     @property
     def trials_csv_path(self) -> Path:
         return self.root / "trials.csv"
@@ -487,7 +498,7 @@ class Project:
             paths = list(dict.fromkeys(spec.path for spec in mapping.files))
         else:
             cell_files = {}
-            paths = [p.relative_to(self.root) for p in sorted(self.slp_dir.glob("*.slp"))]
+            paths = [p.relative_to(self.root) for p in self.slp_files()]
         lookup = (
             basename_lookup(self.trials_df, self.cameras)
             if not mapping.files and self.trials_df is not None else {}
@@ -512,7 +523,7 @@ class Project:
     def existing_slp_skeletons(self, mapping: SlpMapping | None = None) -> dict[Path, Skeleton]:
         """Skeletons of the existing slp/*.slp files and mapped files (relative paths)."""
         mapping = self.slp_mapping if mapping is None else mapping
-        paths = [p.relative_to(self.root) for p in sorted(self.slp_dir.glob("*.slp"))]
+        paths = [p.relative_to(self.root) for p in self.slp_files()]
         paths += [spec.path for spec in mapping.files]
         found: dict[Path, Skeleton] = {}
         for rel in dict.fromkeys(paths):
@@ -671,7 +682,7 @@ class Project:
             )
         else:
             slp_df = adapter.load(
-                sorted(self.slp_dir.glob("*.slp")), self.trials_df, self.cameras,
+                self.slp_files(), self.trials_df, self.cameras,
                 progress=progress,
             )
         return self._merge_by_experiment(
@@ -856,21 +867,26 @@ class Project:
         )
 
     def backup_slp_files(self) -> Path | None:
-        """Copy slp/*.slp to slp/backup/{timestamp}/.  Returns the backup folder, if any."""
-        files = sorted(self.slp_dir.glob("*.slp"))
+        """Copy the .slp files to slp/backup/{timestamp}/, keeping their subfolders.
+
+        Model folders are not backed up; syncing does not change them.  Returns
+        the backup folder, if any.
+        """
+        files = self.slp_files()
         if not files:
             return None
-        backup_dir = self.slp_dir / "backup" / datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_dir = self.slp_dir / BACKUP_DIR / datetime.now().strftime("%Y%m%d-%H%M%S")
         for f in files:
-            shutil.copy2(f, backup_dir / f.name)
+            target = backup_dir / f.relative_to(self.slp_dir)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, target)
         return backup_dir
 
     def remove_unmapped_slp_files(self, mapping: SlpMapping) -> list[Path]:
-        """Delete slp/*.slp files that are not in the mapping.  Back up first."""
+        """Delete the .slp files in slp/ that are not in the mapping.  Back up first."""
         mapped = {(self.root / spec.path).resolve() for spec in mapping.files}
         removed = []
-        for f in sorted(self.slp_dir.glob("*.slp")):
+        for f in self.slp_files():
             if f.resolve() not in mapped:
                 f.unlink()
                 removed.append(f)

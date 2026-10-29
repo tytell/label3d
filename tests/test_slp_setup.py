@@ -64,7 +64,7 @@ class TestEditor:
     def test_preset_adds_suffix_and_slp_dir(self):
         editor = _editor()
         editor.apply_preset("{camera}")
-        assert editor.files == [Path("slp/cam0.slp"), Path("slp/cam1.slp"), Path("slp/cam2.slp")]
+        assert editor.files == [Path("slp/cam0/cam0.slp"), Path("slp/cam1/cam1.slp"), Path("slp/cam2/cam2.slp")]
 
     def test_invalid_pattern_raises(self):
         with pytest.raises(KeyError):
@@ -74,10 +74,10 @@ class TestEditor:
         """phase_8.md example: per camera → join cam0 + cam1 → split trials 4–5."""
         editor = _editor()
         editor.apply_preset("{camera}.slp")
-        joined = editor.join([Path("slp/cam0.slp"), Path("slp/cam1.slp")])
-        assert joined == Path("slp/cam0.slp")
+        joined = editor.join([Path("slp/cam0/cam0.slp"), Path("slp/cam1/cam1.slp")])
+        assert joined == Path("slp/cam0/cam0.slp")
         late = editor.split_by_trial(joined, {(EXP, "t4"), (EXP, "t5")})
-        assert late == Path("slp/cam0_2.slp")
+        assert late == Path("slp/cam0_2/cam0_2.slp")
 
         assert _blocks(editor) == {
             "cam0.slp": [SlpBlock(EXP, ["t1", "t2", "t3"], ["cam0", "cam1"])],
@@ -89,14 +89,14 @@ class TestEditor:
     def test_split_by_camera(self):
         editor = _editor()
         editor.apply_preset("labels.slp")
-        new = editor.split_by_camera(Path("slp/labels.slp"))
+        new = editor.split_by_camera(Path("slp/labels/labels.slp"))
         assert [p.name for p in new] == ["labels_cam0.slp", "labels_cam1.slp", "labels_cam2.slp"]
         assert editor.files == new
 
     def test_split_by_trial_all_or_none_is_refused(self):
         editor = _editor()
         editor.apply_preset("{camera}.slp")
-        path = Path("slp/cam0.slp")
+        path = Path("slp/cam0/cam0.slp")
         assert editor.split_by_trial(path, set()) is None
         assert editor.split_by_trial(path, {(EXP, t) for t in TRIALS}) is None
 
@@ -104,16 +104,16 @@ class TestEditor:
         editor = _editor()
         editor.apply_preset("{experiment}_{trial}_{camera}.slp")
         path = editor.new_file([(EXP, "t1", "cam0"), (EXP, "t1", "cam1")])
-        assert path == Path("slp/new.slp")
-        assert Path("slp/exp1_t1_cam0.slp") not in editor.files
+        assert path == Path("slp/new/new.slp")
+        assert Path("slp/exp1_t1_cam0/exp1_t1_cam0.slp") not in editor.files
         assert editor.cells_of(path) == [(EXP, "t1", "cam0"), (EXP, "t1", "cam1")]
 
     def test_move_cells_to_existing_file(self):
         editor = _editor()
         editor.apply_preset("{camera}.slp")
-        editor.move_cells([(EXP, "t3", "cam2")], Path("slp/cam0.slp"))
-        assert (EXP, "t3", "cam2") in editor.cells_of(Path("slp/cam0.slp"))
-        assert editor.files_of((EXP, "t3", "cam2")) == [Path("slp/cam0.slp")]
+        editor.move_cells([(EXP, "t3", "cam2")], Path("slp/cam0/cam0.slp"))
+        assert (EXP, "t3", "cam2") in editor.cells_of(Path("slp/cam0/cam0.slp"))
+        assert editor.files_of((EXP, "t3", "cam2")) == [Path("slp/cam0/cam0.slp")]
         assert _blocks(editor)["cam0.slp"] == [
             SlpBlock(EXP, ["t1", "t2", "t4", "t5"], ["cam0"]),
             SlpBlock(EXP, ["t3"], ["cam0", "cam2"]),
@@ -122,26 +122,26 @@ class TestEditor:
     def test_rename(self):
         editor = _editor()
         editor.apply_preset("{camera}.slp")
-        new = editor.rename(Path("slp/cam1.slp"), Path("slp/side"))
-        assert new == Path("slp/side.slp")
-        assert editor.files == [Path("slp/cam0.slp"), Path("slp/side.slp"), Path("slp/cam2.slp")]
+        new = editor.rename(Path("slp/cam1/cam1.slp"), Path("slp/cam1/side"))
+        assert new == Path("slp/cam1/side.slp")
+        assert editor.files == [Path("slp/cam0/cam0.slp"), Path("slp/cam1/side.slp"), Path("slp/cam2/cam2.slp")]
         with pytest.raises(ValueError):
-            editor.rename(new, Path("slp/cam0.slp"))
+            editor.rename(new, Path("slp/cam1/cam0.slp"))
 
     def test_unique_path_is_case_insensitive(self):
         editor = _editor()
         editor.apply_preset("New.slp")
-        assert editor.unique_path("new") == Path("slp/new_2.slp")
+        assert editor.unique_path("new") == Path("slp/new_2/new_2.slp")
 
     def test_loaded_duplicates_and_stale_cells(self):
         mapping = SlpMapping(files=[
-            SlpFileSpec(Path("slp/a.slp"), [SlpBlock(EXP, TRIALS + ["gone"], ["cam0", "cam1"])]),
-            SlpFileSpec(Path("slp/b.slp"), [SlpBlock(EXP, TRIALS, ["cam1", "cam2"])]),
+            SlpFileSpec(Path("slp/a/a.slp"), [SlpBlock(EXP, TRIALS + ["gone"], ["cam0", "cam1"])]),
+            SlpFileSpec(Path("slp/b/b.slp"), [SlpBlock(EXP, TRIALS, ["cam1", "cam2"])]),
         ])
         editor = _editor(mapping)
-        assert (EXP, "gone", "cam0") not in editor.cells_of(Path("slp/a.slp"))
+        assert (EXP, "gone", "cam0") not in editor.cells_of(Path("slp/a/a.slp"))
         assert editor.errors() == ["5 video(s) assigned to more than one file"]
-        editor.move_cells([(EXP, t, "cam1") for t in TRIALS], Path("slp/b.slp"))
+        editor.move_cells([(EXP, t, "cam1") for t in TRIALS], Path("slp/b/b.slp"))
         assert editor.errors() == []
 
 
@@ -205,7 +205,7 @@ class TestProjectApply:
         project = _labeled_project(tmp_path)
         mapping = _per_camera(project)
         project.write_slp_files(mapping)
-        _add_user_frame(tmp_path / "slp/cam1.slp", "cam1_exp1_t2.mp4", 5, [[1, 2], [3, 4]])
+        _add_user_frame(tmp_path / "slp/cam1/cam1.slp", "cam1_exp1_t2.mp4", 5, [[1, 2], [3, 4]])
 
         results = project.read_slp_for_sync(mapping)
         assert results["exp1"].n_new == 2
@@ -220,7 +220,7 @@ class TestProjectApply:
         project = _labeled_project(tmp_path)
         mapping = _per_camera(project)
         project.write_slp_files(mapping)
-        _add_user_frame(tmp_path / "slp/cam2.slp", "cam2_exp2_t1.mp4", 3, [[5, 6], [7, 8]])
+        _add_user_frame(tmp_path / "slp/cam2/cam2.slp", "cam2_exp2_t1.mp4", 3, [[5, 6], [7, 8]])
 
         project.apply_merge(project.read_slp_for_sync(mapping), overwrite=False)
         df = read_points_df(project.experiments["exp2"].root / "points.parquet")
@@ -230,7 +230,7 @@ class TestProjectApply:
         project = _labeled_project(tmp_path)
         mapping = _per_camera(project)
         project.write_slp_files(mapping)
-        path = tmp_path / "slp/cam1.slp"
+        path = tmp_path / "slp/cam1/cam1.slp"
         labels = sio.load_file(str(path))
         labels.labeled_frames[0].instances[0].points["xy"][0] = [99.0, 99.0]
         sio.save_file(labels, str(path))
@@ -245,7 +245,7 @@ class TestProjectApply:
     def test_read_without_mapping_uses_all_files(self, qapp, tmp_path):
         project = _labeled_project(tmp_path)
         project.write_slp_files(_per_camera(project))
-        _add_user_frame(tmp_path / "slp/cam1.slp", "cam1_exp1_t2.mp4", 5, [[1, 2], [3, 4]])
+        _add_user_frame(tmp_path / "slp/cam1/cam1.slp", "cam1_exp1_t2.mp4", 5, [[1, 2], [3, 4]])
         assert project.read_slp_for_sync(SlpMapping())["exp1"].n_new == 2
 
     def test_restructure_backup_and_remove(self, qapp, tmp_path):
@@ -258,13 +258,15 @@ class TestProjectApply:
         project.save_slp_mapping(new_mapping)
 
         backup = project.backup_slp_files()
-        assert sorted(p.name for p in backup.glob("*.slp")) == ["cam1.slp", "cam2.slp"]
+        assert sorted(p.relative_to(backup).as_posix() for p in backup.rglob("*.slp")) == [
+            "cam1/cam1.slp", "cam2/cam2.slp"
+        ]
         assert project.write_slp_files() == 1
         removed = project.remove_unmapped_slp_files(new_mapping)
         assert sorted(p.name for p in removed) == ["cam1.slp", "cam2.slp"]
-        assert [p.name for p in (tmp_path / "slp").glob("*.slp")] == ["labels.slp"]
+        assert [p.name for p in project.slp_files()] == ["labels.slp"]
 
-        labels = sio.load_file(str(tmp_path / "slp/labels.slp"))
+        labels = sio.load_file(str(tmp_path / "slp/labels/labels.slp"))
         assert len(labels.videos) == 8
         assert len(labels.labeled_frames) == 1
         assert toml.load(tmp_path / "project.toml")["project"]["name"] == "demo"
@@ -308,7 +310,7 @@ class TestDialog:
         self._select_files(dialog, {"cam1.slp", "cam2.slp"})
         assert dialog._join_btn.isEnabled()
         dialog._on_join()
-        assert dialog._editor.files == [Path("slp/cam1.slp")]
+        assert dialog._editor.files == [Path("slp/cam1/cam1.slp")]
 
         self._select_cells(dialog, {("exp1", "t2", "cam1")})
         self._select_files(dialog, {"cam1.slp"})
@@ -330,7 +332,7 @@ class TestDialog:
         dialog._on_apply_preset()
         dialog._file_list.item(1).setText("cam1.slp")
         assert "already exists" in dialog._status.text()
-        assert dialog._editor.files == [Path("slp/cam1.slp"), Path("slp/cam2.slp")]
+        assert dialog._editor.files == [Path("slp/cam1/cam1.slp"), Path("slp/cam2/cam2.slp")]
 
     def test_adopts_existing_files_when_no_mapping(self, qapp, tmp_path):
         project = _labeled_project(tmp_path)

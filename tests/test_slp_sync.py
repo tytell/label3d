@@ -18,6 +18,7 @@ from label3d.slp_sync import (
     SlpMappingEditor,
     compact_blocks,
     compute_merge,
+    find_slp_files,
     video_cells,
 )
 
@@ -45,11 +46,11 @@ def _trials_df() -> pd.DataFrame:
 def _example_mapping() -> SlpMapping:
     """The 3-camera example from phase_8.md."""
     return SlpMapping(files=[
-        SlpFileSpec(Path("slp/cam0_cam1_early.slp"),
+        SlpFileSpec(Path("slp/cam0_cam1_early/cam0_cam1_early.slp"),
                     [SlpBlock(EXP, ["t1", "t2", "t3"], ["cam0", "cam1"])]),
-        SlpFileSpec(Path("slp/cam0_cam1_late.slp"),
+        SlpFileSpec(Path("slp/cam0_cam1_late/cam0_cam1_late.slp"),
                     [SlpBlock(EXP, ["t4", "t5"], ["cam0", "cam1"])]),
-        SlpFileSpec(Path("slp/cam2.slp"), [SlpBlock(EXP, list(TRIALS), ["cam2"])]),
+        SlpFileSpec(Path("slp/cam2/cam2.slp"), [SlpBlock(EXP, list(TRIALS), ["cam2"])]),
     ])
 
 
@@ -70,9 +71,9 @@ class TestSlpMapping:
     def test_cell_map(self):
         cell_map = _example_mapping().cell_map()
         assert len(cell_map) == 15
-        assert cell_map[(EXP, "t2", "cam1")] == Path("slp/cam0_cam1_early.slp")
-        assert cell_map[(EXP, "t5", "cam0")] == Path("slp/cam0_cam1_late.slp")
-        assert cell_map[(EXP, "t4", "cam2")] == Path("slp/cam2.slp")
+        assert cell_map[(EXP, "t2", "cam1")] == Path("slp/cam0_cam1_early/cam0_cam1_early.slp")
+        assert cell_map[(EXP, "t5", "cam0")] == Path("slp/cam0_cam1_late/cam0_cam1_late.slp")
+        assert cell_map[(EXP, "t4", "cam2")] == Path("slp/cam2/cam2.slp")
 
     def test_complete(self):
         mapping = _example_mapping()
@@ -115,6 +116,20 @@ class TestSlpMapping:
         cells = video_cells(trials, ["cam0"])
         assert cells[("a", "t1", "cam0")] == ("a.mp4", 3)
         assert cells[("b", "t1", "cam0")] == ("b.mp4", 7)
+
+
+class TestFindSlpFiles:
+    def test_recursive_skipping_models_backups_and_exclude(self, tmp_path):
+        for rel in [
+            "a.slp", "one/one.slp", "one/models/m1/labels_gt.train.slp",
+            "two/deep/two.slp", "two/two.tmp.slp", "backup/x/one.slp", "out/slp/c.slp",
+        ]:
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).touch()
+        found = find_slp_files(tmp_path, skip=("models", "backup"), exclude=tmp_path / "out")
+        assert [p.relative_to(tmp_path).as_posix() for p in found] == [
+            "a.slp", "one/one.slp", "two/deep/two.slp"
+        ]
 
 
 class TestCompactBlocks:
@@ -430,16 +445,16 @@ class TestSlpMappingEditor:
         """Preset per camera → join cam0+cam1 → split trials 4–5 into their own file."""
         editor = self._editor()
         editor.apply_preset("{camera}.slp")
-        joined = editor.join([Path("slp/cam0.slp"), Path("slp/cam1.slp")])
-        assert joined == Path("slp/cam0.slp")
+        joined = editor.join([Path("slp/cam0/cam0.slp"), Path("slp/cam1/cam1.slp")])
+        assert joined == Path("slp/cam0/cam0.slp")
         assert len(editor.files) == 2
 
         late = editor.split_by_trial(joined, {(EXP, "t4"), (EXP, "t5")})
         assert late is not None
         assert len(editor.files) == 3
 
-        editor.rename(joined, Path("slp/cam0_cam1_early.slp"))
-        editor.rename(late, Path("slp/cam0_cam1_late.slp"))
+        editor.rename(joined, Path("slp/cam0_cam1_early/cam0_cam1_early.slp"))
+        editor.rename(late, Path("slp/cam0_cam1_late/cam0_cam1_late.slp"))
 
         assert editor.errors() == []
         assert editor.mapping().cell_map() == _example_mapping().cell_map()
@@ -447,7 +462,7 @@ class TestSlpMappingEditor:
     def test_split_by_camera_undoes_a_join(self):
         editor = self._editor()
         editor.apply_preset("{camera}.slp")
-        joined = editor.join([Path("slp/cam0.slp"), Path("slp/cam1.slp")])
+        joined = editor.join([Path("slp/cam0/cam0.slp"), Path("slp/cam1/cam1.slp")])
         new_paths = editor.split_by_camera(joined)
         assert len(new_paths) == 2
         assert {c[2] for c in editor.cells_of(new_paths[0])} == {"cam0"}
@@ -456,7 +471,7 @@ class TestSlpMappingEditor:
     def test_split_by_trial_that_moves_everything_is_refused(self):
         editor = self._editor()
         editor.apply_preset("{camera}.slp")
-        assert editor.split_by_trial(Path("slp/cam0.slp"), {(EXP, t) for t in TRIALS}) is None
+        assert editor.split_by_trial(Path("slp/cam0/cam0.slp"), {(EXP, t) for t in TRIALS}) is None
 
     def test_errors_report_unassigned_cells(self):
         editor = SlpMappingEditor(SlpMapping(files=[]), _trials_df(), CAMERAS)

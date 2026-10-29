@@ -415,9 +415,7 @@ class SlpSetupDialog(QDialog):
     # -- Existing files --------------------------------------------------------
 
     def _existing_slp_files(self) -> list[Path]:
-        if not self._project.slp_dir.exists():
-            return []
-        return sorted(self._project.slp_dir.glob("*.slp"))
+        return self._project.slp_files()
 
     def _adopt_existing(self) -> None:
         files = self._existing_slp_files()

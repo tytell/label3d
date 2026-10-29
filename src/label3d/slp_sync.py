@@ -10,6 +10,7 @@ It is pure (no Qt objects created) and safe to call from a background thread.
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -148,6 +149,34 @@ class SlpMapping:
 
 
 SLP_DIR = Path("slp")
+# SLEAP keeps the models trained from a .slp file in this folder beside it, so
+# each .slp file in slp/ gets a folder of its own: slp/{stem}/{stem}.slp
+MODELS_DIR = "models"
+BACKUP_DIR = "backup"
+
+
+def slp_file_path(stem: str) -> Path:
+    """The path, relative to the project root, of a new .slp file in its own folder."""
+    return SLP_DIR / stem / f"{stem}.slp"
+
+
+def find_slp_files(
+    directory: Path, skip: tuple[str, ...] = (MODELS_DIR,), exclude: Path | None = None
+) -> list[Path]:
+    """The .slp files under directory, searched recursively, sorted.
+
+    Folders named in skip are not searched (SLEAP writes the training and
+    validation labels of each model as .slp files in its models folder), nor is
+    exclude.  The writer's temporary .tmp.slp files are left out.
+    """
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(directory):
+        here = Path(dirpath)
+        dirnames[:] = [d for d in dirnames if d not in skip and here / d != exclude]
+        found += [
+            here / f for f in filenames if f.endswith(".slp") and not f.endswith(".tmp.slp")
+        ]
+    return sorted(found)
 
 # key -> (label, default file name pattern); placeholders {experiment}, {trial}, {camera}
 PRESETS: dict[str, tuple[str, str]] = {
@@ -201,7 +230,7 @@ class SlpMappingEditor:
             name = pattern.format(experiment=experiment, trial=trial, camera=camera).strip()
             if not name.endswith(".slp"):
                 name += ".slp"
-            files.setdefault(SLP_DIR / name, []).append(cell)
+            files.setdefault(SLP_DIR / Path(name).stem / name, []).append(cell)
         self._files = files
 
     def move_cells(self, cells: list[Cell], path: Path) -> None:
@@ -215,11 +244,11 @@ class SlpMappingEditor:
         self._files.setdefault(path, []).extend(moving)
         self._drop_empty()
 
-    def new_file(self, cells: list[Cell], stem: str = "new", parent: Path = SLP_DIR) -> Path | None:
-        """Move cells into a new, uniquely named file.  Returns its path."""
+    def new_file(self, cells: list[Cell], stem: str = "new") -> Path | None:
+        """Move cells into a new, uniquely named file in its own folder.  Returns its path."""
         if not any(c in self._rank for c in cells):
             return None
-        path = self.unique_path(stem, parent)
+        path = self.unique_path(stem)
         self.move_cells(cells, path)
         return path
 
@@ -230,7 +259,7 @@ class SlpMappingEditor:
         if len(cameras) < 2:
             return []
         return [
-            self.new_file([c for c in cells if c[2] == cam], f"{path.stem}_{cam}", path.parent)
+            self.new_file([c for c in cells if c[2] == cam], f"{path.stem}_{cam}")
             for cam in cameras
         ]
 
@@ -243,7 +272,7 @@ class SlpMappingEditor:
         moving = [c for c in cells if (c[0], c[1]) in trials]
         if not moving or len(moving) == len(cells):
             return None
-        return self.new_file(moving, path.stem, path.parent)
+        return self.new_file(moving, path.stem)
 
     def join(self, paths: list[Path]) -> Path | None:
         """Move all cells of paths[1:] into paths[0]."""
@@ -255,22 +284,29 @@ class SlpMappingEditor:
         return paths[0]
 
     def rename(self, old: Path, new: Path) -> Path:
-        """Rename a file, keeping its position.  Raises ValueError for a bad name."""
+        """Rename a file, keeping its position.  Raises ValueError for a bad name.
+
+        File names are unique, whatever their folders: the dialog lists files by name.
+        """
         if not new.name or new.stem == "":
             raise ValueError("File name cannot be empty")
         if new.suffix != ".slp":
             new = new.with_name(new.name + ".slp")
-        if new != old and new in self._files:
+        if new != old and any(
+            p != old and p.name.lower() == new.name.lower() for p in self._files
+        ):
             raise ValueError(f"{new.name} already exists")
         self._files = {(new if p == old else p): cells for p, cells in self._files.items()}
         return new
 
-    def unique_path(self, stem: str, parent: Path = SLP_DIR) -> Path:
-        path = parent / f"{stem}.slp"
+    def unique_path(self, stem: str) -> Path:
+        """slp/{stem}/{stem}.slp, numbered so that neither its folder nor its name is taken."""
+        folders = {p.parent.as_posix().lower() for p in self._files}
+        names = {p.name.lower() for p in self._files}
+        path = slp_file_path(stem)
         n = 2
-        taken = {p.as_posix().lower() for p in self._files}
-        while path.as_posix().lower() in taken:
-            path = parent / f"{stem}_{n}.slp"
+        while path.parent.as_posix().lower() in folders or path.name.lower() in names:
+            path = slp_file_path(f"{stem}_{n}")
             n += 1
         return path
 

@@ -1395,7 +1395,7 @@ class MainWindow(QMainWindow):
         """Once per session: point the user at Set up when slp/ has unassigned files."""
         if self._offered_slp_setup:
             return
-        if not self._project.slp_dir.exists() or not any(self._project.slp_dir.glob("*.slp")):
+        if not self._project.slp_files():
             return
         self._offered_slp_setup = True
         reply = QMessageBox.question(
