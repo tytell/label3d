@@ -20,7 +20,7 @@ from PySide6.QtCore import QThread, Signal
 import logging
 _log = logging.getLogger(__name__)
 
-from aniposelib.boards import CharucoBoard, merge_rows
+from aniposelib.boards import merge_rows
 from aniposelib.cameras import Camera, CameraGroup
 
 from label3d.calibration_io import compute_frame_errors
@@ -151,14 +151,7 @@ class DetectionWorker(QThread):
     def run(self):
         try:
             bp = self._board_params
-            board = CharucoBoard(
-                squaresX=bp["squares_x"],
-                squaresY=bp["squares_y"],
-                square_length=bp["square_length"],
-                marker_length=bp["marker_length"],
-                marker_bits=bp.get("marker_bits", 4),
-                dict_size=bp.get("dict_size", 50),
-            )
+            board = build_board(bp)
 
             all_rows: dict[str, list] = {cam: [] for cam in self._cam_names}
             cam_sizes: dict[str, tuple[int, int]] = {}
@@ -400,14 +393,7 @@ class CalibrationWorker(QThread):
     def run(self):
         try:
             bp = self._board_params
-            board = CharucoBoard(
-                squaresX=bp["squares_x"],
-                squaresY=bp["squares_y"],
-                square_length=bp["square_length"],
-                marker_length=bp["marker_length"],
-                marker_bits=bp.get("marker_bits", 4),
-                dict_size=bp.get("dict_size", 50),
-            )
+            board = build_board(bp)
 
             cameras = []
             for cam_name in self._cam_names:

@@ -66,6 +66,15 @@ class TakeCalibration:
 
 
 def build_board(bp: dict) -> CharucoBoard:
+    # aniposelib calls the legacy cv2.aruco functions, which only the
+    # opencv-contrib build has, and treats their absence as "no markers found".
+    if not hasattr(cv2.aruco, "detectMarkers"):
+        raise RuntimeError(
+            "This OpenCV has no cv2.aruco.detectMarkers, so no Charuco corners "
+            "can be found. Install opencv-contrib-python only (not "
+            "opencv-python or opencv-python-headless alongside it): "
+            "uv sync --reinstall-package opencv-contrib-python"
+        )
     return CharucoBoard(
         squaresX=bp["squares_x"],
         squaresY=bp["squares_y"],
