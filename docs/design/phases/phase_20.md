@@ -2,7 +2,7 @@
 
 **Goal**: Give label3d a version number, record in each project which version its layout belongs to, and offer to upgrade a project made by an older version when it is opened. Upgrading restores the parts of the project's `.slp` files that older Syncs dropped, using the original `.slp` files the user points to.
 
-**Status**: Implemented and tested on the fixture projects and on copies of the real BGvPS projects (20.12); to be checked in the app. Tag `v0.3.0` once it has been.
+**Status**: Complete. Tested on the fixture projects and on copies of the real BGvPS projects (20.12), and checked in the app. Tagged `v0.3.0`.
 
 ---
 
@@ -146,10 +146,10 @@ Copies of real projects go in the scratchpad. Videos are left where they are, th
 - `detect_version` gives the right version for each case, and the right steps.
 - After the upgrade, points are equal to the old points (in values, types and index) apart from the frame numbering in `trials.csv`.
 - The restored `.slp` file holds every video and labelled frame of the original that is outside the project, unchanged, and the project's part equals the project's points.
-- A point labelled over a prediction gets that prediction back in `px, py, pscore` (in the app: deleting the user instance shows it — to be checked).
+- A point labelled over a prediction gets that prediction back in `px, py, pscore`.
 - Stopping in each step (a raised error) leaves the project as it was.
 - A second upgrade finds nothing to do.
-- The upgraded project opens in HEAD (Sync and export in the app: to be checked).
+- The upgraded project opens in HEAD.
 - `project.toml` keeps the comment line after the app writes it again.
 
 ## 20.11 Notes
