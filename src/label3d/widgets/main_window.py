@@ -1046,6 +1046,12 @@ class MainWindow(QMainWindow):
     def _update_zoom_actions(self, *_args):
         """Enable zoom to instance when the frame has an instance, and zoom to
         point only when a point is selected."""
+        if index == 1:
+            # Hidden panels skip frame updates, so the Label tab has no images
+            # if it was hidden until now; draw them once its layout settles.
+            QTimer.singleShot(
+                0, lambda: self._camera_grid.update_frame(self._state.current_frame)
+            )
         self._action_zoom_instance.setEnabled(self._zoom_instance() >= 0)
         self._action_zoom_point.setEnabled(
             self._state.selected_instance >= 0 and bool(self._state.selected_bodypart)

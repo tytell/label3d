@@ -351,6 +351,7 @@ class CalibrationView(QWidget):
         self._epipolar_cache: EpipolarCache | None = None
 
         self._current_frame = 0
+        self._shown = False
         self._selected_cam: str | None = None
         self._selected_corner: int | None = None
 
@@ -419,6 +420,9 @@ class CalibrationView(QWidget):
             "own and all takes jointly."
         )
         self._take_combo.currentTextChanged.connect(self._on_take_selected)
+        # Picking a take shows the whole image again; a calibration run
+        # switching the take keeps the zoom
+        self._take_combo.activated.connect(lambda _i: self._calib_grid.fit_all())
         takes_layout.addWidget(self._take_combo)
         left_layout.addWidget(takes_group)
 
@@ -677,6 +681,11 @@ class CalibrationView(QWidget):
         super().showEvent(event)
         if not event.spontaneous() and self._calib_provider.n_frames() > 0:
             self._show_frame(self._current_frame)
+        if not event.spontaneous() and not self._shown:
+            # The first frame was fitted before the panels had their size;
+            # fit again once the layout settles.  Later shows keep the zoom.
+            self._shown = True
+            QTimer.singleShot(0, self._calib_grid.fit_all)
 
     # ── Board params ──────────────────────────────────────────────────────
 

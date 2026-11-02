@@ -420,7 +420,8 @@ class CameraPanel(QGraphicsView):
         self._label.setPos(5, 5)
 
         if not self._fitted:
-            self.fit_view()
+            # A zoom saved before the panel was shown (session restore) wins
+            self.restore_view_state()
             self._fitted = True
 
     def fit_view(self):
