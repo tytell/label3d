@@ -51,12 +51,6 @@ def test_project_path() -> Path:
 
 
 @pytest.fixture
-def skeleton_json_path() -> Path:
-    _require_test_project()
-    return TEST_PROJECT / "skeleton.json"
-
-
-@pytest.fixture
 def points_path() -> Path:
     _require_test_project()
     return TEST_PROJECT / "experiments" / "exp1" / "points.parquet"

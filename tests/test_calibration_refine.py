@@ -402,7 +402,7 @@ class TestStage1:
     def _corners(self, exp_dir: Path, cam_names: list[str]) -> None:
         for c, cam in enumerate(cam_names):
             cam_dir = camera_dir(exp_dir, cam)
-            cam_dir.mkdir(parents=True)
+            cam_dir.mkdir(parents=True, exist_ok=True)
             rows = [
                 {"framenum": (take, f), "ids": np.array([[0], [1]]),
                  "corners": np.array([[[10.0 * c + f, 5.0]], [[20.0, 5.0 + f]]])}

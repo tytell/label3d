@@ -15,6 +15,15 @@ from tests.helpers import make_skeleton_json
 # Loading from JSON
 # ---------------------------------------------------------------------------
 
+@pytest.fixture
+def skeleton_json_path(tmp_path) -> Path:
+    return make_skeleton_json(
+        tmp_path,
+        nodes=["snout", "left_eye", "dorsal"],
+        edges=[["snout", "left_eye"], ["snout", "dorsal"]],
+    )
+
+
 class TestFromJson:
     def test_loads_nodes(self, skeleton_json_path):
         sk = Skeleton.from_json(skeleton_json_path)
