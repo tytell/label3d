@@ -409,9 +409,23 @@ class CalibrationView(QWidget):
 
         left_layout.addWidget(board_group)
 
-        # Detection settings group
+        # Calibration takes: which take's frames and solution are shown
+        takes_group = QGroupBox("Calibration takes")
+        takes_layout = QVBoxLayout(takes_group)
+
+        self._take_combo = QComboBox()
+        self._take_combo.setToolTip(
+            "Which calibration solution to use. Each take is calibrated on its "
+            "own and all takes jointly."
+        )
+        self._take_combo.currentTextChanged.connect(self._on_take_selected)
+        takes_layout.addWidget(self._take_combo)
+        left_layout.addWidget(takes_group)
+
+        # Detection: settings, per-camera counts, Detect Corners
         detect_group = QGroupBox("Detection")
-        detect_form = QFormLayout(detect_group)
+        detect_layout = QVBoxLayout(detect_group)
+        detect_form = QFormLayout()
         calib_cfg = project.config.get("calibration", {})
         self._skip_spin = QSpinBox()
         self._skip_spin.setRange(1, 500)
@@ -439,19 +453,28 @@ class CalibrationView(QWidget):
         range_row.addWidget(self._end_spin, stretch=1)
         detect_form.addRow("Range of take:", self._range_take_label)
         detect_form.addRow("Frames:", range_row)
+        detect_layout.addLayout(detect_form)
+
+        # Per-camera detection count labels
+        cam_group = QGroupBox("Detection counts")
+        cam_form = QFormLayout(cam_group)
+        self._cam_count_labels: dict[str, QLabel] = {}
+        for cam in project.cameras:
+            lbl = QLabel("—")
+            self._cam_count_labels[cam] = lbl
+            cam_form.addRow(f"{cam}:", lbl)
+        detect_layout.addWidget(cam_group)
+
+        self._detect_btn = QPushButton("Detect Corners")
+        detect_layout.addWidget(self._detect_btn)
         left_layout.addWidget(detect_group)
 
-        # Calibration takes group
-        takes_group = QGroupBox("Calibration takes")
-        takes_layout = QVBoxLayout(takes_group)
-
-        self._take_combo = QComboBox()
-        self._take_combo.setToolTip(
-            "Which calibration solution to use. Each take is calibrated on its "
-            "own and all takes jointly."
-        )
-        self._take_combo.currentTextChanged.connect(self._on_take_selected)
-        takes_layout.addWidget(self._take_combo)
+        # Calibration: run, repeats, per-take results
+        calib_group = QGroupBox("Calibration")
+        calib_layout = QVBoxLayout(calib_group)
+        self._calibrate_btn = QPushButton("Run Calibration")
+        self._calibrate_btn.setEnabled(False)
+        calib_layout.addWidget(self._calibrate_btn)
 
         repeat_row = QHBoxLayout()
         repeat_row.addWidget(QLabel("Repeat calibration:"))
@@ -464,7 +487,7 @@ class CalibrationView(QWidget):
             "spread keeps that noise from being reported as camera drift."
         )
         repeat_row.addWidget(self._repeat_spin, stretch=1)
-        takes_layout.addLayout(repeat_row)
+        calib_layout.addLayout(repeat_row)
 
         self._take_table = QTableWidget(0, 5)
         self._take_table.setHorizontalHeaderLabels(
@@ -476,20 +499,20 @@ class CalibrationView(QWidget):
             QAbstractItemView.SelectionMode.NoSelection
         )
         self._take_table.setMaximumHeight(140)
-        takes_layout.addWidget(self._take_table)
+        calib_layout.addWidget(self._take_table)
 
         self._drift_label = QLabel()
         self._drift_label.setWordWrap(True)
         self._drift_label.setVisible(False)
         self._drift_label.setStyleSheet("color: #b45309; font-weight: bold;")
-        takes_layout.addWidget(self._drift_label)
+        calib_layout.addWidget(self._drift_label)
 
         self._use_take_btn = QPushButton("Use selected take")
         self._use_take_btn.setEnabled(False)
         self._use_take_btn.clicked.connect(self._on_use_take)
-        takes_layout.addWidget(self._use_take_btn)
+        calib_layout.addWidget(self._use_take_btn)
 
-        left_layout.addWidget(takes_group)
+        left_layout.addWidget(calib_group)
 
         # Registry: every saved solution, refinements under their parent
         registry_group = QGroupBox("Saved calibrations")
@@ -510,9 +533,6 @@ class CalibrationView(QWidget):
             registry_buttons.addWidget(btn)
         registry_layout.addLayout(registry_buttons)
         self._refine_btn = QPushButton("Refine with points…")
-        self._refine_btn.setToolTip(
-            "Adjust a calibration with the bodypart points labelled in several cameras"
-        )
         self._refine_btn.clicked.connect(self._on_refine)
         registry_layout.addWidget(self._refine_btn)
         left_layout.addWidget(registry_group)
@@ -537,25 +557,6 @@ class CalibrationView(QWidget):
         self._range_timer.timeout.connect(self._on_range_settled)
         self._start_spin.valueChanged.connect(self._on_range_spin_changed)
         self._end_spin.valueChanged.connect(self._on_range_spin_changed)
-
-        # Per-camera detection count labels
-        cam_group = QGroupBox("Detection counts")
-        cam_form = QFormLayout(cam_group)
-        self._cam_count_labels: dict[str, QLabel] = {}
-        for cam in project.cameras:
-            lbl = QLabel("—")
-            self._cam_count_labels[cam] = lbl
-            cam_form.addRow(f"{cam}:", lbl)
-        left_layout.addWidget(cam_group)
-
-        # Buttons
-        btn_row = QHBoxLayout()
-        self._detect_btn = QPushButton("Detect Corners")
-        self._calibrate_btn = QPushButton("Run Calibration")
-        self._calibrate_btn.setEnabled(False)
-        btn_row.addWidget(self._detect_btn)
-        btn_row.addWidget(self._calibrate_btn)
-        left_layout.addLayout(btn_row)
 
         # Overall error label
         self._error_label = QLabel("Reprojection error: —")
@@ -1294,6 +1295,13 @@ class CalibrationView(QWidget):
         has_selection = bool(self._registry_tree.selectedItems())
         for btn in (self._make_active_btn, self._rename_btn, self._delete_btn):
             btn.setEnabled(has_selection)
+        has_active = self._project.active_calibration_id() is not None
+        self._refine_btn.setEnabled(has_active)
+        self._refine_btn.setToolTip(
+            "Adjust a calibration with the bodypart points labelled in several cameras"
+            if has_active
+            else "Needs an active calibration. Make one active above."
+        )
 
     def _on_make_active(self) -> None:
         entry = self._selected_entry()
