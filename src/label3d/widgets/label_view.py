@@ -11,7 +11,7 @@ import math
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFrame,
@@ -43,7 +43,7 @@ from label3d.skeleton import Skeleton
 from label3d.state import ProjectState
 from label3d.widgets.bodypart_list import BodypartList
 from label3d.widgets.camera_grid import CameraGrid
-from label3d.widgets.point_item import ColorMode
+from label3d.widgets.point_item import MARK_COLORS, ColorMode
 from label3d.widgets.point_legend import PointLegend
 from label3d.widgets.view_3d import View3D
 
@@ -64,6 +64,9 @@ class LabelView(QWidget):
     - Selection state from ProjectState
     - Keyboard shortcuts for bodypart/instance cycling and point ops
     """
+
+    # (ColorMode value, fixed color key or "") picked in the legend
+    point_coloring_chosen = Signal(str, str)
 
     def __init__(
         self,
@@ -105,6 +108,7 @@ class LabelView(QWidget):
         self._bodypart_list.setMinimumHeight(SIDEBAR_LIST_MIN_HEIGHT)
         sidebar_layout.addWidget(self._bodypart_list, stretch=1)
         self._legend = PointLegend()
+        self._legend.coloring_chosen.connect(self.point_coloring_chosen)
         sidebar_layout.addWidget(self._legend, stretch=0)
 
         self._sidebar_scroll = QScrollArea()
@@ -523,22 +527,16 @@ class LabelView(QWidget):
         self._show_status(f"Accepted {n} point(s)" if n else "No new points in this frame")
         self._update_all_overlays()
 
-    def set_color_mode(self, mode: ColorMode) -> None:
-        """Color points by reprojection error or by source."""
+    def set_point_coloring(self, mode: ColorMode, point_color: str) -> None:
+        """Color points by a colormap, or all in a fixed color (ColorMode.FIXED).
+        point_color, a MARK_COLORS key, also colors the points a colormap leaves out."""
+        color = MARK_COLORS[point_color][1]
         for cam_name in self._camera_grid.camera_names:
             panel = self._camera_grid.get_panel(cam_name)
             if panel is not None:
                 panel.skeleton_overlay.color_mode = mode
-        self._legend.set_color_mode(mode)
-        self._update_all_overlays()
-
-    def set_point_color(self, color: QColor) -> None:
-        """Color for points that error, source or score don't color."""
-        for cam_name in self._camera_grid.camera_names:
-            panel = self._camera_grid.get_panel(cam_name)
-            if panel is not None:
                 panel.skeleton_overlay.point_color = color
-        self._legend.set_point_color(color)
+        self._legend.set_coloring(mode, point_color)
         self._update_all_overlays()
 
     def set_label_color(self, color: QColor) -> None:

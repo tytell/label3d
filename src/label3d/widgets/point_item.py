@@ -18,9 +18,9 @@ POINT_RADIUS = 8
 ERROR_OK_PX = 5
 ERROR_BAD_PX = 15
 
-# Choices for View > Point color and View > Label color, as {key: (name, color)}.
-# The point color is for points with no error, source or score color; the label
-# color is for every node name label.
+# Fixed colors for View > Point color, as {key: (name, color)}.  The chosen
+# point color colors every point (ColorMode.FIXED) or, under a colormap, the
+# points it leaves out; the label color is for every node name label.
 MARK_COLORS = {
     "light_blue": ("Light blue", QColor(150, 210, 255)),
     "white": ("White", QColor(255, 255, 255)),
@@ -39,7 +39,7 @@ COLOR_NONE = MARK_COLORS[DEFAULT_POINT_COLOR][1]  # default: no error info
 COLOR_NOT_SET = QColor(100, 100, 100) # dim grey for points not yet positioned
 COLOR_NOT_VISIBLE = QColor(80, 80, 80, 120)  # grayed out for not-visible points
 
-# Colors by point source (View > Color points by > Source).  SLEAP predictions
+# Colors by point source (View > Point color > Source).  SLEAP predictions
 # use SLEAP's prediction blue, as on the frame slider.
 COLOR_SOURCE = {
     SOURCE_LABEL3D: QColor(230, 60, 230),      # magenta: labeled in label3d
@@ -53,7 +53,7 @@ SOURCE_NAMES = {
     SOURCE_SLEAP_PRED: "SLEAP prediction",
 }
 
-# Prediction score gradient (View > Color points by > Prediction score):
+# Prediction score gradient (View > Point color > Prediction score):
 # red at SCORE_LOW, yellow halfway, green at SCORE_HIGH, clamped outside.
 # Points with no score (user labels) get the point color.
 SCORE_LOW = 0.0
@@ -68,6 +68,15 @@ class ColorMode(Enum):
     ERROR = "error"
     SOURCE = "source"
     SCORE = "score"
+    FIXED = "fixed"
+
+
+# Colormaps in View > Point color and the legend's color choice
+COLORMAP_NAMES = {
+    ColorMode.ERROR: "Reprojection error",
+    ColorMode.SOURCE: "Source",
+    ColorMode.SCORE: "Prediction score",
+}
 
 
 # Selection outline
@@ -238,6 +247,8 @@ class PointItem(QGraphicsEllipseItem):
             color = COLOR_SOURCE.get(self._source, self._default_color)
         elif self._color_mode is ColorMode.SCORE:
             color = score_color(self._score, self._default_color)
+        elif self._color_mode is ColorMode.FIXED:
+            color = self._default_color
         else:
             color = _error_color(self._error, self._default_color)
         self._new_marker.setVisible(

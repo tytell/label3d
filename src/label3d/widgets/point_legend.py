@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QComboBox,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
+)
 
 from label3d.points import SOURCE_LABEL3D, SOURCE_SLEAP_PRED, SOURCE_SLEAP_USER
 from label3d.widgets.frame_slider import (
@@ -19,8 +26,11 @@ from label3d.widgets.point_item import (
     COLOR_NONE,
     COLOR_OK,
     COLOR_SOURCE,
+    COLORMAP_NAMES,
+    DEFAULT_POINT_COLOR,
     ERROR_BAD_PX,
     ERROR_OK_PX,
+    MARK_COLORS,
     NEW_HALF_SIZE,
     NEW_PEN,
     SCORE_HIGH,
@@ -111,15 +121,19 @@ def tick_icon(color: QColor) -> QPixmap:
 class PointLegend(QWidget):
     """Key to the Label tab's markers.
 
-    Shows shapes (point state), the colors for the current View > Color points
-    by mode, the new/selected marks, and the frame-slider ticks.
-    set_color_mode() swaps the color section; set_point_color() recolors the
-    entries for points with no error or score.
+    Shows shapes (point state), the colors for the current View > Point color
+    choice, the new/selected marks, and the frame-slider ticks.  The color
+    section has a drop-down with the same choices; picking one emits
+    coloring_chosen.  set_coloring() shows a choice made elsewhere.
     """
+
+    # (ColorMode value, fixed color key or "") picked in the drop-down
+    coloring_chosen = Signal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._color_mode = ColorMode.ERROR
+        self._point_color = DEFAULT_POINT_COLOR
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -131,27 +145,44 @@ class PointLegend(QWidget):
 
         self._sections: dict[str, QWidget] = {}
         self._icons: dict[str, list[QLabel]] = {}
-        self._color_titles: dict[ColorMode, str] = {
-            ColorMode.ERROR: "Color: reprojection error",
-            ColorMode.SOURCE: "Color: source",
-            ColorMode.SCORE: "Color: prediction score",
-        }
 
         layout.addWidget(self._section(
             "shape", "Shape",
             [(point_icon(state, SHAPE_COLOR), text) for state, text in SHAPES],
         ))
+
+        # Color: the colormaps, then the fixed colors
+        color_row = QHBoxLayout()
+        color_row.setContentsMargins(0, 4, 0, 0)
+        color_title = QLabel("Color:")
+        color_title.setStyleSheet("font-size: 11px; font-weight: 600;")
+        color_row.addWidget(color_title)
+        self._color_combo = QComboBox()
+        self._color_combo.setStyleSheet("font-size: 11px;")
+        for mode, name in COLORMAP_NAMES.items():
+            self._color_combo.addItem(name, (mode.value, ""))
+        self._color_combo.insertSeparator(self._color_combo.count())
+        for key, (name, _color) in MARK_COLORS.items():
+            self._color_combo.addItem(name, (ColorMode.FIXED.value, key))
+        self._color_combo.activated.connect(self._on_color_activated)
+        color_row.addWidget(self._color_combo, stretch=1)
+        layout.addLayout(color_row)
+
         layout.addWidget(self._section(
-            ColorMode.ERROR.value, self._color_titles[ColorMode.ERROR],
+            ColorMode.ERROR.value, None,
             [(point_icon("set", color), text) for color, text in ERROR_COLORS],
         ))
         layout.addWidget(self._section(
-            ColorMode.SOURCE.value, self._color_titles[ColorMode.SOURCE],
+            ColorMode.SOURCE.value, None,
             [(point_icon("set", color), text) for color, text in SOURCE_COLORS],
         ))
         layout.addWidget(self._section(
-            ColorMode.SCORE.value, self._color_titles[ColorMode.SCORE],
+            ColorMode.SCORE.value, None,
             [(point_icon("set", color), text) for color, text in SCORE_COLORS],
+        ))
+        layout.addWidget(self._section(
+            ColorMode.FIXED.value, None,
+            [(point_icon("set", COLOR_NONE), "All points")],
         ))
         layout.addWidget(self._section(
             "marks", "Marks",
@@ -166,22 +197,32 @@ class PointLegend(QWidget):
         ))
         layout.addStretch(0)
 
-        self.set_color_mode(ColorMode.ERROR)
+        self.set_coloring(ColorMode.ERROR, DEFAULT_POINT_COLOR)
 
     @property
     def color_mode(self) -> ColorMode:
         return self._color_mode
 
-    def set_color_mode(self, mode: ColorMode) -> None:
-        """Show only the color section for mode."""
+    def set_coloring(self, mode: ColorMode, point_color: str) -> None:
+        """Show mode's color section, with point_color (a MARK_COLORS key) for
+        every point under FIXED and for the points a colormap leaves out."""
         self._color_mode = mode
+        self._point_color = point_color
+        choice = (mode.value, point_color if mode is ColorMode.FIXED else "")
+        for i in range(self._color_combo.count()):
+            if self._color_combo.itemData(i) == choice:
+                self._color_combo.setCurrentIndex(i)
+                break
         for m in ColorMode:
             self._sections[m.value].setVisible(m is mode)
+        # "Not triangulated", "No score" and "All points" take the point color
+        icon = point_icon("set", MARK_COLORS[point_color][1])
+        for m in (ColorMode.ERROR, ColorMode.SCORE, ColorMode.FIXED):
+            self._icons[m.value][-1].setPixmap(icon)
 
-    def set_point_color(self, color: QColor) -> None:
-        """Recolor "Not triangulated" and "No score", the last error and score entries."""
-        for mode in (ColorMode.ERROR, ColorMode.SCORE):
-            self._icons[mode.value][-1].setPixmap(point_icon("set", color))
+    def _on_color_activated(self, index: int) -> None:
+        mode, key = self._color_combo.itemData(index)
+        self.coloring_chosen.emit(mode, key)
 
     def visible_entries(self) -> list[str]:
         """Labels of the entries currently shown, in order (for tests)."""
@@ -195,15 +236,18 @@ class PointLegend(QWidget):
             ]
         return entries
 
-    def _section(self, key: str, title: str, rows: list[tuple[QPixmap, str]]) -> QWidget:
+    def _section(
+        self, key: str, title: str | None, rows: list[tuple[QPixmap, str]]
+    ) -> QWidget:
         section = QWidget()
         grid = QGridLayout(section)
         grid.setContentsMargins(0, 4, 0, 0)
         grid.setHorizontalSpacing(6)
         grid.setVerticalSpacing(1)
-        title_label = QLabel(title)
-        title_label.setStyleSheet("font-size: 11px; font-weight: 600;")
-        grid.addWidget(title_label, 0, 0, 1, 2)
+        if title is not None:
+            title_label = QLabel(title)
+            title_label.setStyleSheet("font-size: 11px; font-weight: 600;")
+            grid.addWidget(title_label, 0, 0, 1, 2)
         self._icons[key] = []
         for i, (pixmap, text) in enumerate(rows, start=1):
             icon = QLabel()

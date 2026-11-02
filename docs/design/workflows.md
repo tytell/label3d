@@ -234,7 +234,9 @@ Before labeling, user must either:
   - Previous / Next new frame       Shift+[ / Shift+]   (crosses trials)
 
 > View
-  - Color points by > Reprojection error / Source / Prediction score
+  - Point color > Color by: Reprojection error / Source / Prediction score
+                  Fixed color: Light blue / White / Black / Bright red / Bright yellow
+                  Label color: (same five colors)
   - Show legend
   - Cameras / Layout (Grid / Horizontal / Vertical) / Zoom
 
@@ -278,7 +280,7 @@ The **skeleton is drawn** on every camera panel for every frame, except nodes th
 
 ### Point coloring
 
-**View > Color points by** chooses between reprojection error (the default), source and prediction score. The choice is saved with the session.
+**View > Point color** is one choice among the colormaps — reprojection error (the default), source and prediction score — and five fixed colors (light blue, white, black, bright red, bright yellow). A fixed color colors every point. Under a colormap, the last fixed color chosen (light blue at first) colors the points the colormap leaves out: not triangulated, or no score. The menu's **Label color** section sets the color of the bodypart names, whatever the point coloring (white by default). All three are saved with the session, so they belong to the project.
 
 By **reprojection error**:
 
@@ -304,7 +306,7 @@ In every mode, a **white square** around a point marks it as new since the lates
 
 ### Legend
 
-A legend at the bottom of the Label tab's left sidebar explains the markers. It covers shapes (point state), the colours for the current **Color points by** mode, the new and selected marks, and the frame-slider ticks. Turn it off with **View > Show legend**; the setting is saved with the session. The legend icons are drawn with the same code as the markers (`point_item.point_style`), so they always match.
+A legend at the bottom of the Label tab's left sidebar explains the markers. It covers shapes (point state), the colours for the current **Point color** choice, which can also be changed from a drop-down in the legend, the new and selected marks, and the frame-slider ticks. Turn it off with **View > Show legend**; the setting is saved with the session. The legend icons are drawn with the same code as the markers (`point_item.point_style`), so they always match.
 
 ### Point hover tooltip
 

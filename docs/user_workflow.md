@@ -115,15 +115,15 @@ If a label you made in label3d was also changed in SLEAP, label3d asks which ver
 - **Frame slider:** the row on top marks frames with new points. Orange means a new label made in SLEAP; blue means new predictions only.
 - **Next / previous new frame:** `Shift+]` and `Shift+[` jump between frames with new points, moving on to the next trial when you reach the end of one.
 - **In the camera views:** new points have a white square around them.
-- **View > Color points by > Source** colours every point by where it came from:
+- **View > Point color > Source** colours every point by where it came from:
   - magenta: labelled in label3d
   - orange: labelled in SLEAP
   - light blue: predicted by SLEAP
 
   Hover over a point to see its source, score and which sync brought it in.
-- **View > Color points by > Prediction score** colours predictions by SLEAP's score: green near 1, yellow around 0.5, red near 0. User labels have no score and take the point color.
-- **View > Point color** sets the color of points that nothing else colors: those not yet triangulated, or with no score. Light blue by default; also white, black, bright red or bright yellow. **View > Label color** sets the color of the bodypart names next to the points, whatever **Color points by** is (white by default). Both are remembered between sessions.
-- **Legend:** the panel below the Points list explains every shape and colour, and switches along with **Color points by**. Hide it with **View > Show legend**.
+- **View > Point color > Prediction score** colours predictions by SLEAP's score: green near 1, yellow around 0.5, red near 0. User labels have no score and take the fixed color.
+- **View > Point color > Fixed color** colours every point one colour: light blue, white, black, bright red or bright yellow. Under a colormap, the last fixed colour you chose (light blue at first) colours the points the colormap leaves out, such as points not yet triangulated. The **Label color** section of the same menu sets the colour of the bodypart names next to the points, whatever the point colouring (white by default). The choices are saved with the project.
+- **Legend:** the panel below the Points list explains every shape and colour. Its **Color** drop-down has the same choices as **View > Point color**. Hide the legend with **View > Show legend**.
 
 ### Correcting and accepting
 

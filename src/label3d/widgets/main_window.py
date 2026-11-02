@@ -51,6 +51,7 @@ from label3d.widgets.export_dialog import ExportDialog
 from label3d.widgets.frame_controls import FrameControls
 from label3d.widgets.label_view import LabelView
 from label3d.widgets.point_item import (
+    COLORMAP_NAMES,
     DEFAULT_LABEL_COLOR,
     DEFAULT_POINT_COLOR,
     MARK_COLORS,
@@ -301,35 +302,50 @@ class MainWindow(QMainWindow):
         # View menu
         view_menu = menu_bar.addMenu("View")
 
-        # View > Color points by
-        color_menu = view_menu.addMenu("Color points by")
-        color_group = QActionGroup(self)
-        color_group.setExclusive(True)
-        self._color_actions: dict[ColorMode, QAction] = {}
-        for mode, label in (
-            (ColorMode.ERROR, "Reprojection error"),
-            (ColorMode.SOURCE, "Source"),
-            (ColorMode.SCORE, "Prediction score"),
-        ):
-            action = color_menu.addAction(label)
+        # View > Point color: color by a colormap or one fixed color (one
+        # choice; the last fixed color also colors points a colormap leaves
+        # out), then the label color.  Saved with the session.
+        color_menu = view_menu.addMenu("Point color")
+        point_group = QActionGroup(self)
+        point_group.setExclusive(True)
+        self._color_actions: dict[tuple[ColorMode, str], QAction] = {}
+        self._menu_heading(color_menu, "Color by")
+        for mode, name in COLORMAP_NAMES.items():
+            action = color_menu.addAction(name)
+            action.triggered.connect(
+                lambda _checked, m=mode: self._set_point_coloring(m)
+            )
+            self._color_actions[(mode, "")] = action
+        color_menu.addSeparator()
+        self._menu_heading(color_menu, "Fixed color")
+        for key, (name, _color) in MARK_COLORS.items():
+            action = color_menu.addAction(name)
+            action.triggered.connect(
+                lambda _checked, k=key: self._set_point_coloring(ColorMode.FIXED, k)
+            )
+            self._color_actions[(ColorMode.FIXED, key)] = action
+        for action in self._color_actions.values():
             action.setCheckable(True)
-            color_group.addAction(action)
-            action.triggered.connect(lambda _checked, m=mode: self._set_color_mode(m))
-            self._color_actions[mode] = action
-        self._color_actions[ColorMode.ERROR].setChecked(True)
+            point_group.addAction(action)
+        color_menu.addSeparator()
+        self._menu_heading(color_menu, "Label color")
+        label_group = QActionGroup(self)
+        label_group.setExclusive(True)
+        self._label_color_actions: dict[str, QAction] = {}
+        for key, (name, _color) in MARK_COLORS.items():
+            action = color_menu.addAction(name)
+            action.setCheckable(True)
+            label_group.addAction(action)
+            action.triggered.connect(lambda _checked, k=key: self._set_label_color(k))
+            self._label_color_actions[key] = action
         self._color_mode = ColorMode.ERROR
-
-        # View > Point color / Label color (saved in the app settings)
-        self._point_color_actions = self._mark_color_menu(
-            view_menu, "Point color", self._set_point_color
-        )
-        self._label_color_actions = self._mark_color_menu(
-            view_menu, "Label color", self._set_label_color
-        )
         self._point_color = DEFAULT_POINT_COLOR
         self._label_color = DEFAULT_LABEL_COLOR
-        self._point_color_actions[DEFAULT_POINT_COLOR].setChecked(True)
+        self._color_actions[(ColorMode.ERROR, "")].setChecked(True)
         self._label_color_actions[DEFAULT_LABEL_COLOR].setChecked(True)
+        self._label_view.point_coloring_chosen.connect(
+            lambda mode, key: self._set_point_coloring(ColorMode(mode), key or None)
+        )
 
         self._legend_action = view_menu.addAction("Show legend")
         self._legend_action.setCheckable(True)
@@ -561,29 +577,21 @@ class MainWindow(QMainWindow):
 
     # -- New points ------------------------------------------------------------
 
-    def _set_color_mode(self, mode: ColorMode) -> None:
+    @staticmethod
+    def _menu_heading(menu, text: str) -> None:
+        """A disabled item naming the section below it (macOS menus don't show
+        QMenu.addSection titles)."""
+        menu.addAction(text).setEnabled(False)
+
+    def _set_point_coloring(self, mode: ColorMode, point_color: str | None = None) -> None:
+        """Color points by mode; point_color (a MARK_COLORS key) replaces the
+        fixed color, which a colormap keeps for the points it leaves out."""
+        if point_color is not None:
+            self._point_color = point_color
         self._color_mode = mode
-        self._color_actions[mode].setChecked(True)
-        self._label_view.set_color_mode(mode)
-
-    def _mark_color_menu(self, view_menu, title: str, setter) -> dict[str, QAction]:
-        """A View submenu with one checkable action per MARK_COLORS entry."""
-        menu = view_menu.addMenu(title)
-        group = QActionGroup(self)
-        group.setExclusive(True)
-        actions: dict[str, QAction] = {}
-        for key, (name, _color) in MARK_COLORS.items():
-            action = menu.addAction(name)
-            action.setCheckable(True)
-            group.addAction(action)
-            action.triggered.connect(lambda _checked, k=key: setter(k))
-            actions[key] = action
-        return actions
-
-    def _set_point_color(self, key: str) -> None:
-        self._point_color = key
-        self._point_color_actions[key].setChecked(True)
-        self._label_view.set_point_color(MARK_COLORS[key][1])
+        key = self._point_color if mode is ColorMode.FIXED else ""
+        self._color_actions[(mode, key)].setChecked(True)
+        self._label_view.set_point_coloring(mode, self._point_color)
 
     def _set_label_color(self, key: str) -> None:
         self._label_color = key
@@ -1038,6 +1046,12 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(index)
         # Frame controls are only meaningful in the Label tab (index 1)
         self._frame_controls.setVisible(index == 1)
+        if index == 1:
+            # Hidden panels skip frame updates, so the Label tab has no images
+            # if it was hidden until now; draw them once its layout settles.
+            QTimer.singleShot(
+                0, lambda: self._camera_grid.update_frame(self._state.current_frame)
+            )
 
     def _set_camera_view(self, index: int):
         """Switch camera from menu — keeps combo box in sync."""
@@ -1046,12 +1060,6 @@ class MainWindow(QMainWindow):
     def _update_zoom_actions(self, *_args):
         """Enable zoom to instance when the frame has an instance, and zoom to
         point only when a point is selected."""
-        if index == 1:
-            # Hidden panels skip frame updates, so the Label tab has no images
-            # if it was hidden until now; draw them once its layout settles.
-            QTimer.singleShot(
-                0, lambda: self._camera_grid.update_frame(self._state.current_frame)
-            )
         self._action_zoom_instance.setEnabled(self._zoom_instance() >= 0)
         self._action_zoom_point.setEnabled(
             self._state.selected_instance >= 0 and bool(self._state.selected_bodypart)
@@ -1188,20 +1196,12 @@ class MainWindow(QMainWindow):
     def _save_app_settings(self) -> None:
         s = self._app_settings()
         s.setValue("geometry", self.saveGeometry())
-        s.setValue("point_color", self._point_color)
-        s.setValue("label_color", self._label_color)
 
     def _restore_app_settings(self) -> None:
         s = self._app_settings()
         geom = s.value("geometry")
         if geom is not None:
             self.restoreGeometry(geom)
-        point_color = s.value("point_color", DEFAULT_POINT_COLOR)
-        if point_color in MARK_COLORS:
-            self._set_point_color(point_color)
-        label_color = s.value("label_color", DEFAULT_LABEL_COLOR)
-        if label_color in MARK_COLORS:
-            self._set_label_color(label_color)
 
     def _save_session_settings(self) -> None:
         ini_path = self._project.root / ".label3d_session.ini"
@@ -1213,6 +1213,8 @@ class MainWindow(QMainWindow):
         s.setValue("layout_mode", self._camera_grid.layout_mode.value)
         s.setValue("view_index", self._view_combo.currentIndex())
         s.setValue("color_mode", self._color_mode.value)
+        s.setValue("point_color", self._point_color)
+        s.setValue("label_color", self._label_color)
         s.setValue("show_legend", self._legend_action.isChecked())
         s.endGroup()
 
@@ -1258,15 +1260,22 @@ class MainWindow(QMainWindow):
         layout_val = s.value("layout_mode", "grid")
         view_index = int(s.value("view_index", 0) or 0)
         color_val = s.value("color_mode", ColorMode.ERROR.value)
+        point_color = s.value("point_color", DEFAULT_POINT_COLOR)
+        label_color = s.value("label_color", DEFAULT_LABEL_COLOR)
         show_legend = str(s.value("show_legend", "true")).lower() != "false"
         s.endGroup()
 
         self._legend_action.setChecked(show_legend)
 
         try:
-            self._set_color_mode(ColorMode(color_val))
+            color_mode = ColorMode(color_val)
         except ValueError:
-            pass
+            color_mode = ColorMode.ERROR
+        if point_color not in MARK_COLORS:
+            point_color = DEFAULT_POINT_COLOR
+        self._set_point_coloring(color_mode, point_color)
+        if label_color in MARK_COLORS:
+            self._set_label_color(label_color)
 
         # Apply layout mode
         try:
