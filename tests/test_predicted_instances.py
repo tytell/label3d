@@ -200,3 +200,21 @@ class TestOverlayLock:
         store.make_user_instance(T, 0, 0, "cam1")
         overlays["cam1"].update(store, skeleton, T, 0, 0, "head")
         assert not overlays["cam1"].is_locked(0)
+
+    def test_move_point_moves_label_and_edges(self, qapp):
+        from PySide6.QtCore import QPointF
+        from PySide6.QtWidgets import QGraphicsScene
+
+        from label3d.skeleton import Skeleton
+        from label3d.widgets.skeleton_overlay import SkeletonOverlay
+
+        store = _predicted_store(qapp)
+        skeleton = Skeleton(nodes=["head", "tail"], edges=[("head", "tail")], symmetries=[])
+        overlay = SkeletonOverlay(QGraphicsScene(), "cam1")
+        overlay.update(store, skeleton, T, 0, 0, "head")
+
+        overlay.move_point(0, "tail", QPointF(50.0, 60.0))
+        assert overlay.get_point_item(0, "tail").pos() == QPointF(50.0, 60.0)
+        assert overlay._label_items[(0, "tail")].pos() == QPointF(60.0, 55.0)
+        line = overlay._edge_items[0].line()
+        assert (line.p1(), line.p2()) == (QPointF(10.0, 20.0), QPointF(50.0, 60.0))

@@ -592,9 +592,7 @@ class CameraPanel(QGraphicsView):
         if self._dragging is not None:
             scene_pos = self.mapToScene(event.position().toPoint())
             inst, bp = self._dragging
-            item = self._skeleton_overlay.get_point_item(inst, bp)
-            if item is not None:
-                item.setPos(scene_pos)
+            self._skeleton_overlay.move_point(inst, bp, scene_pos)
             event.accept()
         else:
             super().mouseMoveEvent(event)

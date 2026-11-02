@@ -47,6 +47,8 @@ class SkeletonOverlay:
         self._point_items: dict[tuple[int, str], PointItem] = {}  # (instance, bodypart)
         self._edge_items: list[QGraphicsLineItem] = []
         self._label_items: dict[tuple[int, str], QGraphicsSimpleTextItem] = {}
+        # (src, dst) point keys of each shown edge, by index in _edge_items
+        self._edge_ends: list[tuple[tuple[int, str], tuple[int, str]]] = []
 
         # Track which items are active this frame
         self._active_points: set[tuple[int, str]] = set()
@@ -175,6 +177,7 @@ class SkeletonOverlay:
         """Draw skeleton edge lines between connected bodyparts (both available)."""
         cam = self._camera_name
         edge_idx = 0
+        self._edge_ends.clear()
 
         for inst in instances:
             for src_bp, dst_bp in skeleton.edges:
@@ -198,6 +201,7 @@ class SkeletonOverlay:
                 line = self._get_or_create_edge(edge_idx)
                 line.setLine(src_x, src_y, dst_x, dst_y)
                 line.setVisible(True)
+                self._edge_ends.append(((inst, src_bp), (inst, dst_bp)))
                 edge_idx += 1
 
         # Hide unused edge items
@@ -232,7 +236,28 @@ class SkeletonOverlay:
             self._edge_items.append(line)
         return self._edge_items[index]
 
+    def move_point(self, instance: int, bodypart: str, pos: QPointF) -> None:
+        """Move a point with its label and edges while it is dragged (visual only)."""
+        key = (instance, bodypart)
+        item = self._point_items.get(key)
+        if item is None:
+            return
+        item.setPos(pos)
+        label = self._label_items.get(key)
+        if label is not None:
+            label.setPos(pos.x() + 10, pos.y() - 5)
+        for line, (src, dst) in zip(self._edge_items, self._edge_ends):
+            if key not in (src, dst):
+                continue
+            seg = line.line()
+            if src == key:
+                seg.setP1(pos)
+            if dst == key:
+                seg.setP2(pos)
+            line.setLine(seg)
+
     def _hide_all(self):
+        self._edge_ends.clear()
         for item in self._point_items.values():
             item.setVisible(False)
         for item in self._edge_items:
