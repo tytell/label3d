@@ -121,7 +121,8 @@ If a label you made in label3d was also changed in SLEAP, label3d asks which ver
   - light blue: predicted by SLEAP
 
   Hover over a point to see its source, score and which sync brought it in.
-- **View > Color points by > Prediction score** colours predictions by SLEAP's score: green near 1, yellow around 0.5, red near 0. User labels have no score and are grey.
+- **View > Color points by > Prediction score** colours predictions by SLEAP's score: green near 1, yellow around 0.5, red near 0. User labels have no score and take the point color.
+- **View > Point color** sets the color of points that nothing else colors: those not yet triangulated, or with no score. Light blue by default; also white, black, bright red or bright yellow. **View > Label color** sets the color of the bodypart names next to the points, whatever **Color points by** is (white by default). Both are remembered between sessions.
 - **Legend:** the panel below the Points list explains every shape and colour, and switches along with **Color points by**. Hide it with **View > Show legend**.
 
 ### Correcting and accepting

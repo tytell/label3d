@@ -50,7 +50,12 @@ from label3d.widgets.camera_grid import CameraGrid, LayoutMode
 from label3d.widgets.export_dialog import ExportDialog
 from label3d.widgets.frame_controls import FrameControls
 from label3d.widgets.label_view import LabelView
-from label3d.widgets.point_item import ColorMode
+from label3d.widgets.point_item import (
+    DEFAULT_LABEL_COLOR,
+    DEFAULT_POINT_COLOR,
+    MARK_COLORS,
+    ColorMode,
+)
 from label3d.widgets.slp_setup_dialog import SlpSetupDialog
 from label3d.widgets.load_skeleton_dialog import LoadSkeletonDialog
 from label3d.widgets.sync_summary_dialog import SyncSummaryDialog, dropped_text
@@ -314,6 +319,18 @@ class MainWindow(QMainWindow):
         self._color_actions[ColorMode.ERROR].setChecked(True)
         self._color_mode = ColorMode.ERROR
 
+        # View > Point color / Label color (saved in the app settings)
+        self._point_color_actions = self._mark_color_menu(
+            view_menu, "Point color", self._set_point_color
+        )
+        self._label_color_actions = self._mark_color_menu(
+            view_menu, "Label color", self._set_label_color
+        )
+        self._point_color = DEFAULT_POINT_COLOR
+        self._label_color = DEFAULT_LABEL_COLOR
+        self._point_color_actions[DEFAULT_POINT_COLOR].setChecked(True)
+        self._label_color_actions[DEFAULT_LABEL_COLOR].setChecked(True)
+
         self._legend_action = view_menu.addAction("Show legend")
         self._legend_action.setCheckable(True)
         self._legend_action.setChecked(True)
@@ -548,6 +565,30 @@ class MainWindow(QMainWindow):
         self._color_mode = mode
         self._color_actions[mode].setChecked(True)
         self._label_view.set_color_mode(mode)
+
+    def _mark_color_menu(self, view_menu, title: str, setter) -> dict[str, QAction]:
+        """A View submenu with one checkable action per MARK_COLORS entry."""
+        menu = view_menu.addMenu(title)
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        actions: dict[str, QAction] = {}
+        for key, (name, _color) in MARK_COLORS.items():
+            action = menu.addAction(name)
+            action.setCheckable(True)
+            group.addAction(action)
+            action.triggered.connect(lambda _checked, k=key: setter(k))
+            actions[key] = action
+        return actions
+
+    def _set_point_color(self, key: str) -> None:
+        self._point_color = key
+        self._point_color_actions[key].setChecked(True)
+        self._label_view.set_point_color(MARK_COLORS[key][1])
+
+    def _set_label_color(self, key: str) -> None:
+        self._label_color = key
+        self._label_color_actions[key].setChecked(True)
+        self._label_view.set_label_color(MARK_COLORS[key][1])
 
     def _jump_to_new(self, direction: int) -> None:
         """Go to the next (1) or previous (-1) frame with new points, crossing trials."""
@@ -1141,12 +1182,20 @@ class MainWindow(QMainWindow):
     def _save_app_settings(self) -> None:
         s = self._app_settings()
         s.setValue("geometry", self.saveGeometry())
+        s.setValue("point_color", self._point_color)
+        s.setValue("label_color", self._label_color)
 
     def _restore_app_settings(self) -> None:
         s = self._app_settings()
         geom = s.value("geometry")
         if geom is not None:
             self.restoreGeometry(geom)
+        point_color = s.value("point_color", DEFAULT_POINT_COLOR)
+        if point_color in MARK_COLORS:
+            self._set_point_color(point_color)
+        label_color = s.value("label_color", DEFAULT_LABEL_COLOR)
+        if label_color in MARK_COLORS:
+            self._set_label_color(label_color)
 
     def _save_session_settings(self) -> None:
         ini_path = self._project.root / ".label3d_session.ini"

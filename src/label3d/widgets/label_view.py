@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QCursor, QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QCursor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -530,6 +530,23 @@ class LabelView(QWidget):
             if panel is not None:
                 panel.skeleton_overlay.color_mode = mode
         self._legend.set_color_mode(mode)
+        self._update_all_overlays()
+
+    def set_point_color(self, color: QColor) -> None:
+        """Color for points that error, source or score don't color."""
+        for cam_name in self._camera_grid.camera_names:
+            panel = self._camera_grid.get_panel(cam_name)
+            if panel is not None:
+                panel.skeleton_overlay.point_color = color
+        self._legend.set_point_color(color)
+        self._update_all_overlays()
+
+    def set_label_color(self, color: QColor) -> None:
+        """Color for the node name labels, whatever the point colors."""
+        for cam_name in self._camera_grid.camera_names:
+            panel = self._camera_grid.get_panel(cam_name)
+            if panel is not None:
+                panel.skeleton_overlay.label_color = color
         self._update_all_overlays()
 
     def set_legend_visible(self, visible: bool) -> None:

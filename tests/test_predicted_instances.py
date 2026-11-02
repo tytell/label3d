@@ -13,7 +13,14 @@ import sleap_io as sio
 from label3d.adapters.sleap_adapter import SleapAdapter
 from label3d.points import SOURCE_LABEL3D, SOURCE_SLEAP_PRED, PointsStore
 from label3d.slp_sync import SlpBlock, SlpFileSpec, SlpMapping, compute_merge
-from label3d.widgets.point_item import COLOR_BAD, COLOR_GOOD, COLOR_NONE, COLOR_OK, score_color
+from label3d.widgets.point_item import (
+    COLOR_BAD,
+    COLOR_GOOD,
+    COLOR_NONE,
+    COLOR_OK,
+    MARK_COLORS,
+    score_color,
+)
 from tests.test_sleap_adapter import CAMERAS, EXP, _df, _one_file_per_camera, _save, _trials_df
 
 T = "t1"
@@ -167,9 +174,11 @@ class TestScoreColor:
         assert score_color(1.03) == COLOR_GOOD
         assert score_color(-0.2) == COLOR_BAD
 
-    def test_no_score_is_grey(self):
+    def test_no_score_is_point_color(self):
         assert score_color(None) == COLOR_NONE
         assert score_color(float("nan")) == COLOR_NONE
+        white = MARK_COLORS["white"][1]
+        assert score_color(None, white) == white
 
 
 class TestOverlayLock:

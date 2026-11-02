@@ -18,11 +18,24 @@ POINT_RADIUS = 8
 ERROR_OK_PX = 5
 ERROR_BAD_PX = 15
 
+# Choices for View > Point color and View > Label color, as {key: (name, color)}.
+# The point color is for points with no error, source or score color; the label
+# color is for every node name label.
+MARK_COLORS = {
+    "light_blue": ("Light blue", QColor(150, 210, 255)),
+    "white": ("White", QColor(255, 255, 255)),
+    "black": ("Black", QColor(0, 0, 0)),
+    "red": ("Bright red", QColor(255, 0, 0)),
+    "yellow": ("Bright yellow", QColor(255, 255, 0)),
+}
+DEFAULT_POINT_COLOR = "light_blue"
+DEFAULT_LABEL_COLOR = "white"
+
 # Colors for reprojection error ranges
 COLOR_GOOD = QColor(0, 200, 0)        # green: error < ERROR_OK_PX
 COLOR_OK = QColor(255, 200, 0)        # yellow: ERROR_OK_PX to ERROR_BAD_PX
 COLOR_BAD = QColor(255, 50, 50)       # red: error > ERROR_BAD_PX
-COLOR_NONE = QColor(160, 160, 160)    # grey: no error info
+COLOR_NONE = MARK_COLORS[DEFAULT_POINT_COLOR][1]  # default: no error info
 COLOR_NOT_SET = QColor(100, 100, 100) # dim grey for points not yet positioned
 COLOR_NOT_VISIBLE = QColor(80, 80, 80, 120)  # grayed out for not-visible points
 
@@ -42,7 +55,7 @@ SOURCE_NAMES = {
 
 # Prediction score gradient (View > Color points by > Prediction score):
 # red at SCORE_LOW, yellow halfway, green at SCORE_HIGH, clamped outside.
-# Points with no score (user labels) are COLOR_NONE.
+# Points with no score (user labels) get the point color.
 SCORE_LOW = 0.0
 SCORE_HIGH = 1.0
 
@@ -62,10 +75,10 @@ SELECT_PEN = QPen(Qt.GlobalColor.white, 2)
 NORMAL_PEN = QPen(Qt.GlobalColor.transparent, 0)
 
 
-def _error_color(error: float | None) -> QColor:
-    """Map reprojection error to a color."""
+def _error_color(error: float | None, none: QColor = COLOR_NONE) -> QColor:
+    """Map reprojection error to a color; none for no error."""
     if error is None:
-        return COLOR_NONE
+        return none
     if error < ERROR_OK_PX:
         return COLOR_GOOD
     if error < ERROR_BAD_PX:
@@ -73,10 +86,10 @@ def _error_color(error: float | None) -> QColor:
     return COLOR_BAD
 
 
-def score_color(score: float | None) -> QColor:
-    """Map a SLEAP prediction score to red → yellow → green; grey for no score."""
+def score_color(score: float | None, none: QColor = COLOR_NONE) -> QColor:
+    """Map a SLEAP prediction score to red → yellow → green; none for no score."""
     if score is None or math.isnan(score):
-        return COLOR_NONE
+        return none
     t = min(max((score - SCORE_LOW) / (SCORE_HIGH - SCORE_LOW), 0.0), 1.0)
     if t < 0.5:
         lo, hi, f = COLOR_BAD, COLOR_OK, t / 0.5
@@ -136,6 +149,7 @@ class PointItem(QGraphicsEllipseItem):
         self._is_new: bool = False
         self._new_label: str = ""
         self._color_mode: ColorMode = ColorMode.ERROR
+        self._default_color: QColor = COLOR_NONE
 
         # Square shown around new points; a child, so it moves and hides with the point
         self._new_marker = QGraphicsRectItem(
@@ -193,6 +207,7 @@ class PointItem(QGraphicsEllipseItem):
         is_new: bool = False,
         new_label: str = "",
         color_mode: ColorMode = ColorMode.ERROR,
+        default_color: QColor = COLOR_NONE,
     ):
         """Update all properties and reposition."""
         self._bodypart = bodypart
@@ -208,6 +223,7 @@ class PointItem(QGraphicsEllipseItem):
         self._is_new = is_new
         self._new_label = new_label
         self._color_mode = color_mode
+        self._default_color = default_color
         self.setPos(x, y)
         self._apply_style()
 
@@ -219,11 +235,11 @@ class PointItem(QGraphicsEllipseItem):
     def _apply_style(self):
         """Update visual appearance based on state and selection."""
         if self._color_mode is ColorMode.SOURCE:
-            color = COLOR_SOURCE.get(self._source, COLOR_NONE)
+            color = COLOR_SOURCE.get(self._source, self._default_color)
         elif self._color_mode is ColorMode.SCORE:
-            color = score_color(self._score)
+            color = score_color(self._score, self._default_color)
         else:
-            color = _error_color(self._error)
+            color = _error_color(self._error, self._default_color)
         self._new_marker.setVisible(
             self._is_new and self._state in ("set", "predicted", "not_visible")
         )

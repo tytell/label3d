@@ -16,14 +16,20 @@ from PySide6.QtWidgets import (
 
 from label3d.points import PointData, PointsStore
 from label3d.skeleton import Skeleton
-from label3d.widgets.point_item import ColorMode, PointItem
+from label3d.widgets.point_item import (
+    COLOR_NONE,
+    DEFAULT_LABEL_COLOR,
+    MARK_COLORS,
+    ColorMode,
+    PointItem,
+)
 
 # Edge line style
 EDGE_PEN = QPen(QColor(200, 200, 200, 160), 1.5)
 EDGE_PEN.setCosmetic(True)  # constant width regardless of zoom
 
 # Label style
-LABEL_COLOR = QColor(220, 220, 220)
+LABEL_COLOR = MARK_COLORS[DEFAULT_LABEL_COLOR][1]
 
 
 class SkeletonOverlay:
@@ -48,6 +54,8 @@ class SkeletonOverlay:
         self._locked: set[int] = set()
         self._show_non_selected: bool = True
         self.color_mode: ColorMode = ColorMode.ERROR
+        self.point_color: QColor = COLOR_NONE  # points with no other color
+        self.label_color: QColor = LABEL_COLOR
 
     @property
     def show_non_selected(self) -> bool:
@@ -136,11 +144,13 @@ class SkeletonOverlay:
                     is_new=latest_sync is not None and pt.sync == latest_sync,
                     new_label=new_label,
                     color_mode=self.color_mode,
+                    default_color=self.point_color,
                 )
 
                 # Node name label
                 label = self._get_or_create_label(key, bp)
                 label.setPos(x + 10, y - 5)
+                label.setBrush(self.label_color)
                 label.setVisible(item.isVisible())
 
         # Hide unused point items
@@ -204,7 +214,6 @@ class SkeletonOverlay:
     def _get_or_create_label(self, key: tuple[int, str], text: str) -> QGraphicsSimpleTextItem:
         if key not in self._label_items:
             item = QGraphicsSimpleTextItem(text)
-            item.setBrush(LABEL_COLOR)
             font = item.font()
             font.setPointSize(9)
             item.setFont(font)

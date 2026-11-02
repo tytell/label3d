@@ -113,7 +113,8 @@ class PointLegend(QWidget):
 
     Shows shapes (point state), the colors for the current View > Color points
     by mode, the new/selected marks, and the frame-slider ticks.
-    set_color_mode() swaps the color section.
+    set_color_mode() swaps the color section; set_point_color() recolors the
+    entries for points with no error or score.
     """
 
     def __init__(self, parent=None):
@@ -129,6 +130,7 @@ class PointLegend(QWidget):
         layout.addWidget(header)
 
         self._sections: dict[str, QWidget] = {}
+        self._icons: dict[str, list[QLabel]] = {}
         self._color_titles: dict[ColorMode, str] = {
             ColorMode.ERROR: "Color: reprojection error",
             ColorMode.SOURCE: "Color: source",
@@ -176,6 +178,11 @@ class PointLegend(QWidget):
         for m in ColorMode:
             self._sections[m.value].setVisible(m is mode)
 
+    def set_point_color(self, color: QColor) -> None:
+        """Recolor "Not triangulated" and "No score", the last error and score entries."""
+        for mode in (ColorMode.ERROR, ColorMode.SCORE):
+            self._icons[mode.value][-1].setPixmap(point_icon("set", color))
+
     def visible_entries(self) -> list[str]:
         """Labels of the entries currently shown, in order (for tests)."""
         entries = []
@@ -197,6 +204,7 @@ class PointLegend(QWidget):
         title_label = QLabel(title)
         title_label.setStyleSheet("font-size: 11px; font-weight: 600;")
         grid.addWidget(title_label, 0, 0, 1, 2)
+        self._icons[key] = []
         for i, (pixmap, text) in enumerate(rows, start=1):
             icon = QLabel()
             icon.setPixmap(pixmap)
@@ -205,6 +213,7 @@ class PointLegend(QWidget):
             label.setObjectName("entry")
             label.setStyleSheet("font-size: 11px;")
             grid.addWidget(icon, i, 0)
+            self._icons[key].append(icon)
             grid.addWidget(label, i, 1)
         grid.setColumnStretch(1, 1)
         self._sections[key] = section
