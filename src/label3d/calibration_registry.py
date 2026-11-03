@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 REGISTRY_DIR = "calibrations"
 REFINED_DIR = "refined"
 
-METHODS = ("charuco", "refine", "align", "imported")
+METHODS = ("charuco", "refine", "imported")
 
 _TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S"
 

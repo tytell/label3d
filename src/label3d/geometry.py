@@ -7,14 +7,14 @@ Coordinates are raw pixels; undistortion is applied on the fly when needed.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 import toml
-
-from label3d.calibration_registry import CalibrationEntry, save_calibration
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -286,160 +286,197 @@ def triangulate_point(
         return None
 
 
-# -- Axis alignment ------------------------------------------------------------
+def triangulate_pick(
+    cameras: dict[str, "CameraParams"],
+    picks_2d: dict[str, tuple[float, float]],
+) -> tuple[np.ndarray, dict[str, float]] | None:
+    """triangulate_point plus each camera's reprojection error in pixels.
 
-def _arb_perp(v: np.ndarray) -> np.ndarray:
-    """Return an arbitrary unit vector perpendicular to v."""
-    v = v / np.linalg.norm(v)
-    # Pick the component of v smallest in magnitude and zero it, then cross
-    i = int(np.argmin(np.abs(v)))
-    basis = np.zeros(3)
-    basis[i] = 1.0
-    w = np.cross(v, basis)
-    return w / np.linalg.norm(w)
+    Errors are for the cameras that took part. None when triangulation fails.
+    """
+    xyz = triangulate_point(cameras, picks_2d)
+    if xyz is None:
+        return None
+    errors = {
+        cam: float(np.linalg.norm(cameras[cam].project(xyz[np.newaxis])[0] - np.asarray(xy)))
+        for cam, xy in picks_2d.items() if cam in cameras
+    }
+    return xyz, errors
+
+
+# -- Axis alignment ------------------------------------------------------------
+#
+# An alignment is a rotation R_align and an origin, both in calibration
+# coordinates, applied to the 3D points that come out of a calibration:
+#     p_aligned = R_align.T @ (p_cal - origin)
+#     p_cal     = R_align @ p_aligned + origin
+# The columns of R_align are the new x, y, z axes. The calibration itself is
+# never changed.
+
+AXES = ("x", "y", "z")
+# The axis derived from the other two by the right-hand rule: x × y = z, ...
+_RIGHT_HAND = {"z": ("x", "y"), "x": ("y", "z"), "y": ("z", "x")}
+PRIMARY_RULES = ("longest", "lowest_error")
+
+
+class AlignmentError(ValueError):
+    """The clicked points can't make an alignment."""
+
+
+@dataclass
+class AlignmentResult:
+    """An alignment and the checks shown before it is applied."""
+
+    R_align: np.ndarray                 # (3, 3), columns are the new axes
+    origin: np.ndarray                  # (3,) cm, calibration coordinates
+    primary: str                        # the axis kept exactly
+    secondary: str                      # orthogonalized against the primary
+    derived: str                        # axis from the cross product, "" if all were clicked
+    axis_angles_deg: dict[str, float] = field(default_factory=dict)  # "xy": angle between clicked axes
+    moved_deg: dict[str, float] = field(default_factory=dict)        # clicked axis -> angle to its final axis
+
+
+def axis_vector(
+    origin: np.ndarray, near: np.ndarray, far: np.ndarray | None = None
+) -> np.ndarray:
+    """One axis's direction from its clicked points.
+
+    With two points on the axis it is far − near and the origin isn't used:
+    the points are usually displaced from the origin. With one point it is
+    point − origin.
+    """
+    if far is not None:
+        return np.asarray(far, dtype=float) - np.asarray(near, dtype=float)
+    return np.asarray(near, dtype=float) - np.asarray(origin, dtype=float)
+
+
+def _angle_deg(a: np.ndarray, b: np.ndarray) -> float:
+    cos = np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+    return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
+
+
+def primary_axis_order(
+    axes: dict[str, np.ndarray],
+    errors: dict[str, float] | None = None,
+    rule: str = "longest",
+) -> list[str]:
+    """The clicked axes in Gram-Schmidt order, primary first.
+
+    rule is "longest" (longest clicked distance first), "lowest_error"
+    (smallest reprojection error first, ties broken by length) or an axis
+    name, which puts that axis first and orders the rest by length.
+    """
+    by_length = sorted(axes, key=lambda k: -float(np.linalg.norm(axes[k])))
+    if rule == "longest":
+        return by_length
+    if rule == "lowest_error":
+        if not errors or any(k not in errors for k in axes):
+            raise AlignmentError("Ordering by error needs a reprojection error for every axis.")
+        return sorted(by_length, key=lambda k: errors[k])
+    if rule in AXES:
+        if rule not in axes:
+            raise AlignmentError(
+                f"The {rule} axis comes from the cross product, so it can't be the primary axis."
+            )
+        return [rule] + [k for k in by_length if k != rule]
+    raise ValueError(f"Unknown primary axis rule: {rule}")
 
 
 def compute_axis_alignment(
     origin: np.ndarray,
-    x_vec: "np.ndarray | None",
-    y_vec: "np.ndarray | None",
-    z_vec: "np.ndarray | None",
-    flip_x: bool = False,
-    flip_y: bool = False,
-    flip_z: bool = False,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute a rotation matrix aligning NEW world axes to the calibrated world.
+    axes: dict[str, np.ndarray],
+    rule: str = "longest",
+    errors: dict[str, float] | None = None,
+    flip: Iterable[str] = (),
+) -> AlignmentResult:
+    """An orthonormal, right-handed alignment from two or three clicked axes.
 
-    At least two of x_vec, y_vec, z_vec must be non-None.
-
-    Gram-Schmidt ordering: the longest axis vector is taken as primary (its
-    direction is preserved exactly after normalisation). The next longest is
-    orthogonalised against the first. The third axis is the cross product of
-    the first two, giving a right-handed system; flip individual axes if the
-    resulting handedness is wrong.
-
-    Flips are applied to the RAW vectors before Gram-Schmidt.
-
-    Returns:
-        R_align: (3, 3) rotation matrix whose columns are [x_hat, y_hat, z_hat]
-                 expressed in the OLD (calibrated) world coordinate system.
-                 Transform: p_old = R_align @ p_new + origin
-                            p_new = R_align.T @ (p_old − origin)
-        origin:  (3,) origin in OLD world coords.
-
-    New camera params after alignment:
-        R_cam_new = R_cam_old @ R_align   (as rotation matrix)
-        t_cam_new = R_cam_old @ origin + t_cam_old
+    axes maps "x", "y", "z" to clicked direction vectors (see axis_vector);
+    flip names axes to reverse first. The primary axis (primary_axis_order)
+    is kept exactly and the secondary is orthogonalized against it
+    (Gram-Schmidt). The third always comes from the right-hand rule, so the
+    result is a rotation; a clicked third axis is only a check, and one more
+    than 90° from the derived axis means the clicks are left-handed.
     """
-    raw: dict[str, np.ndarray | None] = {
-        "x": (-x_vec if flip_x else x_vec.copy()) if x_vec is not None else None,
-        "y": (-y_vec if flip_y else y_vec.copy()) if y_vec is not None else None,
-        "z": (-z_vec if flip_z else z_vec.copy()) if z_vec is not None else None,
+    flip = set(flip)
+    raw = {
+        k: (-1.0 if k in flip else 1.0) * np.asarray(v, dtype=float)
+        for k, v in axes.items() if v is not None
     }
-    available = {k: v for k, v in raw.items() if v is not None}
-    if len(available) < 2:
-        raise ValueError("At least two axis vectors are required.")
+    unknown = set(raw) - set(AXES)
+    if unknown:
+        raise ValueError(f"Unknown axes: {', '.join(sorted(unknown))}")
+    if len(raw) < 2:
+        raise AlignmentError("At least two axes are needed.")
+    for k, v in raw.items():
+        if np.linalg.norm(v) < 1e-9:
+            raise AlignmentError(f"The {k} axis has zero length: its two points are the same.")
 
-    lengths = {k: float(np.linalg.norm(v)) for k, v in available.items()}
+    order = primary_axis_order(raw, errors, rule)
+    p, s = order[0], order[1]
+    third = next(k for k in AXES if k not in (p, s))
 
-    # GS order: longest first, then next longest
-    gs_order = sorted(available.keys(), key=lambda k: -lengths[k])
+    basis: dict[str, np.ndarray] = {p: raw[p] / np.linalg.norm(raw[p])}
+    v = raw[s] - np.dot(raw[s], basis[p]) * basis[p]
+    if np.linalg.norm(v) < 1e-6 * np.linalg.norm(raw[s]):
+        raise AlignmentError(f"The {s} axis is parallel to the {p} axis.")
+    basis[s] = v / np.linalg.norm(v)
+    a, b = _RIGHT_HAND[third]
+    basis[third] = np.cross(basis[a], basis[b])
 
-    basis: dict[str, np.ndarray] = {}
-
-    # Primary axis — just normalise
-    p = gs_order[0]
-    lp = lengths[p]
-    if lp < 1e-10:
-        raise ValueError(f"Axis '{p}' vector has zero length.")
-    basis[p] = available[p] / lp
-
-    # Secondary — orthogonalise against primary
-    s = gs_order[1]
-    v = available[s].copy()
-    v -= np.dot(v, basis[p]) * basis[p]
-    ls = float(np.linalg.norm(v))
-    if ls < 1e-10:
-        raise ValueError(f"Axis '{s}' is parallel to '{p}'.")
-    basis[s] = v / ls
-
-    # Tertiary — cross product for right-hand rule, or GS of provided vector
-    remaining = [k for k in ("x", "y", "z") if k not in basis]
-    third = remaining[0]
-
-    if third in available:
-        # Orthogonalise the user-provided third vector
-        w = available[third].copy()
-        w -= np.dot(w, basis[p]) * basis[p]
-        w -= np.dot(w, basis[s]) * basis[s]
-        lw = float(np.linalg.norm(w))
-        if lw < 1e-10:
-            # Degenerate — fall through to cross product
-            w = None
-        else:
-            basis[third] = w / lw
-            w = basis[third]
-    else:
-        w = None
-
-    if w is None:
-        # Derive from right-hand cross-product rule: x×y=z, y×z=x, z×x=y
-        _rh = {"z": ("x", "y"), "x": ("y", "z"), "y": ("z", "x")}
-        a_lbl, b_lbl = _rh[third]
-        basis[third] = np.cross(basis[a_lbl], basis[b_lbl])
-
-    R_align = np.column_stack([basis["x"], basis["y"], basis["z"]])
-    return R_align, np.asarray(origin, dtype=float)
-
-
-def apply_alignment_to_cameras(
-    cameras: dict[str, "CameraParams"],
-    R_align: np.ndarray,
-    origin: np.ndarray,
-) -> dict[str, "CameraParams"]:
-    """Return new CameraParams with extrinsics rotated to the aligned world.
-
-    For each camera:
-        R_new = R_cam @ R_align   (as matrix; stored back as Rodrigues)
-        t_new = R_cam @ origin + t_cam
-    """
-    import cv2 as _cv2
-
-    updated: dict[str, CameraParams] = {}
-    for name, cp in cameras.items():
-        R_new = cp.R @ R_align
-        rvec_new, _ = _cv2.Rodrigues(R_new)
-        tvec_new = cp.R @ origin + cp.tvec.ravel()
-
-        updated[name] = CameraParams(
-            name=cp.name,
-            matrix=cp.matrix.copy(),
-            dist=cp.dist.copy(),
-            rvec=rvec_new.ravel(),
-            tvec=tvec_new,
-            size=cp.size,
+    if third in raw and _angle_deg(raw[third], basis[third]) > 90.0:
+        raise AlignmentError(
+            "The clicked axes are left-handed: flip one axis to make a "
+            "right-handed system."
         )
-    return updated
 
+    pairs = ("xy", "yz", "zx")
+    axis_angles = {
+        pair: _angle_deg(raw[pair[0]], raw[pair[1]])
+        for pair in pairs if pair[0] in raw and pair[1] in raw
+    }
+    moved = {k: _angle_deg(raw[k], basis[k]) for k in raw}
 
-def save_aligned_calibration(
-    cameras: dict[str, "CameraParams"],
-    exp_dir: "Path",
-    R_align: np.ndarray,
-    origin: np.ndarray,
-    parent: str,
-    label: str = "align",
-) -> CalibrationEntry:
-    """Save aligned camera extrinsics as an "align" registry entry.
-
-    parent is the id of the calibration that was aligned. The rotation matrix
-    and origin go under [metadata.alignment]: CameraGroup.load() would read a
-    top-level [alignment] table as a camera.
-    """
-    return save_calibration(
-        exp_dir, build_camera_group(cameras), label, "align", parent=parent,
-        alignment={"origin": np.asarray(origin).tolist(), "R_align": np.asarray(R_align).tolist()},
+    return AlignmentResult(
+        R_align=np.column_stack([basis[k] for k in AXES]),
+        origin=np.asarray(origin, dtype=float).copy(),
+        primary=p,
+        secondary=s,
+        derived="" if third in raw else third,
+        axis_angles_deg=axis_angles,
+        moved_deg=moved,
     )
+
+
+def scale_check(
+    axes: dict[str, np.ndarray], known_lengths: dict[str, float]
+) -> dict[str, dict[str, float]]:
+    """Clicked distances against known ones on the object, per axis.
+
+    axes are the clicked vectors (axis_vector), so their lengths are the
+    distances between the clicked points. A check only; nothing is rescaled.
+    """
+    out: dict[str, dict[str, float]] = {}
+    for k, known in known_lengths.items():
+        if k not in axes or axes[k] is None or not known:
+            continue
+        measured = float(np.linalg.norm(axes[k]))
+        out[k] = {
+            "measured_cm": measured,
+            "known_cm": float(known),
+            "error_pct": 100.0 * (measured - known) / known,
+        }
+    return out
+
+
+def align_points(xyz: np.ndarray, R_align: np.ndarray, origin: np.ndarray) -> np.ndarray:
+    """(N, 3) calibration-frame points into the aligned frame. NaN stays NaN."""
+    return (np.asarray(xyz, dtype=float) - origin) @ R_align
+
+
+def unalign_points(xyz: np.ndarray, R_align: np.ndarray, origin: np.ndarray) -> np.ndarray:
+    """(N, 3) aligned points back into the calibration frame."""
+    return np.asarray(xyz, dtype=float) @ np.asarray(R_align).T + origin
 
 
 # -- Triangulation (frame-level, for labeling) ---------------------------------

@@ -2,7 +2,7 @@
 
 **Goal**: Re-orient an experiment's 3D output to a physical reference object with a clear origin and x, y, z axes. The user clicks points on the object in two or more cameras. label3d triangulates them with the active calibration and computes an **alignment**: a rotation and an origin that are applied to the 3D points coming out of the calibration. The calibration itself is not changed. Once an experiment has an alignment, every 3D point it outputs is aligned.
 
-**Status**: Deferred. Partly implemented: some geometry helpers and the `CameraPanel` pick mode exist; the UI and everything below do not.
+**Status**: In progress on branch `axis-alignment`. 16.1 (geometry) done; the `CameraPanel` pick mode exists; everything else is not started.
 
 **Builds on**: Phase 9 (calibration takes), Phase 11 (registry, `[calibration.active]` / `[calibration.triangulated_with]`), Phase 12 (refinement aligns its result back onto the start), Phase 13 (batch triangulation, export), Phase 15 (Parquet working files), Phase 20 (versions and upgrades), and 1-based frame numbers wherever the user sees or types them (`frames.py`).
 
@@ -43,21 +43,21 @@
 
 ## 16.1 Geometry (`geometry.py`)
 
-- [ ] `axis_vector(points) -> np.ndarray`: given `{"origin", "near", "far"}` triangulated points for one axis, return `far − near` if both exist, otherwise `point − origin` for the single point. The positive direction is near → far (or origin → point)
-- [ ] Rework `compute_axis_alignment(origin, axes, primary, flips)`:
+- [x] `axis_vector(points) -> np.ndarray`: given `{"origin", "near", "far"}` triangulated points for one axis, return `far − near` if both exist, otherwise `point − origin` for the single point. The positive direction is near → far (or origin → point)
+- [x] Rework `compute_axis_alignment(origin, axes, primary, flips)`:
   - `axes: dict[str, np.ndarray]` holds 2 or 3 of `x`, `y`, `z`; `primary` is the axis kept exactly; flips are applied to the raw vectors first, as now
   - Gram-Schmidt: normalize the primary axis. Orthogonalize the second axis against it; when all three are clicked, that is the next one in `primary_axis_order`. **Always** derive the third from the right-hand rule
   - When the third axis was clicked too, use it only as a check: report the angle between the clicked and derived third axis. If it is more than 90°, the picks are left-handed: raise a clear error ("flip one axis"), never return det −1
   - Return an `AlignmentResult` dataclass: `R_align`, `origin`, the primary and secondary axes, the angles between each pair of raw axes (how far from orthogonal the clicks were), and how far each axis moved in Gram-Schmidt
-- [ ] `primary_axis_order(axes, errors, rule) -> list[str]`, with `rule` one of `"longest"` (default), `"lowest_error"`, or an explicit axis name chosen by the user:
+- [x] `primary_axis_order(axes, errors, rule) -> list[str]`, with `rule` one of `"longest"` (default), `"lowest_error"`, or an explicit axis name chosen by the user:
   - `"longest"`: longest clicked distance first
   - `"lowest_error"`: smallest mean reprojection error of the axis's points first
   - An explicit axis puts that axis first, with the other order set by `"longest"`
   - A derived (cross-product) axis can't be primary
-- [ ] `triangulate_point()` also returns the per-camera reprojection error (or a new `triangulate_pick()`, if changing the return breaks `instance_init.py`)
-- [ ] `scale_check(points, known_lengths) -> dict`: for each axis with a known length, compare the measured distance with it (near–far, or origin–point for 1-point axes) and give the % difference. A check only; nothing is rescaled
-- [ ] `align_points(xyz, R_align, origin)` and `unalign_points(...)`: the transform and its inverse (see The transform), vectorized over (N, 3), NaN passed through
-- [ ] Remove `apply_alignment_to_cameras()` and `save_aligned_calibration()` (see Current state)
+- [x] `triangulate_point()` also returns the per-camera reprojection error (or a new `triangulate_pick()`, if changing the return breaks `instance_init.py`)
+- [x] `scale_check(points, known_lengths) -> dict`: for each axis with a known length, compare the measured distance with it (near–far, or origin–point for 1-point axes) and give the % difference. A check only; nothing is rescaled
+- [x] `align_points(xyz, R_align, origin)` and `unalign_points(...)`: the transform and its inverse (see The transform), vectorized over (N, 3), NaN passed through
+- [x] Remove `apply_alignment_to_cameras()` and `save_aligned_calibration()` (see Current state)
 
 ## 16.2 Alignment takes, still images and the `[alignment]` record
 
