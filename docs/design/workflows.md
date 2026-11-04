@@ -2,10 +2,10 @@
 
 ## Application Workflow
 
-The app has two top-level modes in the tab bar. Exporting is **File > Export points...** (see *Export workflow*), not a tab.
+The app has three top-level modes in the tab bar (`CALIBRATE_TAB, ALIGN_TAB, LABEL_TAB` in `main_window.py`); it opens on Label, or on Calibrate when the experiment has no active calibration. Align is greyed out without a calibration. Exporting is **File > Export points...** (see *Export workflow*), not a tab.
 
 ```
-[ 1. Calibrate ]  [ 2. Label ]
+[ Calibrate ]  [ Align ]  [ Label ]
 ```
 
 ---
@@ -132,65 +132,57 @@ result = refine(start_cgroup, p2ds, index, RefineOptions(), charuco_p2ds=corners
 save_refinement(exp_dir, result, parent_entry, "refine", selection, options, points_df)
 ```
 
-### Axis Alignment (Optional)
+### Axis Alignment (Optional, Phase 16)
 
-After calibration, the world coordinate origin and axes are defined arbitrarily by the board placement. Axis alignment lets the user re-orient to a meaningful physical reference.
+The calibration's origin and axes are wherever the charuco board was. Axis alignment re-orients an experiment's 3D output to a physical object with a clear origin and marked x, y, z axes. The plan and its decisions are in [phase_16.md](phases/phase_16.md); the user-facing steps in [user_workflow.md](../user_workflow.md#3-align-optional); files and tables in [data_model.md](data_model.md#axis-alignment-phase-16).
 
-#### When it applies
+#### What it is
 
-Separate optional step that runs **after** calibration. The result is saved as an `align` registry entry whose parent is the aligned calibration, with the rotation and origin under `[metadata.alignment]` (`geometry.save_aligned_calibration()`).
+A rotation `R_align` (columns = new axes in calibration coordinates) and an `origin` (cm), stored per experiment in `[alignment.{exp}.transform]` of `project.toml`. `p_aligned = R_align.T @ (p_cal − origin)`; `p_cal = R_align @ p_aligned + origin`. It is applied only where 3D points leave label3d (export, the hidden 3D view); `points.parquet`, triangulation, reprojection and the calibration registry stay in the calibration's frame. An alignment is current for the calibration its clicks were triangulated with and for refinements of it, and stale otherwise (`alignment_status`).
 
-#### Reference video source
+#### Axis takes
 
-Axis reference points are picked from **trial videos**, not from calibration images.
+Rows of type `axis` in `trials.csv`, with files in `calibrations/{cam}/`; often one still image per camera, read as a 1-frame video. They come from setup (`align_keywords` / `align_regex`, or a frame of a calibration take or trial via `[setup.axis_frames]`) or from **File > Add axis take...** (`axis_takes.py`, `widgets/add_axis_take_dialog.py`): files matched to cameras by name and `[camera_aliases]` and copied in, or a frame extracted to `{video stem}-axis-fr{NNNN}.png`.
 
-#### Axis Alignment UI
+#### Align tab (`widgets/axis_alignment_view.py`)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Axis Alignment                              Trial: [trial1 v]  │
-│                                              Frame: [  42  ] ◀▶ │
-├──────────────┬──────────────┬──────────────┬────────────────────┤
-│   Camera 0   │   Camera 1   │   Camera 2   │  Pick targets      │
-│  (video)     │  (video)     │  (video)     │  [Origin]          │
-│  ✦ origin    │  ✦ origin    │              │  [X near]  [X far] │
-│  → x near    │  → x near    │  → x near    │  [Y near]  [Y far] │
-│              │              │              │  [Z near]  [Z far] │
-│              │              │              │                    │
-│              │              │              │  Table:            │
-│              │              │              │  Origin  ✓         │
-│              │              │              │  X near  ✓         │
-│              │              │              │  X far   –         │
-│              │              │              │  …                 │
-│              │              │              │                    │
-│              │              │              │  Flip: [x] [y] [z] │
-│              │              │              │  [Compute]         │
-│              │              │              │  [Apply & Save]    │
-└──────────────┴──────────────┴──────────────┴────────────────────┘
+┌──────────────────────────────────────────────┬───────────────────────────┐
+│  Camera grid (own CameraGrid, FrameProvider) │ Status: alignment in use? │
+│                                              │ Axis take: [Align v] [Add take…]
+│   ✦ O    ✦ X1   ✦ Y1   ✦ Z1                  │ Frame: [ 1 ]  (videos only)│
+│   epipolar lines for the active point        │ Axes: points per axis, third axis,│
+│   after Compute: hollow reprojections and    │   primary, flip x/y/z, known lengths│
+│   x/y/z arrows from the new origin           │ Table: point · cameras · error│
+│                                              │ [Next point] [Clear clicks]│
+│                                              │ [Compute]    [Apply]       │
+│                                              │ [Recompute]                │
+│                                              │ Results (errors, angles, scale, R, origin)│
+└──────────────────────────────────────────────┴───────────────────────────┘
 ```
 
-**Pick targets** (seven buttons): Origin, X near/far, Y near/far, Z near/far. At least **Origin + two axis points** from two different axes required to compute alignment.
+- **Targets** (`alignment_picks.targets_for`): origin, then `x1` (`x2`), `y1` (`y2`), `z1` (`z2`) for 1 or 2 points per axis, leaving out the axis derived by the cross product.
+- **Clicking**: `CameraPanel` pick mode. Left-click sets the active target's click in that camera; right-click near a click (12 screen px) removes it. Once every camera of the take has a click, the next open target becomes active; Enter moves on, Esc stops picking. Each change is written to `alignment_picks.parquet` for that take and frame.
+- **Settings** are saved to `[alignment.{exp}.settings]` as they change.
+- **Compute** (`alignment.compute_alignment`): triangulates each target (`geometry.triangulate_pick`, ≥2 cameras, active calibration), builds the axes and calls `compute_axis_alignment`, then runs the scale check; missing targets are named.
+- **Apply** saves the transform and `source` (`Project.save_alignment`; the old transform goes to `history`) against the active calibration. If the 3D points come from another calibration, the main window offers to re-triangulate.
+- **Recompute** (`AxisAlignmentView.recompute`; also the status-bar link and the export dialog's **Recompute alignment**): shows the `source` take and frame with its saved clicks and computes again with the active calibration, for the user to Apply. It warns when the clicks' largest error is above both 2 × the alignment's `max_error_px` and that + 1 px.
 
-**Flip checkboxes** — negate the corresponding axis vector before Gram-Schmidt.
+#### Axes from the clicks (`geometry.compute_axis_alignment`)
 
-#### Gram-Schmidt algorithm
+1. Each clicked axis is `near − origin` (1 point per axis) or `far − near` (2 points per axis; the origin isn't used for direction). Flipped axes are negated.
+2. The primary axis (rule `longest`, `lowest_error`, or a named axis; a derived axis can't be primary) is kept exactly. The secondary is the next axis in the same order (by length for an explicit primary), made perpendicular to it by Gram-Schmidt.
+3. The third axis always comes from the right-hand rule (x × y = z, y × z = x, z × x = y), so det R = +1. With three clicked axes, a clicked third axis more than 90° from the derived one means left-handed clicks and raises `AlignmentError`; so do parallel axes and fewer than two axes.
+4. The result reports the angles between the clicked axes and how far each axis moved.
 
-1. Triangulate each clicked target via DLT.
-2. Compute three raw axis vectors from triangulated points.
-3. Negate any vectors whose flip checkbox is checked.
-4. Rank by length: longest = primary, next = secondary, third derived.
-5. Orthogonalize via Gram-Schmidt: `a_hat`, `b_hat = normalize(secondary - proj)`, `c_hat = a_hat × b_hat`
-6. Re-assign `a_hat, b_hat, c_hat` back to `x_hat, y_hat, z_hat` per user's x/y/z labels.
-7. Build `R_align` as `[x_hat | y_hat | z_hat]` (columns are basis vectors in old-world space).
+#### Output
 
-#### Transform convention
-
-- New → old: `p_old = R_align @ p_new + origin`
-- Old → new: `p_new = R_align.T @ (p_old − origin)`
+- Export writes 3D columns in the aligned frame and records each alignment in the Parquet metadata `label3d.alignment`. A stale alignment blocks the experiment's 3D columns: the dialog offers Recompute alignment or Export 2D only, and `label3d-export` exits 1 unless `--no-3d`.
+- The status bar shows "Alignment is out of date; *recompute*" beside the stale-triangulation warning.
 
 ---
 
-## Labeling Workflow (Step 2)
+## Labeling Workflow
 
 ### Setup
 
@@ -406,9 +398,9 @@ After every SLEAP read that brings in points, a summary dialog lists new SLEAP l
 
 ---
 
-## Export Workflow (Step 3)
+## Export Workflow
 
-The user-facing steps and the column reference are in [user_workflow.md](../user_workflow.md#7-export). Code: `export.py` (no Qt), `widgets/export_dialog.py`, `workers/export_worker.py`, `export_cli.py`.
+The user-facing steps and the column reference are in [user_workflow.md](../user_workflow.md#8-export). Code: `export.py` (no Qt), `widgets/export_dialog.py`, `workers/export_worker.py`, `export_cli.py`.
 
 ### File > Export points...
 
@@ -417,18 +409,19 @@ The user-facing steps and the column reference are in [user_workflow.md](../user
 **Dialog** (`ExportDialog`): experiment checklist (all checked), **Include predictions** (on), **Only points with 3D** (off), **Format** (Parquet or CSV), **Layout** (wide or long), output path (default `exports/points_{YYYYmmdd-HHMMSS}.parquet`; changing the format changes the extension). There is no score threshold: every point is triangulated and exported whatever its score, with its `score` column.
 
 **On Export:**
-1. `uncalibrated_experiments`: if any checked experiment has no active calibration, a warning lists them. **Export anyway** exports only their 2D columns; **Cancel** returns to the dialog.
-2. `ExportWorker` (background): if the SLP mapping is complete (the condition that enables Sync), `pending_slp_changes` reads the mapped files like Sync (`read_slp_for_sync` + `compute_merge`). Any new or changed points, new scores or conflicts → a warning listing them per experiment; nothing is written.
-3. Otherwise `export_points` writes the file, then `project.write_slp_files()` (the write half of a Sync; no sync id is recorded).
-4. A summary (`format_summary`): rows written, camera points per experiment by state/source, 2D-only experiments, SLP files written.
+1. `stale_alignments`: if any checked experiment's axis alignment is stale (Phase 16), a warning lists them. **Recompute alignment** closes the dialog (`recompute_requested`) and the main window opens the Align tab and recomputes; **Export 2D only** puts them in `ExportOptions.two_d_only`, whose 3D and reprojection columns are left blank; **Cancel** returns to the dialog.
+2. `uncalibrated_experiments`: if any checked experiment has no active calibration, a warning lists them. **Export anyway** exports only their 2D columns; **Cancel** returns to the dialog.
+3. `ExportWorker` (background): if the SLP mapping is complete (the condition that enables Sync), `pending_slp_changes` reads the mapped files like Sync (`read_slp_for_sync` + `compute_merge`). Any new or changed points, new scores or conflicts → a warning listing them per experiment; nothing is written.
+4. Otherwise `export_points` writes the file (3D aligned for experiments with an alignment; Parquet gets the alignments in its metadata), then `project.write_slp_files()` (the write half of a Sync; no sync id is recorded).
+5. A summary (`format_summary`): rows written, camera points per experiment by state/source, 2D-only experiments, aligned experiments, SLP files written.
 
 ### `uv run label3d-export`
 
 ```
-uv run label3d-export <project> [-o out] [--format parquet|csv] [--layout wide|long] [--experiments a,b] [--no-predictions] [--only-3d] [--no-slp]
+uv run label3d-export <project> [-o out] [--format parquet|csv] [--layout wide|long] [--experiments a,b] [--no-predictions] [--only-3d] [--no-slp] [--no-3d]
 ```
 
-The format sets the extension: `-o` gets it if it has another (`with_format_suffix`). Same checks, without asking: stale experiments or pending SLP changes → message on stderr, exit 1, nothing written; experiments without a calibration → warning, 2D only. `--no-slp` skips the SLP check and write. It doesn't triangulate. It loads the project with `Project.load`, so the videos must be reachable.
+The format sets the extension: `-o` gets it if it has another (`with_format_suffix`). Same checks, without asking: stale experiments, stale alignments or pending SLP changes → message on stderr, exit 1, nothing written; `--no-3d` exports every selected experiment 2D only and skips the stale checks; experiments without a calibration → warning, 2D only. `--no-slp` skips the SLP check and write. It doesn't triangulate. It loads the project with `Project.load`, so the videos must be reachable.
 
 ### Export file
 
@@ -499,4 +492,5 @@ The full user-facing guide is [user_workflow.md](../user_workflow.md).
 
 - `pyqtgraph.opengl.GLViewWidget` panel in resizable splitter column
 - Points colored by reprojection error; skeleton edges; camera frustums (toggled independently)
+- Drawn in the experiment's axis alignment when it has one (`View3D.set_alignment`, set by `LabelView.reload_alignment`)
 - Falls back gracefully if OpenGL unavailable

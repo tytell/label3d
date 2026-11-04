@@ -6,10 +6,11 @@ This guide walks through a label3d project from start to finish. You label point
 
 1. Set up a project.
 2. Calibrate the cameras.
-3. Label points in label3d, then sync them to the SLEAP files.
-4. Train a model and run inference in SLEAP.
-5. Bring the predictions back into label3d, review them, correct or add labels, and sync again. Repeat steps 4–5 until the model is good enough.
-6. Run the final model on every frame, then triangulate and export.
+3. Optionally, align the 3D points to an object with marked axes.
+4. Label points in label3d, then sync them to the SLEAP files.
+5. Train a model and run inference in SLEAP.
+6. Bring the predictions back into label3d, review them, correct or add labels, and sync again. Repeat steps 5–6 until the model is good enough.
+7. Run the final model on every frame, then triangulate and export.
 
 label3d keeps your labels in each experiment's `points.parquet`. The `.slp` files in the project's `slp/` folder are copies of those labels that SLEAP can read. **Sync with Sleap** keeps the two in step.
 
@@ -68,7 +69,50 @@ Once you have points labelled in several cameras, they can improve the calibrati
 
 The details of every option are in [workflows.md](design/workflows.md#refining-with-labelled-points).
 
-## 3. Label
+## 3. Align (optional)
+
+The calibration puts the origin and axes wherever the charuco board happened to be. To get 3D points in a frame that means something (a corner of the tank, with z up, say), record an object with a clear origin and marked x, y and z axes, and align to it on the **Align** tab. The tab is greyed out until the experiment has a calibration.
+
+The alignment is a rotation and a shift applied to the 3D points as they leave label3d. It never changes the calibration or the points file, so you can align, re-align or recompute at any time without re-triangulating. Once an experiment has an alignment, every 3D point it exports is aligned; un-aligned 3D points are never exported.
+
+### Axis takes
+
+The object's recording is an **axis take**: usually one still image per camera, or a short video. Axis takes are found at setup by an align keyword in their file names ([setup_from_slp.md](setup_from_slp.md#axis-takes)), or added later with **File > Add axis take...** or **Add take…** on the Align tab:
+
+- **Files:** choose the images or videos; each is matched to a camera by its name, using the camera aliases. They are copied into the project.
+- **Frame:** when the object is in a calibration take or a trial, choose it and a frame. label3d saves that frame of each camera's video as a still image named after the video and the frame, e.g. `cam1_PreCal-axis-fr0001.png`.
+
+Axis takes are listed in `trials.csv` with type `axis`.
+
+### Clicking the points
+
+Pick the take (and, for a video, the frame), then choose how the axes are marked:
+
+- **1 point per axis** (4 points): the origin, plus one point on each axis.
+- **2 points per axis** (7 points): the origin, plus two points on each axis, near and far. The axis runs from the near point to the far one; neither has to be on a line through the origin.
+- **Third axis:** **Clicked**, or one axis from the cross product of the other two (3 or 5 points), chosen so that the axes are right-handed.
+
+Click each point in at least two cameras; more cameras give a better point. The table shows which point is next and how many cameras have it. Once every camera has a click, the next point becomes active; **Enter** moves on sooner. After the first camera, epipolar lines show where the point should be in the others. Right-click a click to remove it, and press **Esc** to stop clicking so you can pan and zoom. Clicks are saved as you make them.
+
+Options:
+
+- **Primary axis:** the clicked axes are never exactly perpendicular, so one is kept exactly and the others are adjusted to it. **Longest** (the default) keeps the longest clicked axis, **Lowest error** the one whose points fit the calibration best; or choose one.
+- **Flip:** reverses an axis, for an object whose marked direction is the opposite of the one you want.
+- **Known length:** the distance between an axis's two points (from the origin, with one point per axis), if you know it. It checks the calibration's scale; nothing is rescaled.
+
+### Compute and Apply
+
+**Compute** triangulates the clicks and draws the new axes on every camera, with hollow markers where the triangulated points land. The results list each point's reprojection error per camera, the angles between the clicked axes and how far each was moved to make them perpendicular, the scale check (`!` when it is off by more than 2%), and how much the alignment differs from the one in use. Check that the axes sit on the object, then click **Apply**.
+
+Apply saves the alignment for the experiment. If the 3D points come from another calibration than the active one, label3d offers to re-triangulate them.
+
+### Re-aligning and recomputing
+
+To re-align, click again on the same or another take and **Apply**; the earlier alignment is kept in the history in `project.toml`.
+
+An alignment belongs to the calibration its clicks were triangulated with, and to refinements of it. When the 3D points come from another calibration, for example after a new charuco solve and re-triangulation, the alignment is **out of date**: the status bar says **Alignment is out of date; recompute**, and export won't write that experiment's 3D points. Click **recompute**, or **Recompute** on the Align tab: it goes back to the take and frame the alignment was clicked on and computes it again from the saved clicks with the active calibration. Check the result and **Apply**. If the clicks fit the new calibration much worse than before, the results say so; click the points again.
+
+## 4. Label
 
 In the **Label** tab:
 
@@ -81,7 +125,7 @@ In the **Label** tab:
 
 When you've labelled a set of frames, choose **File > Sync with Sleap** (`Ctrl+S`). This writes your labels into the `.slp` files.
 
-## 4. Train and run inference in SLEAP
+## 5. Train and run inference in SLEAP
 
 Use the `.slp` files in the project's `slp/` folder. There are two ways to train and predict.
 
@@ -96,9 +140,9 @@ The predictions are now in the file label3d syncs with. label3d reads them the n
 1. Train with `sleap-nn train` (see the SLEAP documentation for the training configuration).
 2. Predict with `sleap-nn track -i <labels .slp or video> -m <model folder>`. Run `sleap-nn track --help` for the options, including where to write the output.
 
-The command line writes predictions to a **separate** `.slp` file, not into the files in `slp/`. Bring them in with **File > Import predictions...** (step 5). You can select several files at once; they don't need to be in the project folder.
+The command line writes predictions to a **separate** `.slp` file, not into the files in `slp/`. Bring them in with **File > Import predictions...** (step 6). You can select several files at once; they don't need to be in the project folder.
 
-## 5. Review the predictions
+## 6. Review the predictions
 
 ### What happens when predictions come in
 
@@ -133,9 +177,9 @@ If a label you made in label3d was also changed in SLEAP, label3d asks which ver
 - **Accept a point that's already right:** select it and press `A`. Press `Shift+A` to accept every point in the frame. Accepting only clears the new mark; a prediction stays a prediction.
 - **Add labels where the model fails.** These frames are the most useful ones for the next round of training.
 
-When you're done, **Sync with Sleap** again and go back to step 4.
+When you're done, **Sync with Sleap** again and go back to step 5.
 
-## 6. Final pass
+## 7. Final pass
 
 Once the model is good enough:
 
@@ -145,7 +189,7 @@ Once the model is good enough:
 4. Choose **Instances > Triangulate all experiments...**. This triangulates every point of every experiment with its active calibration, including points brought into experiments you weren't viewing.
 5. Choose **File > Export points...** (below).
 
-## 7. Export
+## 8. Export
 
 **File > Export points...** writes every point, from all experiments, to one file, as Parquet or CSV. It also writes the current points into the SLP files, as **Sync** does.
 
@@ -165,7 +209,7 @@ When you click **Export**:
 - **Experiments whose axis alignment is out of date** (it was computed with another calibration than the 3D points): label3d lists them and offers **Recompute alignment**, which opens the Align tab, or **Export 2D only**, which leaves their 3D and reprojection columns empty. Their 3D points are never exported un-aligned.
 - **Experiments without an active calibration:** label3d warns you and, if you choose **Export anyway**, exports only their 2D points.
 - **New points in the SLP files:** if the SLP files have points that label3d doesn't have yet (for example, predictions saved from the SLEAP GUI), label3d says so and exports nothing. Run **Sync with Sleap**, triangulate, then export again.
-- Otherwise it writes the file and the SLP files, then shows how many rows it wrote and the points per experiment by state and source.
+- Otherwise it writes the file and the SLP files, then shows how many rows it wrote, the points per experiment by state and source, and which experiments' 3D points are aligned.
 
 ### From the command line
 

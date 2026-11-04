@@ -2,7 +2,7 @@
 
 **Goal**: Re-orient an experiment's 3D output to a physical reference object with a clear origin and x, y, z axes. The user clicks points on the object in two or more cameras. label3d triangulates them with the active calibration and computes an **alignment**: a rotation and an origin that are applied to the 3D points coming out of the calibration. The calibration itself is not changed. Once an experiment has an alignment, every 3D point it outputs is aligned.
 
-**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup), 16.4 (adding axis takes later), 16.5 (saved clicks, computing from them), 16.6 (the Align tab), 16.7 (aligned output) and 16.8 (recomputing) done; 16.10 (remaining tests, synthetic axis object) and 16.11 (docs) are left.
+**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup), 16.4 (adding axis takes later), 16.5 (saved clicks, computing from them), 16.6 (the Align tab), 16.7 (aligned output), 16.8 (recomputing) and 16.11 (docs) done; awaiting a check in the app. Left: the rest of 16.10 (remaining tests, synthetic axis object), deferred for now.
 
 **Builds on**: Phase 9 (calibration takes), Phase 11 (registry, `[calibration.active]` / `[calibration.triangulated_with]`), Phase 12 (refinement aligns its result back onto the start), Phase 13 (batch triangulation, export), Phase 15 (Parquet working files), Phase 20 (versions and upgrades), and 1-based frame numbers wherever the user sees or types them (`frames.py`).
 
@@ -232,7 +232,7 @@ Once an experiment has an alignment, un-aligned 3D points are never output.
 
 ## 16.11 Docs
 
-- [ ] `docs/user_workflow.md`: the Align step between Calibrate and Label; adding an axis take; re-aligning and recomputing; 3D export columns are aligned
-- [ ] `docs/design/data_model.md`: axis takes, picks file, `[alignment]` and `[camera_aliases]` tables, where the transform applies
-- [ ] `docs/design/project_setup_from_sleap.md`: alignment files are found beside the `.slp` files like calibration videos
-- [ ] `docs/design/workflows.md`, `DESIGN.md`, `CLAUDE.md` (workflow steps, data files, phase status)
+- [x] `docs/user_workflow.md`: the Align step between Calibrate and Label (section 3; later sections renumbered, links updated); adding an axis take; re-aligning and recomputing; 3D export columns are aligned (16.7)
+- [x] `docs/design/data_model.md`: axis takes, picks file, `[alignment]` and `[camera_aliases]` tables, where the transform applies, Parquet export metadata; the old `align` registry entry and `[metadata.alignment]` removed
+- [x] `docs/design/project_setup_from_sleap.md`: alignment files are found beside the `.slp` files like calibration videos (done in 16.3)
+- [x] `docs/design/workflows.md` (tab bar, the Axis Alignment section rewritten for the Align tab, export checks, 3D view), `docs/design/architecture.md` (modules), `DESIGN.md` (purpose, phase status table brought up to date), `CLAUDE.md` (workflow steps, data files, phase status)

@@ -5,7 +5,8 @@
 A cross-platform desktop app for:
 1. **Calibrating** multi-camera rigs using Charuco boards (via aniposelib)
 2. **Labeling** 3D points by clicking corresponding points across synchronized calibrated video streams
-3. **Importing / exporting** 2D pose data from external trackers (SLEAP, etc.) and producing triangulated 3D coordinates
+3. **Aligning** the 3D output to an object with marked axes (optional)
+4. **Importing / exporting** 2D pose data from external trackers (SLEAP, etc.) and producing triangulated 3D coordinates
 
 ---
 
@@ -28,7 +29,7 @@ A cross-platform desktop app for:
 | [docs/design/phases/phase_13.md](docs/design/phases/phase_13.md) | Phase 13 — Batch triangulation and export |
 | [docs/design/phases/phase_14.md](docs/design/phases/phase_14.md) | Phase 14 — Per-camera skeletons (implemented; to be checked in the app) |
 | [docs/design/phases/phase_15.md](docs/design/phases/phase_15.md) | Phase 15 — Parquet working files (implemented; to be checked in the app) |
-| [docs/design/phases/phase_16.md](docs/design/phases/phase_16.md) | Phase 16 — Axis alignment (deferred; partially implemented) |
+| [docs/design/phases/phase_16.md](docs/design/phases/phase_16.md) | Phase 16 — Axis alignment (implemented; to be checked in the app) |
 | [docs/design/phases/phase_17_18.md](docs/design/phases/phase_17_18.md) | Phases 17–18: Export to other pose formats, Polish and robustness (deferred) |
 | [docs/design/phases/phase_19.md](docs/design/phases/phase_19.md) | Phase 19 — Multi-instance support and cross-camera matching (deferred) |
 | [docs/design/phases/phase_20.md](docs/design/phases/phase_20.md) | Phase 20 — Project versions and upgrades (complete) |
@@ -52,8 +53,10 @@ A cross-platform desktop app for:
 | 10 | Point provenance and reviewing new points | ✓ Complete |
 | 11 | Calibration registry and switching | ✓ Complete |
 | 12 | Calibration refinement with labelled points | ✓ Complete |
-| 13 | Batch triangulation and export | In progress — code, tests and docs done; awaiting review in the app |
-| 14 | Axis alignment | Deferred; partial — geometry helpers done, UI widget not created |
-| 15 | Export to other pose formats | Deferred |
-| 16 | Polish and robustness | Deferred |
-| 17 | Multi-instance support | Deferred |
+| 13 | Batch triangulation and export | Implemented; awaiting review in the app |
+| 14 | Per-camera skeletons | Implemented; awaiting review in the app |
+| 15 | Parquet working files | Implemented; awaiting review in the app |
+| 16 | Axis alignment | Implemented; awaiting review in the app (synthetic axis object deferred) |
+| 17–18 | Export to other pose formats; polish and robustness | Deferred |
+| 19 | Multi-instance support | Deferred |
+| 20 | Project versions and upgrades | ✓ Complete |

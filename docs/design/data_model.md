@@ -42,10 +42,11 @@ Project
 └── experiments/
     ├── PS18/                # one subfolder per experiment
     │   ├── calibrations/    # everything about calibrating this experiment
-    │   │   ├── cam0/        # take videos + corners.parquet for cam0
+    │   │   ├── cam0/        # calibration and axis take files + corners.parquet for cam0
     │   │   ├── cam1/
     │   │   ├── *.toml       # registry: every solution, one .toml each
-    │   │   └── refined/     # refinements (Phase 12), each with a _points.parquet
+    │   │   ├── refined/     # refinements (Phase 12), each with a _points.parquet
+    │   │   └── alignment_picks.parquet   # axis alignment clicks (Phase 16)
     │   ├── videos/          # video files for this experiment's trials
     │   └── points.parquet   # 2D + 3D labels for this experiment's trials
     ├── PS19/
@@ -60,6 +61,7 @@ Project
 - `.slp` files live in the top-level `slp/` folder, each in a folder of its own (`slp/{stem}/{name}.slp`) so that SLEAP's `models/` folder for it can sit beside it; `Project.slp_files()` finds them recursively, leaving out `models/` (SLEAP writes each model's training labels there as `.slp` files) and `backup/`. Older projects with the files directly in `slp/` still load. Sync rewrites only what the project covers: the labeled frames of trial videos inside each trial's `_start`–`_end`. Videos that are in no trial, with their frames and suggestions, and frames of trial videos outside every trial's range, are kept untouched, as are all skeletons, tracks, sessions, ROIs and masks that don't depend on rewritten frames (`_merge_existing` in `sleap_adapter.py`). The adapter receives the full global `trials.csv` and resolves which `(experiment, trial, camera)` each file belongs to by matching video basenames across all rows.
 - The points row index is `(experiment, trial, frame, instance, bodypart)` — the `experiment` level is constant within a single file but allows cross-experiment aggregation via plain `pd.concat`.
 - The calibration in use for each experiment is the registry entry named in `[calibration.active]` of `project.toml`; the geometry stack (triangulation, epipolar lines) always sees exactly one `CameraGroup` per experiment.
+- An experiment's axis alignment (Phase 16) is a rotation and origin in `[alignment]` of `project.toml`, applied to 3D points only as they leave label3d; see [Axis alignment](#axis-alignment-phase-16).
 
 ### Project configuration (`project.toml`)
 
@@ -94,6 +96,12 @@ PS18 = "charuco-all_20260901-101500"
 
 [calibration.triangulated_with]   # experiment -> id the 3D points were computed with
 PS18 = "charuco-all_20260901-101500"
+
+[camera_aliases]             # other names each camera has in file names (setup, Add axis take)
+LateralOrtho = ["Lateral"]
+
+[alignment.PS18.transform]   # axis alignment (Phase 16); see Axis alignment below
+# …
 ```
 
 `[label3d]` and the comment line are written by `version.write_project_toml`, which every writer of `project.toml` goes through; the comment is put back each time, since the `toml` package drops comments. A project without `project_version` was made before 0.3.0. `Project.load()` refuses a project whose `project_version` is newer than `version.LAYOUT_VERSION`. Versions and upgrades are in [phase_20.md](phases/phase_20.md).
@@ -108,7 +116,7 @@ The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init_
 
 | Path | Contents |
 |---|---|
-| `experiments/{exp}/calibrations/{label}_{YYYYmmdd-HHMMSS}.toml` | one registry entry: a `charuco`, `imported` or `align` solution |
+| `experiments/{exp}/calibrations/{label}_{YYYYmmdd-HHMMSS}.toml` | one registry entry: a `charuco` or `imported` solution |
 | `experiments/{exp}/calibrations/refined/{id}.toml` | a `refine` entry (Phase 12) |
 | `experiments/{exp}/calibrations/refined/{id}_points.parquet` | the exact points that went into that refinement |
 | `experiments/{exp}/calibrations/{cam}/corners.parquet` | every take's detected corners for one camera |
@@ -120,8 +128,8 @@ The `[charuco]` section maps directly to `aniposelib.boards.CharucoBoard.__init_
 id = "charuco-all_20261005-142210"
 label = "charuco-all"
 created = "2026-10-05T14:22:10"
-method = "charuco"                    # charuco | refine | align | imported
-parent = ""                           # id this one was derived from (refine, align)
+method = "charuco"                    # charuco | refine | imported
+parent = ""                           # id this one was derived from (refine)
 charuco_takes = ["PreCal", "PostCal"]
 source_path = "…"                     # imported only: the file it came from
 
@@ -136,8 +144,6 @@ detected = { PreCal = "2026-10-05T14:20:03", PostCal = "2026-10-05T14:20:03" }
 charuco = 0.41
 spread_rotation_deg = 0.02
 spread_baseline_pct = 0.1
-
-[metadata.alignment]                  # align only (Phase 16); see the schema below
 ```
 
 A `refine` entry (Phase 12) has `parent` set to the entry it started from and `charuco_takes` copied from it, plus:
@@ -210,7 +216,61 @@ spread_baseline_pct = 0.05
 
 **Calibration takes** (`type = calibration`): a take is one synchronized calibration recording, typically one before and one after the trials. The `trial` column holds the take name (from the calibration keyword, e.g. `PreCal`). Takes reuse the camera / `_start` / `_end` triples, so a take can be trimmed to the segment where the board is visible. Take videos resolve relative to `experiments/{experiment}/calibrations/{camera}/`; trial videos relative to `experiments/{experiment}/videos/`. Takes are excluded from `Project.trials` and from SLP cell matching.
 
-**Axis takes** (`type = axis`, Phase 16): a recording of an object with marked axes, often one still image per camera, used for axis alignment ([phase_16.md](phases/phase_16.md)). Their files live in `calibrations/{camera}/` like calibration takes; `Project.axis_takes` lists them, `Project.get_take` finds either kind.
+**Axis takes** (`type = axis`, Phase 16): a recording of an object with marked axes, often one still image per camera, used for axis alignment ([phase_16.md](phases/phase_16.md)). Their files live in `calibrations/{camera}/` like calibration takes; `Project.axis_takes` lists them, `Project.get_take` finds either kind. A still image is read as a 1-frame video (`video.VideoReader`, `video.frame_count`), so its `_end` is 1. An axis take extracted from a frame of a calibration take or trial is a still per camera named `{video stem}-axis-fr{NNNN}.png` (the frame within that video, 1-based); `[alignment.{exp}.extracted]` records where it came from. Axis takes are left out of charuco detection, `Project.trials` and SLP cell matching.
+
+### Axis alignment (Phase 16)
+
+An alignment is `R_align` (3×3, columns = the new x, y, z axes in calibration coordinates) and `origin` (cm, calibration coordinates): `p_aligned = R_align.T @ (p_cal − origin)`, `p_cal = R_align @ p_aligned + origin` (`geometry.align_points`, `unalign_points`). It is rigid, so distances and reprojection errors don't change.
+
+**Where it applies.** `points.parquet` keeps 3D points in the calibration's frame, and triangulation, reprojection, epipolar lines and refinement all work there. The alignment is applied only where 3D points leave label3d or are shown: export (`export.experiment_rows`, both layouts and `label3d-export`) and the hidden 3D view (`View3D.set_alignment`). Changing it never needs re-triangulation. The calibration registry is never changed.
+
+**Current or stale** (`alignment.alignment_status`, `Project.alignment_status`): an alignment records the registry entry its clicks were triangulated with. It is current when the 3D points (`[calibration.triangulated_with]`, or the active calibration before anything is triangulated) come from that entry or from a `refine` entry descended from it, since refinement aligns its result back onto its start. Otherwise it is stale: export refuses that experiment's 3D columns (it can be exported 2D only) until the alignment is recomputed from the saved clicks.
+
+**`project.toml`**: one `[alignment.{experiment}]` table per experiment (`alignment.py`). Frames are **1-based**, as in `trials.csv`, and 0-based in memory.
+
+```toml
+[alignment.PS18.settings]          # last used on the Align tab
+points_per_axis = 2                # 1 or 2
+cross_product = ""                 # "", "x", "y" or "z": the axis that is derived
+primary = "longest"                # "longest", "lowest_error", "x", "y", "z"
+flip = ["z"]                       # axes to reverse
+known_length_cm = { x = 10.0 }     # optional, per axis
+
+[alignment.PS18.transform]         # the alignment in use; written by Apply
+R = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]   # rows of R_align
+origin = [12.3, -4.5, 0.8]         # cm, calibration coordinates
+calibration = "charuco-all_20261102-093000"   # entry the clicks were triangulated with
+created = 2026-11-03T14:15:00
+primary = "x"                      # the axis kept exactly
+derived = ""                       # the axis from the cross product, if any
+axis_angles_deg = { xy = 89.6, yz = 90.3, zx = 90.1 }   # between the clicked axes
+max_error_px = 0.8                 # worst reprojection error of the clicks
+scale_error_pct = { x = 0.4 }      # where a known length was given
+
+[alignment.PS18.source]            # the frame the alignment was clicked on
+take = "Align"                     # an axis take
+type = "axis"
+frame = 1                          # synchronized frame
+[alignment.PS18.source.videos]     # each camera's file and frame within it (cam_start + frame)
+cam0 = { file = "PS18_Align_cam0.png", frame = 1 }
+
+[[alignment.PS18.history]]         # earlier transforms, newest last; same keys as transform
+
+[alignment.PS18.extracted.Align]   # an axis take extracted from a frame of a take or trial
+take = "PreCal"
+type = "calibration"               # or "trial"
+frame = 1
+[alignment.PS18.extracted.Align.videos]
+cam0 = { file = "PS18_PreCal_cam0.mp4", frame = 1 }
+```
+
+**Clicks**: `experiments/{exp}/calibrations/alignment_picks.parquet` (`alignment_picks.py`), one row per (take, frame, target, camera); columns `take, frame, target, camera, x, y`. `frame` is the 0-based synchronized frame, `target` one of `origin, x1, x2, y1, y2, z1, z2` (`x1` is the only point with one point per axis, or the near one with two), `x, y` raw pixels. They are written as the user clicks, and Recompute reads them back to rebuild the alignment with another calibration.
+
+**In exports**: a Parquet export records each experiment's alignment in its key-value metadata under `label3d.alignment`: JSON `{experiment: {"R": rows, "origin": [...], "calibration": id}}` (`export.read_alignment_metadata`). CSV gets nothing extra.
+
+**Camera aliases**: `[camera_aliases]` maps a camera to the other names it has in file names. Setup writes it from `SetupConfig.camera_aliases`; **Add axis take** uses it to match files to cameras (`Project.camera_aliases`).
+
+These tables and the clicks file are optional, so projects without them are valid as they are; no upgrade step adds them.
 
 ### Primary storage: `points.parquet`
 
@@ -375,15 +435,6 @@ translation = [tx, ty, tz]
 
 [metadata]
 # Registry provenance (see Calibration outputs); ignored by the geometry code
-
-[metadata.alignment]
-# align entries only; written by the axis alignment step
-# origin: 3D point used as origin in the new coordinate system, in old world coords (cm)
-origin = [ox, oy, oz]
-# R_align: 3×3 rotation matrix whose columns are [x_hat, y_hat, z_hat] in OLD world space
-# Transform new→old: p_old = R_align @ p_new + origin
-# Transform old→new: p_new = R_align.T @ (p_old − origin)
-R_align = [[r00, r01, r02], [r10, r11, r12], [r20, r21, r22]]
 ```
 
 `CameraGroup.load()` and `label3d`'s `load_cameras()` read every top-level table except `metadata` as a camera, so all other data must go under `[metadata]`.

@@ -22,9 +22,13 @@ label3d/
 ├── calibration_registry.py      # ✓ Calibration registry: save/list/load/rename/delete solutions (Phase 11)
 ├── calibration_solve.py         # ✓ Charuco solves without Qt: takes, ranges, repeated calibrate_rows, metadata
 ├── calibration_refine.py        # ✓ Refinement with labelled points: selection, Stage 2, alignment, points record (Phase 12)
-├── video.py                     # ✓ VideoReader: cv2.VideoCapture wrapper, frame cache
+├── video.py                     # ✓ VideoReader: cv2.VideoCapture wrapper, frame cache; still images as 1-frame videos
+├── trial_types.py               # ✓ trials.csv type column: trial / calibration / axis (Phase 16)
+├── alignment.py                 # ✓ [alignment] record, status, compute_alignment from clicks (Phase 16)
+├── alignment_picks.py           # ✓ alignment_picks.parquet: saved axis clicks (Phase 16)
+├── axis_takes.py                # ✓ Adding axis takes later: from files or a frame of a take/trial (Phase 16)
 ├── instance_init.py             # ✓ random / average / reprojected instance init strategies
-├── export.py                    # ✓ Wide-format CSV export and pre-flight checks, no Qt (Phase 13)
+├── export.py                    # ✓ Parquet/CSV export (aligned 3D) and pre-flight checks, no Qt (Phases 13, 16)
 ├── export_cli.py                # ✓ label3d-export command line tool (Phase 13)
 ├── widgets/
 │   ├── __init__.py              # ✓
@@ -40,7 +44,8 @@ label3d/
 │   ├── bodypart_list.py         # ✓ Sidebar: bodypart names, click to select
 │   ├── calibration_view.py      # ✓ Calibration mode: settings panel + camera grid
 │   ├── refine_dialog.py         # ✓ Refine with points dialog (Phase 12)
-│   ├── axis_alignment_widget.py # Phase 16: Axis alignment panel (not yet created)
+│   ├── axis_alignment_view.py   # ✓ Align tab: click axis points, Compute, Apply, Recompute (Phase 16)
+│   ├── add_axis_take_dialog.py  # ✓ File > Add axis take... (Phase 16)
 │   ├── label_view.py            # ✓ Labeling mode: grid + controls + sidebar
 │   ├── export_dialog.py         # ✓ File > Export points... options (Phase 13)
 │   └── export_view.py           # Phase 17: export to other pose formats (not yet created)
