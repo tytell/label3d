@@ -8,8 +8,8 @@
 
 ## What the user does
 
-1. Records the reference object, usually on its own: one still image or a short video per camera. The files are found at project setup by an align keyword in their names (16.3), or added later in the app (16.4). Occasionally a frame of an existing trial is used instead. `.slp` files never have the axis points; the user always clicks them.
-2. After a good calibration is active, opens the **Align** tab (between Calibrate and Label). Picks the take or trial and the frame.
+1. Records the reference object, usually on its own: one still image or a short video per camera. The files are found at project setup by an align keyword in their names (16.3), or added later in the app (16.4). Occasionally the object is in a calibration take or a trial instead: then one frame of it (the first by default) is extracted into an axis take of still images, at setup or later. `.slp` files never have the axis points; the user always clicks them.
+2. After a good calibration is active, opens the **Align** tab (between Calibrate and Label). Picks the axis take and, for a video, the frame.
 3. Clicks the reference points in at least two cameras each:
    - **4 points** (usual): origin, plus one point on each of x, y, z.
    - **7 points** (usual): origin, plus two points on each axis. The axis direction comes from its two points only (`far − near`); they are usually displaced from the origin, and the origin isn't used for direction.
@@ -86,8 +86,8 @@ An axis take is a row of type `axis` in `trials.csv` (`trial_types.py`; the `typ
   scale_error_pct = { x = 0.4 }     # where a known length was given
 
   [alignment.default.source]        # the frame the alignment was clicked on
-  take = "Align"                    # an axis take, or an ordinary trial
-  type = "axis"                     # "trial" when a trial frame was used
+  take = "Align"                    # always an axis take
+  type = "axis"
   frame = 1                         # synchronized frame, 1-based
 
   [alignment.default.source.videos] # each camera's file and frame within that file, 1-based
@@ -95,6 +95,13 @@ An axis take is a row of type `axis` in `trials.csv` (`trial_types.py`; the `typ
   cam1 = { file = "Align_cam1.png", frame = 1 }
 
   [[alignment.default.history]]     # earlier transforms, newest last; same keys as transform
+
+  [alignment.default.extracted.Align]   # an axis take extracted from a frame of a take or trial
+  take = "PreCal"                   # the calibration take or trial it came from
+  type = "calibration"              # or "trial"
+  frame = 1                         # 1-based
+  [alignment.default.extracted.Align.videos]
+  cam0 = { file = "PS18_PreCal_cam0.mp4", frame = 1 }
   ```
 
   - `transform` and `source` are written on Apply and on recompute (16.8). The one they replace is appended to `history`, so a re-alignment can be undone by hand
@@ -105,7 +112,7 @@ An axis take is a row of type `axis` in `trials.csv` (`trial_types.py`; the `typ
   - `alignment_source_for(take_or_trial, frame)` builds the `source` record, adding each camera's start offset
   - `axis_takes` and `get_take` (calibration or axis take)
 - [ ] A take name must be unique among the experiment's trials and takes; checked by setup (16.3, done) and the add-take dialog (16.4)
-- [ ] The Align tab's take list also offers the experiment's ordinary trials, for the occasional use of a trial frame. Nothing is copied for those; `source` records the trial and frame
+- [x] ~~The Align tab also offers ordinary trials~~ Dropped: a frame of a calibration take or trial is extracted into an axis take (16.3, 16.4), and the Align tab lists axis takes only. `extracted` records where it came from (`Project.extracted_axis_takes`)
 - [x] **Camera aliases**: setup writes `SetupConfig.camera_aliases` to a `[camera_aliases]` table (`LateralOrtho = ["Lateral"]`), and `Project` loads it. Projects without it have no aliases (`Project.camera_aliases`). The add-take dialog (16.4) uses it
 
 ## 16.3 Project setup (`setup_project.py`, `setup_project_cli.py`)
@@ -127,6 +134,7 @@ Axis files are found much like calibration videos. They're separate recordings w
   - A file name that clashes with another file in that folder is an error before anything moves (`_take_file_clashes`)
   - Rows go into `trials.csv` with `type = axis` and bare file names; `check_trial_videos` measures them
   - `write_project_toml` gets `camera_aliases` and writes `[camera_aliases]`
+- [x] **Axis takes from a frame** of a calibration take or trial: `[setup.axis_frames]` in a setup file (`Align = { from = "PreCal", frame = 1 }`; frame from 1, default 1), `SetupConfig.axis_frames` (0-based), and an interactive prompt. `_assign_axis_frames` finds the source in every experiment that has it; errors for a source in no experiment, a name already used, or a frame a source video lacks. `execute_setup` extracts each camera's frame as `{take}_{cam}.png` in `calibrations/{cam}/` (`video.extract_frame`) before any video is moved, writes an `axis` row, and records `[alignment.{exp}.extracted.{take}]`. Setup leaves start offsets at 0, so the video frame is the frame given
 - [x] `preview_assignment` lists axis takes per experiment, with per-camera files and whether each is an image or a video, next to the calibration takes
 - [x] CLI: both interactive routes ask for axis take keywords (`prompt_axis_takes`), with the regex fallback as for calibration; `--from-slp` takes `--align-keywords`. Setup files take `[setup] align_keywords`, `align_regex`; `config_from_toml` reads them and `save_config_toml` round-trips them. Add them to the template in `setup_project_cli.py`'s docstring
 - [x] Projects set up before this phase have no `[alignment]` or `[camera_aliases]` table and need nothing done; their takes are added later with the dialog (16.4)
@@ -140,6 +148,7 @@ Axis files are found much like calibration videos. They're separate recordings w
 - [ ] On **Add**, the files are **copied** (never moved) into `calibrations/{cam}/`. Refuse a name that clashes with a different file already there. Then:
   - add a row to `trials.csv` (`write_trials_csv`, with backup) and measure it (`check_trial_videos`)
   - reload the experiment's takes, and select the new take on the Align tab
+- [ ] Or make the take from one frame of a calibration take or trial of the experiment: pick it and a frame (from 1, default 1); each camera's frame is its start offset plus the frame. The stills are written as in setup (`video.extract_frame`, `{take}_{cam}.png`), with an `axis` row and an `[alignment.{exp}.extracted]` record. One non-GUI function does this for the dialog and is tested on its own
 - [ ] No GUI for removing a take in this phase
 
 ## 16.5 Picks working file
@@ -152,7 +161,7 @@ Axis files are found much like calibration videos. They're separate recordings w
 
 - [ ] Main window: tabs become **Calibrate | Align | Label** (stack 0, 1, 2). Fix `_on_tab_changed` and session save/restore, which assume Label is index 1, and keep starting on Label. Align is disabled with a tooltip while the experiment has no active calibration. The top bar's experiment and calibration selectors apply as on the other tabs
 - [ ] `AxisAlignmentView(QWidget)` has its own `CameraGrid` and frame provider. The Label tab's grid isn't shared, and there's no `ProjectState` coupling. It reloads on experiment switch and when the active calibration changes (`calibrations_changed`)
-- [ ] Left: take/trial combo and frame controls (the spinbox shows 1-based frames via `shown_frame` / `stored_frame`; hidden for 1-frame takes)
+- [ ] Left: axis take combo and frame controls (the spinbox shows 1-based frames via `shown_frame` / `stored_frame`; hidden for 1-frame takes)
 - [ ] Right panel:
   - Status line: no alignment / current / stale ("computed with *label*; the 3D points now come from *label*"), with **Recompute** when stale (16.8)
   - Mode: **1 point per axis** / **2 points per axis**
@@ -168,7 +177,7 @@ Axis files are found much like calibration videos. They're separate recordings w
   3. Picks are drawn as labelled markers (`O`, `X1`, `X2`, …). For the active target, epipolar lines from the other cameras' picks are shown (`EpipolarCache`)
   4. Once a target has picks in every camera that shows it, **Next** (or Enter) moves to the next target
   5. A target needs ≥ 2 cameras to be triangulated
-  6. Opening the tab on a take or trial with saved clicks shows them, so an existing alignment can be adjusted and re-applied
+  6. Opening the tab on an axis take with saved clicks shows them, so an existing alignment can be adjusted and re-applied
 - [ ] **Compute**: triangulate each target with the active calibration, then build the axes (16.1). The results area shows:
   - per-point reprojection error and cameras used
   - raw angles between the axes and how far each moved in Gram-Schmidt

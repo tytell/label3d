@@ -1,6 +1,6 @@
 """An experiment's axis alignment, as kept in project.toml (Phase 16).
 
-[alignment.{experiment}] has four parts:
+[alignment.{experiment}] has these parts:
 
     settings   what the Align tab last used
     transform  the alignment in use (absent until the first Apply): R (rows of
@@ -9,6 +9,8 @@
     source     the take or trial and frame it was clicked on, with each
                camera's file and the frame within that file
     history    earlier transforms, newest last
+    extracted  for each axis take made from a frame of a calibration take or
+               trial, that take or trial, frame and each camera's video
 
 Frame numbers in project.toml count from FRAME_BASE, as in trials.csv; in
 memory they are 0-based. The transform itself is geometry.align_points.
@@ -155,9 +157,10 @@ class Alignment:
 
 @dataclass
 class AlignmentSource:
-    """The frame an alignment was clicked on. Frames are 0-based."""
+    """A frame of a take or trial: the one an alignment was clicked on, or the
+    one an axis take was extracted from. Frames are 0-based."""
 
-    take: str                                # an axis take, or a trial
+    take: str                                # an axis take, or the take or trial extracted from
     type: str                                # its trials.csv row type
     frame: int                               # synchronized frame
     videos: dict[str, tuple[str, int]] = field(default_factory=dict)  # camera -> (file, frame in file)
@@ -205,6 +208,14 @@ def read_source(config: dict, experiment: str) -> AlignmentSource | None:
 
 def read_settings(config: dict, experiment: str) -> AlignmentSettings:
     return AlignmentSettings.from_config(_experiment_table(config, experiment).get("settings", {}))
+
+
+def read_extracted(config: dict, experiment: str) -> dict[str, AlignmentSource]:
+    """Axis takes extracted from a frame of a take or trial -> where they came from."""
+    return {
+        str(take): AlignmentSource.from_config(table)
+        for take, table in _experiment_table(config, experiment).get("extracted", {}).items()
+    }
 
 
 def read_history(config: dict, experiment: str) -> list[Alignment]:

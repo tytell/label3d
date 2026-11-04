@@ -20,6 +20,11 @@ Config file format (TOML):
     calib_regex = ""                 # alternative: regex naming each take, e.g. "cal\\d+"
     align_keywords = ["Align"]       # axis takes (videos or still images), one keyword per take
     align_regex = ""                 # alternative: regex naming each axis take
+
+    # Axis takes made from one frame of a calibration take or trial; setup
+    # extracts that frame of each camera's video as a still (frame from 1, default 1)
+    [setup.axis_frames]
+    Align = { from = "PreCal", frame = 1 }
     experiment_keywords = ["PS", "BG"]   # omit or [] for single experiment named "default";
                                          # videos naming no listed experiment are left out
     camera_aliases = { left = ["Lft"] }  # other names a camera goes by in filenames
@@ -71,9 +76,11 @@ from pathlib import Path
 
 import toml
 
+from label3d.frames import stored_frame
 from label3d.setup_project import (
     CHARUCO_DEFAULTS,
     SetupConfig,
+    axis_frames_to_setup,
     classify_files,
     classify_slp_files,
     config_from_toml,
@@ -190,6 +197,8 @@ def save_config_toml(config: SetupConfig, path: Path) -> None:
         "project": {"name": config.project_name},
     }
     setup = data["setup"]
+    if config.axis_frames:
+        setup["axis_frames"] = axis_frames_to_setup(config.axis_frames)
     if config.camera_aliases:
         setup["camera_aliases"] = config.camera_aliases
     if config.match_strategy == "keyword":
@@ -228,7 +237,18 @@ def prompt_axis_takes() -> dict:
     align_regex = ""
     if not align_keywords:
         align_regex = input("Axis take regex (blank for none): ").strip()
-    return {"align_keywords": align_keywords, "align_regex": align_regex}
+    print("  An axis take can also be one frame of a calibration take or trial;")
+    print("  setup saves that frame of each camera's video as a still image.")
+    axis_frames: dict[str, tuple[str, int]] = {}
+    while True:
+        source = input("  Calibration take or trial to take a frame from (blank when done): ").strip()
+        if not source:
+            break
+        frame = prompt_int("    Frame (numbered from 1)", 1)
+        default = "Align" if "Align" not in axis_frames else f"Align{len(axis_frames) + 1}"
+        take = input(f"    Axis take name [{default}]: ").strip() or default
+        axis_frames[take] = (source, stored_frame(frame))
+    return {"align_keywords": align_keywords, "align_regex": align_regex, "axis_frames": axis_frames}
 
 
 def prompt_trial_matching() -> dict:

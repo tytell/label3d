@@ -17,12 +17,13 @@ from aniposelib.cameras import CameraGroup
 
 from label3d import version
 from label3d.calibration_registry import REFINED_DIR, camera_dir, save_calibration
-from label3d.frames import FRAME_BASE
+from label3d.alignment import AlignmentSource
+from label3d.frames import FRAME_BASE, shown_frame
 from label3d.project import Project, check_trial_videos, write_trials_csv
 from label3d.skeleton import Skeleton, assign_in_config, merge_skeletons
 from label3d.slp_sync import MODELS_DIR, SlpMapping, find_slp_files, slp_file_path
 from label3d.trial_types import AXIS, CALIBRATION, TRIAL, TYPE_COLUMN
-from label3d.video import IMAGE_EXTENSIONS
+from label3d.video import IMAGE_EXTENSIONS, extract_frame, frame_count
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,11 @@ class SetupConfig:
     # alternative. Axis takes may be still images. Both empty: no axis takes.
     align_keywords: list[str] = field(default_factory=list)
     align_regex: str = ""
+    # Axis takes made from one frame of a calibration take or trial:
+    # axis take name -> (take or trial name, 0-based frame). Setup extracts
+    # the frame of each camera's video as a still. [setup.axis_frames] in a
+    # setup file, with frames numbered from FRAME_BASE.
+    axis_frames: dict[str, tuple[str, int]] = field(default_factory=dict)
     # --- SLP-first setup (see docs/design/project_setup_from_sleap.md) ---
     # Source .slp files; when set, classify_slp_files() replaces classify_files()
     # and source_dir is unused.
@@ -107,6 +113,11 @@ class SetupConfig:
                 f"camera_aliases name cameras that are not cameras of the project: "
                 f"{', '.join(unknown)}"
             )
+        for take, (source, frame) in self.axis_frames.items():
+            if not take or not source:
+                raise ValueError("axis_frames entries need an axis take name and a take or trial")
+            if frame < 0:
+                raise ValueError(f"axis_frames '{take}': frames are numbered from {FRAME_BASE}")
         if self.skeleton_cameras is not None:
             unknown = [c for c in self.skeleton_cameras if c not in self.camera_names]
             if unknown:
@@ -146,6 +157,21 @@ class VideoReference:
 
 
 @dataclass
+class AxisFrame:
+    """An axis take made from one frame of a calibration take or trial (Phase 16)."""
+
+    source: str                 # the take or trial
+    source_type: str            # CALIBRATION or TRIAL
+    frame: int                  # 0-based; setup leaves the start offsets at 0
+    videos: dict[str, Path]     # camera -> source video
+
+
+def axis_still_name(take: str, camera: str) -> str:
+    """File name of an extracted axis take still in calibrations/{camera}/."""
+    return f"{take}_{camera}.png"
+
+
+@dataclass
 class FileAssignment:
     """Result of classifying and matching files."""
 
@@ -163,6 +189,8 @@ class FileAssignment:
     calibration_takes: dict[str, dict[str, dict[str, Path]]] = field(default_factory=dict)
     # experiment_name -> take_name -> {camera_name: video or image} (Phase 16)
     axis_takes: dict[str, dict[str, dict[str, Path]]] = field(default_factory=dict)
+    # experiment_name -> take_name -> the frame it is extracted from (axis_frames)
+    axis_frames: dict[str, dict[str, AxisFrame]] = field(default_factory=dict)
     # files that couldn't be assigned
     unmatched: list[Path] = field(default_factory=list)
     # videos left out because they name no listed experiment
@@ -426,6 +454,7 @@ def classify_files(config: SetupConfig) -> FileAssignment:
             )
 
     _assign_axis_takes(config, assignment, axis_files)
+    _assign_axis_frames(config, assignment)
     _apply_config_skeleton(config, assignment)
     return assignment
 
@@ -488,6 +517,62 @@ def _assign_axis_takes(
         if not trials:
             assignment.warnings.append(
                 f"Axis take(s) for experiment '{exp}', which has no trials"
+            )
+
+
+def _assign_axis_frames(config: SetupConfig, assignment: FileAssignment) -> None:
+    """Find the take or trial each axis_frames entry comes from, in every experiment.
+
+    Run after the trials, calibration takes and axis takes are known. An entry
+    whose source is in no experiment, whose name is already used, or whose
+    frame a source video doesn't have is an error.
+    """
+    experiments = sorted(
+        set(assignment.trial_experiment.values()) | set(assignment.calibration_takes)
+    ) or ["default"]
+    for take, (source, frame) in sorted(config.axis_frames.items()):
+        found = False
+        for exp in experiments:
+            trials = {
+                t for t in assignment.trials
+                if assignment.trial_experiment.get(t, "default") == exp
+            }
+            calibration = assignment.calibration_takes.get(exp, {})
+            if source in calibration and source in trials:
+                assignment.errors.append(
+                    f"axis_frames '{take}': '{source}' in experiment '{exp}' is both a "
+                    "trial and a calibration take"
+                )
+                continue
+            if source in calibration:
+                videos, source_type = calibration[source], CALIBRATION
+            elif source in trials:
+                videos, source_type = assignment.trials[source], TRIAL
+            else:
+                continue
+            found = True
+            if take in trials | set(calibration) | set(assignment.axis_takes.get(exp, {})):
+                assignment.errors.append(
+                    f"Axis take '{take}' in experiment '{exp}' has the same name as a "
+                    "trial or another take"
+                )
+            short = sorted(cam for cam, video in videos.items() if frame >= frame_count(video))
+            if short:
+                assignment.errors.append(
+                    f"axis_frames '{take}': '{source}' in experiment '{exp}' has no frame "
+                    f"{shown_frame(frame)} for {', '.join(short)}"
+                )
+            if len(videos) < 2:
+                assignment.warnings.append(
+                    f"Axis take '{take}' in experiment '{exp}' has {len(videos)} camera; "
+                    "at least two are needed to triangulate its points"
+                )
+            assignment.axis_frames.setdefault(exp, {})[take] = AxisFrame(
+                source=source, source_type=source_type, frame=frame, videos=dict(videos)
+            )
+        if not found:
+            assignment.errors.append(
+                f"axis_frames '{take}': no trial or calibration take is named '{source}'"
             )
 
 
@@ -648,6 +733,7 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
     _assign_axis_takes(
         config, assignment, _find_axis_files(_take_search_dirs(config, slp_paths), config, assignment)
     )
+    _assign_axis_frames(config, assignment)
     _apply_config_skeleton(config, assignment)
     return assignment
 
@@ -663,6 +749,24 @@ def parse_camera_aliases(items: list[str]) -> dict[str, list[str]]:
             n.strip() for n in names.split(",") if n.strip()
         )
     return aliases
+
+
+def axis_frames_from_setup(table: dict) -> dict[str, tuple[str, int]]:
+    """[setup.axis_frames] (take = { from = "PreCal", frame = 1 }) as SetupConfig.axis_frames."""
+    frames: dict[str, tuple[str, int]] = {}
+    for take, entry in table.items():
+        if not isinstance(entry, dict) or not entry.get("from"):
+            raise ValueError(f"[setup.axis_frames] {take}: give the take or trial as from = \"...\"")
+        frames[str(take)] = (str(entry["from"]), int(entry.get("frame", FRAME_BASE)) - FRAME_BASE)
+    return frames
+
+
+def axis_frames_to_setup(frames: dict[str, tuple[str, int]]) -> dict:
+    """SetupConfig.axis_frames as a [setup.axis_frames] table, frames from FRAME_BASE."""
+    return {
+        take: {"from": source, "frame": shown_frame(frame)}
+        for take, (source, frame) in sorted(frames.items())
+    }
 
 
 def config_from_toml(
@@ -706,6 +810,7 @@ def config_from_toml(
         calib_match_strategy=setup.get("calib_match_strategy", ""),
         align_keywords=setup.get("align_keywords", []),
         align_regex=setup.get("align_regex", ""),
+        axis_frames=axis_frames_from_setup(setup.get("axis_frames", {})),
         experiment_keywords=setup.get("experiment_keywords", []),
         camera_aliases={
             str(cam): [str(a) for a in ([names] if isinstance(names, str) else names)]
@@ -1196,16 +1301,19 @@ def _preview_axis_takes(
     Verbosity 1 and below names the takes only. Nothing when no align keywords
     or regex were given.
     """
-    if not (config.align_keywords or config.align_regex):
+    if not (config.align_keywords or config.align_regex or config.axis_frames):
         return []
-    if not assignment.axis_takes:
+    if not assignment.axis_takes and not assignment.axis_frames:
         return ["Axis takes: none found", ""]
-    n_takes = sum(len(t) for t in assignment.axis_takes.values())
+    n_takes = sum(len(t) for t in assignment.axis_takes.values()) + sum(
+        len(t) for t in assignment.axis_frames.values()
+    )
     lines = [f"Axis takes ({n_takes}):"]
-    for exp_name in sorted(assignment.axis_takes):
-        takes = assignment.axis_takes[exp_name]
+    for exp_name in sorted(set(assignment.axis_takes) | set(assignment.axis_frames)):
+        takes = assignment.axis_takes.get(exp_name, {})
+        frames = assignment.axis_frames.get(exp_name, {})
         if verbosity <= 1:
-            lines.append(f"  [{exp_name}]  {', '.join(sorted(takes))}")
+            lines.append(f"  [{exp_name}]  {', '.join(sorted([*takes, *frames]))}")
             continue
         lines.append(f"  [{exp_name}]")
         for take in sorted(takes):
@@ -1215,6 +1323,14 @@ def _preview_axis_takes(
                 kind = "-- !" if f is None else "image" if f.suffix.lower() in IMAGE_EXTENSIONS else "video"
                 parts.append(f"{cam}: {kind}")
             lines.append(f"    {take} — " + "  ".join(parts))
+        for take, axis_frame in sorted(frames.items()):
+            cams = "  ".join(
+                f"{cam}: {'ok' if cam in axis_frame.videos else '-- !'}" for cam in config.camera_names
+            )
+            lines.append(
+                f"    {take} — frame {shown_frame(axis_frame.frame)} of {axis_frame.source_type} "
+                f"'{axis_frame.source}'  {cams}"
+            )
     lines.append("")
     return lines
 
@@ -1513,6 +1629,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     # Calibration takes get rows too, of type calibration.
     all_experiments = sorted(
         set(exp_trials) | set(assignment.calibration_takes) | set(assignment.axis_takes)
+        | set(assignment.axis_frames)
     )
     trials_rows: list[dict] = []
     active_calibrations: dict[str, str] = {}
@@ -1524,6 +1641,13 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
             exp_dir.mkdir(parents=True, exist_ok=True)
         else:
             videos_dir.mkdir(parents=True, exist_ok=True)
+
+        # Axis takes from a frame of a take or trial: extracted before any
+        # video is moved
+        for take, axis_frame in sorted(assignment.axis_frames.get(exp_name, {}).items()):
+            for cam, video in axis_frame.videos.items():
+                extract_frame(video, axis_frame.frame,
+                              camera_dir(exp_dir, cam) / axis_still_name(take, cam))
 
         # Calibration videos always come into the project, even in reference
         # mode: they are small, they come from calibration_dir rather than
@@ -1580,6 +1704,11 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
             for cam, src in assignment.axis_takes[exp_name][take].items():
                 _fill_cell(row, cam, src.name)
             trials_rows.append(row)
+        for take, axis_frame in sorted(assignment.axis_frames.get(exp_name, {}).items()):
+            row = _blank_row(exp_name, take, AXIS, config.camera_names)
+            for cam in axis_frame.videos:
+                _fill_cell(row, cam, axis_still_name(take, cam))
+            trials_rows.append(row)
 
     # Write trials.csv at project root with experiment column
     if trials_rows:
@@ -1628,15 +1757,29 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         active_calibrations=active_calibrations,
         skeleton=skeleton_section,
         camera_aliases=config.camera_aliases,
+        alignment=_extracted_frames_config(assignment),
     )
 
     return out
 
 
+def _extracted_frames_config(assignment: FileAssignment) -> dict:
+    """[alignment.{exp}.extracted.{take}]: where each extracted axis take came from."""
+    section: dict = {}
+    for exp, takes in sorted(assignment.axis_frames.items()):
+        for take, axis_frame in sorted(takes.items()):
+            source = AlignmentSource(
+                take=axis_frame.source, type=axis_frame.source_type, frame=axis_frame.frame,
+                videos={cam: (video.name, axis_frame.frame) for cam, video in axis_frame.videos.items()},
+            )
+            section.setdefault(exp, {}).setdefault("extracted", {})[take] = source.to_config()
+    return section
+
+
 def _take_file_clashes(assignment: FileAssignment) -> list[str]:
     """Different files that would land on one name in an experiment's calibrations/{cam}/."""
     clashes: list[str] = []
-    experiments = set(assignment.exp_calibration) | set(assignment.axis_takes)
+    experiments = set(assignment.exp_calibration) | set(assignment.axis_takes) | set(assignment.axis_frames)
     for exp in sorted(experiments):
         by_dest: dict[tuple[str, str], set[Path]] = {}
         for cam, files in assignment.exp_calibration.get(exp, {}).items():
@@ -1645,6 +1788,10 @@ def _take_file_clashes(assignment: FileAssignment) -> list[str]:
         for cam_files in assignment.axis_takes.get(exp, {}).values():
             for cam, f in cam_files.items():
                 by_dest.setdefault((cam, f.name), set()).add(Path(f).resolve())
+        for take, axis_frame in assignment.axis_frames.get(exp, {}).items():
+            for cam, video in axis_frame.videos.items():
+                still = f"{video} frame {shown_frame(axis_frame.frame)}"
+                by_dest.setdefault((cam, axis_still_name(take, cam)), set()).add(Path(still))
         for (cam, name), sources in sorted(by_dest.items()):
             if len(sources) > 1:
                 clashes.append(
@@ -1742,6 +1889,7 @@ def write_project_toml(
     active_calibrations: dict[str, str] | None = None,
     skeleton: dict | None = None,
     camera_aliases: dict[str, list[str]] | None = None,
+    alignment: dict | None = None,
 ) -> Path:
     """Write project.toml to the project directory.
 
@@ -1769,6 +1917,8 @@ def write_project_toml(
         config_data["camera_aliases"] = {
             cam: list(names) for cam, names in sorted(camera_aliases.items())
         }
+    if alignment:
+        config_data["alignment"] = alignment
 
     path = project_dir / "project.toml"
     version.write_project_toml(path, config_data, new_project=True)

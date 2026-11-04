@@ -438,6 +438,10 @@ class Project:
     def alignment_history(self, experiment: str | None = None) -> list[Alignment]:
         return alignment_record.read_history(self.config, experiment or self.active_experiment)
 
+    def extracted_axis_takes(self, experiment: str | None = None) -> dict[str, AlignmentSource]:
+        """Axis takes made from a frame of a take or trial -> the frame they came from."""
+        return alignment_record.read_extracted(self.config, experiment or self.active_experiment)
+
     def alignment_status(self, experiment: str | None = None) -> str:
         """alignment.NONE, CURRENT or STALE for the calibration the 3D points come from.
 

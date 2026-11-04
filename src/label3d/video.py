@@ -30,6 +30,22 @@ def frame_count(path: Path) -> int:
         cap.release()
 
 
+def extract_frame(video: Path, frame: int, out_path: Path) -> Path:
+    """Write frame (0-based) of a video as a lossless still image (PNG by out_path)."""
+    reader = VideoReader(video)
+    try:
+        image = reader.read_frame(frame)
+    finally:
+        reader.close()
+    if image is None:
+        raise IOError(f"{video} has no frame {frame} (it has {reader.frame_count})")
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(out_path), image):
+        raise IOError(f"Could not write {out_path}")
+    return out_path
+
+
 class VideoReader:
     """Wraps cv2.VideoCapture with an LRU frame cache; an image is one frame."""
 

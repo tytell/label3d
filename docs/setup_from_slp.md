@@ -116,6 +116,7 @@ All keys go under `[setup]` unless noted otherwise.
 | `calib_regex` | Alternative to `calib_keywords`: each distinct match is a take, named by the `take` group if there is one. |
 | `align_keywords` | One keyword per axis take (an object with marked axes, for axis alignment), e.g. `["Align"]`. Axis takes may be still images. Default: none. |
 | `align_regex` | Alternative to `align_keywords`, as `calib_regex` is to `calib_keywords`. |
+| `axis_frames` | Axis takes made from one frame of a calibration take or trial: `{ Align = { from = "PreCal", frame = 1 } }`. |
 | `video_mode` | `reference` (leave videos in place), `copy`, or `move`. Calibration videos are always copied into the project. |
 | `video_search_dirs` | Folders to search when a recorded video path no longer exists. |
 | `calibration_dir` | Folder to search for calibration videos or a `calibration.toml`. Without it, setup searches `source_dir` and the `.slp` files' folders. |
@@ -149,6 +150,13 @@ An experiment with none of these is set up without a calibration.
 ### Axis takes
 
 Axis takes (Phase 16) are recordings of an object with marked x, y, z axes, used to align the 3D points to that object. They're found in the same folders as calibration videos, by `align_keywords` or `align_regex`; a still image per camera is fine. Each one becomes a row of type `axis` in `trials.csv`, and its files are copied into `experiments/{experiment}/calibrations/{camera}/`, like calibration videos, whatever the `video_mode`. Finding a `calibration.toml` doesn't stop the search. A file matching both an align keyword and a calibration keyword stops setup. Axis takes can also be added later in the app.
+
+When the object is in a calibration take or a trial instead, name it in `[setup.axis_frames]`; setup saves that frame (numbered from 1, default 1) of each camera's video as a still, `{take}_{camera}.png`, and records where it came from under `[alignment]` in `project.toml`:
+
+```toml
+[setup.axis_frames]
+Align = { from = "PreCal", frame = 1 }
+```
 
 ### Skeletons
 
