@@ -537,7 +537,7 @@ class TestExecuteSetup:
         df = pd.read_csv(basic_config.output_dir / "trials.csv")
         assert "experiment" in df.columns
         assert "trial" in df.columns
-        assert "is_calibration" in df.columns
+        assert "type" in df.columns
         assert "left" in df.columns
         assert "right" in df.columns
         assert "left_start" in df.columns
@@ -545,8 +545,8 @@ class TestExecuteSetup:
 
         # 2 trials + 1 calibration take
         assert len(df) == 3
-        trials = df[~df["is_calibration"]]
-        takes = df[df["is_calibration"]]
+        trials = df[df["type"] == "trial"]
+        takes = df[df["type"] == "calibration"]
         assert len(trials) == 2
         assert len(takes) == 1
         assert takes.iloc[0]["trial"] == "calib"

@@ -27,6 +27,7 @@ from label3d.layout import (
     SKELETON,
     SLP_FOLDERS,
     SYNC_HISTORY,
+    TRIAL_TYPES,
     UPGRADE_BACKUP_DIR,
     ProjectNeedsUpgrade,
     detect_version,
@@ -437,3 +438,83 @@ class TestUpgradeDialog:
         assert not upgrade_project(plan_upgrade(root))
         assert "stopped" in errors[0]
         assert _digests(root) == before
+
+
+# -- 0.3.0 to 0.4.0: the type column ---------------------------------------------
+
+
+def _project_0_3_0(root: Path) -> Path:
+    """A project as label3d 0.3.0 set it up: trials.csv with is_calibration, 1-based."""
+    root.mkdir()
+    (root / "project.toml").write_text(
+        '[label3d]\nproject_version = "0.3.0"\nwritten_by = "0.3.0 (test)"\n\n'
+        '[project]\nname = "old"\n\n[trials]\nframe_base = 1\n'
+    )
+    header = "experiment,trial,is_calibration," + ",".join(
+        f"{cam},{cam}_start,{cam}_end" for cam in CAMERAS
+    )
+    (root / "trials.csv").write_text(
+        header + "\n"
+        "exp1,trial1,False,cam1_t1.mp4,1,10,cam2_t1.mp4,3,12\n"
+        "exp1,PreCal,True,pre1.mp4,1,20,pre2.mp4,1,20\n"
+    )
+    (root / "experiments" / "exp1" / "videos").mkdir(parents=True)
+    return root
+
+
+class TestUpgrade030:
+    def test_plan(self, tmp_path):
+        plan = plan_upgrade(_project_0_3_0(tmp_path / "p"))
+        assert plan.from_version == "0.3.0"
+        assert plan.steps == [TRIAL_TYPES]
+
+    def test_load_asks_for_an_upgrade(self, tmp_path, qapp):
+        root = _project_0_3_0(tmp_path / "p")
+        with pytest.raises(ProjectNeedsUpgrade):
+            Project.load(root)
+
+    def test_upgrade_writes_type_column(self, tmp_path, qapp):
+        root = _project_0_3_0(tmp_path / "p")
+        old_trials = (root / "trials.csv").read_bytes()
+        result = run_upgrade(root)
+        raw = pd.read_csv(root / "trials.csv")
+        assert raw.columns.tolist()[:4] == ["experiment", "trial", "type", "cam1"]
+        assert raw["type"].tolist() == ["trial", "calibration"]
+        # Frame numbers are untouched
+        assert raw["cam2_start"].tolist() == [3, 1]
+        assert raw["cam2_end"].tolist() == [12, 20]
+        assert (result.backup_dir / "trials.csv").read_bytes() == old_trials
+        assert result.backup_dir.name.startswith("0.3.0_")
+        config = toml.load(root / "project.toml")
+        assert config["label3d"]["project_version"] == LAYOUT_VERSION
+
+        project = Project.load(root)
+        assert project.trial_names() == ["trial1"]
+        assert [t.name for t in project.calibration_takes] == ["PreCal"]
+
+    def test_without_legacy_column_only_records_version(self, tmp_path, qapp):
+        root = _project_0_3_0(tmp_path / "p")
+        df = pd.read_csv(root / "trials.csv").drop(columns="is_calibration").iloc[:1]
+        df.to_csv(root / "trials.csv", index=False)
+        plan = plan_upgrade(root)
+        assert plan.steps == []
+        Project.load(root)
+        assert toml.load(root / "project.toml")["label3d"]["project_version"] == LAYOUT_VERSION
+
+    def test_flat_slp_files_are_not_moved_for_a_versioned_project(self, tmp_path):
+        root = _project_0_3_0(tmp_path / "p")
+        (root / "slp").mkdir()
+        (root / "slp" / "cam1.slp").write_bytes(b"")
+        assert plan_upgrade(root).steps == [TRIAL_TYPES]
+
+    def test_current_project_needs_nothing(self, tmp_path):
+        root = _project_0_3_0(tmp_path / "p")
+        config = toml.load(root / "project.toml")
+        config["label3d"]["project_version"] = LAYOUT_VERSION
+        assert plan_upgrade(root, config) is None
+
+
+def test_old_fixtures_do_not_get_the_type_step():
+    # 0.0.9 and 0.1.0 had no calibration takes, so no is_calibration column
+    for version in VERSIONS:
+        assert TRIAL_TYPES not in plan_upgrade(FIXTURES / f"v{version}" / "project").steps

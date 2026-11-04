@@ -187,15 +187,18 @@ spread_baseline_pct = 0.05
 
 ### Videos and trials
 
-`trials.csv` lives at the project root and has one row per trial **and one row per calibration take** across all experiments. Columns:
+`trials.csv` lives at the project root and has one row per trial, **calibration take and axis take** across all experiments. Columns:
 
-| experiment | trial | is_calibration | cam0 | cam0_start | cam0_end | cam1 | cam1_start | cam1_end | … |
+| experiment | trial | type | cam0 | cam0_start | cam0_end | cam1 | cam1_start | cam1_end | … |
 |---|---|---|---|---|---|---|---|---|---|
-| PS18 | PreCal | True | PS18_PreCal_cam0.mp4 | 0 | | PS18_PreCal_cam1.mp4 | 0 | | … |
-| PS18 | trial1 | False | cam0_t1.mp4 | 0 | 500 | cam1_t1.mp4 | 3 | 503 | … |
-| PS18 | trial2 | False | cam0_t2.mp4 | 0 | 480 | cam1_t2.mp4 | 0 | 480 | … |
-| PS18 | PostCal | True | PS18_PostCal_cam0.mp4 | 0 | | PS18_PostCal_cam1.mp4 | 0 | | … |
-| PS19 | trial1 | False | cam0_t1.mp4 | 0 | 600 | cam1_t1.mp4 | 0 | 600 | … |
+| PS18 | PreCal | calibration | PS18_PreCal_cam0.mp4 | 1 | | PS18_PreCal_cam1.mp4 | 1 | | … |
+| PS18 | Align | axis | PS18_Align_cam0.png | 1 | 1 | PS18_Align_cam1.png | 1 | 1 | … |
+| PS18 | trial1 | trial | cam0_t1.mp4 | 1 | 501 | cam1_t1.mp4 | 4 | 504 | … |
+| PS18 | trial2 | trial | cam0_t2.mp4 | 1 | 481 | cam1_t2.mp4 | 1 | 481 | … |
+| PS18 | PostCal | calibration | PS18_PostCal_cam0.mp4 | 1 | | PS18_PostCal_cam1.mp4 | 1 | | … |
+| PS19 | trial1 | trial | cam0_t1.mp4 | 1 | 601 | cam1_t1.mp4 | 1 | 601 | … |
+
+- `type` (`trial_types.py`): `trial`, `calibration` or `axis`, in any case; a blank cell is a trial. Before 0.4.0 the column was `is_calibration` (`True` / `False`); `Project.load` asks for an upgrade, which replaces it in place (`True` → `calibration`, `False` → `trial`), backing up the old `trials.csv` in `upgrade_backup/`. A file with neither column is all trials.
 
 - `_start` / `_end`: frames of the video file (inclusive), **numbered from 1** as the GUI shows them (`frames.FRAME_BASE`). Blank = start / end of file. `read_trials_csv` / `write_trials_csv` convert to and from the 0-based frames used everywhere in memory, in the working files, in exports and in `.slp` files. `project.toml` records `[trials] frame_base = 1`; a project without it has a 0-based `trials.csv` (written before 0.3.0), which the upgrade converts, keeping the original as `trials.csv.bak` ([phase_20.md](phases/phase_20.md)). Frame ranges in `[calibration.ranges]` stay 0-based.
 - `_mtime`: the video's modification time when its `_end` was recorded (UTC, `2026-07-23T22:52:38Z`).
@@ -203,9 +206,11 @@ spread_baseline_pct = 0.05
 - The per-camera offset is **implicit**: global frame `N` maps to video frame `_start + N` for each camera (both 0-based, in memory).
 - **Trial length** = `min(_end_i - _start_i + 1)` across all cameras. Blank `_end` resolved via `cv2.CAP_PROP_FRAME_COUNT`.
 - Camera ID columns must match the `name` field values in the calibration files.
-- Any column that is not `experiment`, `trial`, `is_calibration`, or a `*_start` / `*_end` / `*_mtime` suffix is taken to be a camera name — new metadata columns must be added to `project.NON_CAMERA_COLUMNS`, new per-camera suffixes to `project.CAMERA_COLUMN_SUFFIXES`.
+- Any column that is not `experiment`, `trial`, `type` (or the old `is_calibration`), or a `*_start` / `*_end` / `*_mtime` suffix is taken to be a camera name — new metadata columns must be added to `project.NON_CAMERA_COLUMNS`, new per-camera suffixes to `project.CAMERA_COLUMN_SUFFIXES`.
 
-**Calibration takes** (`is_calibration = True`): a take is one synchronized calibration recording, typically one before and one after the trials. The `trial` column holds the take name (from the calibration keyword, e.g. `PreCal`). Takes reuse the camera / `_start` / `_end` triples, so a take can be trimmed to the segment where the board is visible. Take videos resolve relative to `experiments/{experiment}/calibrations/{camera}/`; trial videos relative to `experiments/{experiment}/videos/`. Takes are excluded from `Project.trials` and from SLP cell matching.
+**Calibration takes** (`type = calibration`): a take is one synchronized calibration recording, typically one before and one after the trials. The `trial` column holds the take name (from the calibration keyword, e.g. `PreCal`). Takes reuse the camera / `_start` / `_end` triples, so a take can be trimmed to the segment where the board is visible. Take videos resolve relative to `experiments/{experiment}/calibrations/{camera}/`; trial videos relative to `experiments/{experiment}/videos/`. Takes are excluded from `Project.trials` and from SLP cell matching.
+
+**Axis takes** (`type = axis`, Phase 16): a recording of an object with marked axes, often one still image per camera, used for axis alignment ([phase_16.md](phases/phase_16.md)). Their files live in `calibrations/{camera}/` like calibration takes; `Project.axis_takes` lists them, `Project.get_take` finds either kind.
 
 ### Primary storage: `points.parquet`
 

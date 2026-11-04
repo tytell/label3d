@@ -91,7 +91,7 @@ def _draw_corners(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
 class DetectionWorker(QThread):
     """Detects Charuco corners in the videos of each calibration take.
 
-    Takes come from the is_calibration rows of trials.csv, so cross-camera
+    Takes come from the calibration rows of trials.csv, so cross-camera
     correspondence is by take *name*. Detection rows are keyed
     ``(take_name, frame_in_video)``, which is what aniposelib's merge_rows
     groups on — a camera missing from a take leaves a gap instead of silently

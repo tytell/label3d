@@ -25,8 +25,8 @@ def _write_project(
     cameras = sorted(cells)
     (root / "experiments" / "default" / "videos").mkdir(parents=True)
 
-    header = ["experiment", "trial", "is_calibration"]
-    row = ["default", "trial1", "False"]
+    header = ["experiment", "trial", "type"]
+    row = ["default", "trial1", "trial"]
     for cam in cameras:
         header += [cam, f"{cam}_start", f"{cam}_end"]
         row += [cells[cam], "0", "10"]

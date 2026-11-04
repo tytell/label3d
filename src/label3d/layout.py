@@ -4,8 +4,10 @@ Projects made before 0.3.0 don't record a version, so it is worked out from
 their files: CSV working files or skeleton.json mean 0.0.9; .slp files directly
 in slp/ mean 0.1.0 (0.2.0 looks the same, but its Sync kept what the older ones
 dropped, so it can't be told apart and is treated as 0.1.0); anything else is
-called 0.2.0. Each step has its own check, so a project between layouts gets
-only the steps it needs. upgrade.run_upgrade carries the plan out.
+called 0.2.0. Projects from 0.3.0 on record their version, and one older
+than LAYOUT_VERSION is planned the same way. Each step has its own check, so a
+project between layouts gets only the steps it needs. upgrade.run_upgrade
+carries the plan out.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pandas as pd
 import toml
 
 from label3d.calibration_io import LEGACY_CORNERS_FILE
@@ -20,6 +23,7 @@ from label3d.calibration_registry import REFINED_DIR, REGISTRY_DIR
 from label3d.frames import FRAME_BASE
 from label3d.points import LEGACY_POINTS_FILE
 from label3d.slp_sync import SLP_DIR, SlpMapping
+from label3d.trial_types import LEGACY_CALIBRATION_COLUMN
 from label3d.version import LAYOUT_VERSION, parse_version, project_version
 
 LEGACY_SYNC_HISTORY_FILE = "sync_history.csv"
@@ -37,6 +41,7 @@ REFINEMENTS = "refinements"
 SKELETON = "skeleton"
 SLP_FOLDERS = "slp_folders"
 FRAME_NUMBERS = "frame_numbers"
+TRIAL_TYPES = "trial_types"
 RESTORE_SLP = "restore_slp"
 
 STEP_TEXT = {
@@ -47,6 +52,7 @@ STEP_TEXT = {
     SKELETON: "Move skeleton.json into project.toml",
     SLP_FOLDERS: "Give each .slp file in slp/ a folder of its own",
     FRAME_NUMBERS: "Number frames in trials.csv from 1",
+    TRIAL_TYPES: "Replace the is_calibration column of trials.csv with a type column",
     RESTORE_SLP: "Restore the videos and frames that older Syncs dropped from the .slp files",
 }
 
@@ -115,24 +121,36 @@ def detect_version(root: Path, config: dict) -> str:
     return "0.2.0"
 
 
+def has_legacy_calibration_column(root: Path) -> bool:
+    """trials.csv marks calibration takes with is_calibration, as before 0.4.0."""
+    path = Path(root) / "trials.csv"
+    return path.is_file() and LEGACY_CALIBRATION_COLUMN in pd.read_csv(path, nrows=0).columns
+
+
 def plan_upgrade(root: Path, config: dict | None = None) -> UpgradePlan | None:
-    """The upgrade an unversioned project needs; None for one that records its version.
+    """The upgrade a project older than LAYOUT_VERSION needs; None for a current one.
 
     A plan with no steps only needs the version recorded.
     """
     root = Path(root)
     if config is None:
         config = toml.load(root / "project.toml")
-    if project_version(config) is not None:
+    recorded = project_version(config)
+    if recorded is not None and parse_version(recorded) >= parse_version(LAYOUT_VERSION):
         return None
-    version = detect_version(root, config)
-    legacy = legacy_files(root)
-    steps = [step for step in (POINTS, CORNERS, SYNC_HISTORY, REFINEMENTS, SKELETON)
-             if legacy[step]]
-    if flat_slp_files(root):
-        steps.append(SLP_FOLDERS)
-    if config.get("trials", {}).get("frame_base", 0) != FRAME_BASE:
-        steps.append(FRAME_NUMBERS)
+    version = recorded or detect_version(root, config)
+    steps: list[str] = []
+    # A project that records 0.3.0 or later only gets the steps of later layouts
+    if parse_version(version) < (0, 3, 0):
+        legacy = legacy_files(root)
+        steps = [step for step in (POINTS, CORNERS, SYNC_HISTORY, REFINEMENTS, SKELETON)
+                 if legacy[step]]
+        if flat_slp_files(root):
+            steps.append(SLP_FOLDERS)
+        if config.get("trials", {}).get("frame_base", 0) != FRAME_BASE:
+            steps.append(FRAME_NUMBERS)
+    if parse_version(version) < (0, 4, 0) and has_legacy_calibration_column(root):
+        steps.append(TRIAL_TYPES)
     restore: list[Path] = []
     if parse_version(version) < (0, 2, 0):
         restore = [spec.path for spec in SlpMapping.from_config(config).files

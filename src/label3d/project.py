@@ -52,6 +52,14 @@ from label3d.slp_sync import (
     find_slp_files,
 )
 from label3d.layout import ProjectNeedsUpgrade, plan_upgrade
+from label3d.trial_types import (
+    AXIS,
+    CALIBRATION,
+    LEGACY_CALIBRATION_COLUMN,
+    TRIAL,
+    TYPE_COLUMN,
+    row_types,
+)
 from label3d.version import check_not_newer, write_project_toml
 
 
@@ -117,8 +125,10 @@ class ExperimentInfo:
     trials: list[TrialInfo]
     has_calibration: bool
     camera_info: dict[str, CameraInfo] = field(default_factory=dict)
-    # Calibration takes for this experiment, from the is_calibration rows
+    # Calibration takes for this experiment, from the calibration rows
     calibration_takes: list[TrialInfo] = field(default_factory=list)
+    # Axis takes (Phase 16), from the axis rows
+    axis_takes: list[TrialInfo] = field(default_factory=list)
     # Base directory for videos referenced in place rather than copied into the
     # project, from the [video_roots] section of project.toml. None for the
     # classic layout, where videos live in videos/ and cells are bare filenames.
@@ -282,7 +292,7 @@ class Project:
             else:
                 exp_rows = trials_df
 
-            exp_trials = _parse_trials(exp_rows, cameras)
+            exp_trials = _parse_rows(exp_rows, cameras, TRIAL)
             videos_dir = exp_dir / "videos"
             video_root = video_roots.get(exp_name)
             for trial in exp_trials:
@@ -290,7 +300,8 @@ class Project:
 
             # Calibration take videos live under calibrations/{cam}/, not
             # videos/, so their lengths are resolved on demand instead.
-            exp_takes = _parse_calibration_takes(exp_rows, cameras)
+            exp_takes = _parse_rows(exp_rows, cameras, CALIBRATION)
+            exp_axis_takes = _parse_rows(exp_rows, cameras, AXIS)
 
             has_calibration, camera_info = _read_camera_info(
                 _active_calibration_path(config, exp_name, exp_dir)
@@ -304,6 +315,7 @@ class Project:
                 has_calibration=has_calibration,
                 camera_info=camera_info,
                 calibration_takes=exp_takes,
+                axis_takes=exp_axis_takes,
                 video_root=video_root,
             )
 
@@ -341,9 +353,9 @@ class Project:
         return project
 
     def video_path(self, trial_name: str, camera: str) -> Path:
-        """Resolve absolute path to a trial or calibration-take video.
+        """Resolve absolute path to a trial, calibration-take or axis-take video.
 
-        Calibration takes live in calibrations/{camera}/, trials in videos/ —
+        Takes live in calibrations/{camera}/, trials in videos/ —
         unless the cell names a path, in which case the video is referenced
         where it already lives (see _resolve_video).
         """
@@ -352,10 +364,10 @@ class Project:
         try:
             trial = self.get_trial(trial_name)
         except KeyError:
-            take = self.get_calibration_take(trial_name)
+            take = self.get_take(trial_name)
             filename, _, _ = take.camera_videos[camera]
             default_dir = camera_dir(exp_dir, camera)
-            # Calibration videos are copied into the project even when trial
+            # Take videos are copied into the project even when trial
             # videos are referenced in place, so a cell naming a file in
             # calibrations/{camera}/ wins over the experiment's video_root.
             local = default_dir / filename
@@ -950,6 +962,19 @@ class Project:
                 return t
         raise KeyError(f"Calibration take not found: {name}")
 
+    @property
+    def axis_takes(self) -> list[TrialInfo]:
+        """Axis takes of the active experiment, in trials.csv order."""
+        exp = self.experiments.get(self.active_experiment)
+        return exp.axis_takes if exp else []
+
+    def get_take(self, name: str) -> TrialInfo:
+        """A calibration or axis take of the active experiment."""
+        for t in self.calibration_takes + self.axis_takes:
+            if t.name == name:
+                return t
+        raise KeyError(f"Take not found: {name}")
+
     def trial_names(self) -> list[str]:
         return [t.name for t in self.trials]
 
@@ -998,8 +1023,9 @@ def _read_camera_info(calib_path: Path | None) -> tuple[bool, dict[str, CameraIn
     return True, camera_info
 
 
-# trials.csv columns that are metadata, not camera names.
-NON_CAMERA_COLUMNS = ("trial", "experiment", "is_calibration")
+# trials.csv columns that are metadata, not camera names. is_calibration is
+# kept so a file from before 0.4.0 can still be read for its upgrade.
+NON_CAMERA_COLUMNS = ("trial", "experiment", TYPE_COLUMN, LEGACY_CALIBRATION_COLUMN)
 
 
 def _extract_cameras(columns: list[str]) -> list[str]:
@@ -1019,31 +1045,13 @@ def _extract_cameras(columns: list[str]) -> list[str]:
     return cameras
 
 
-def _calibration_mask(df: pd.DataFrame) -> pd.Series:
-    """Boolean mask of calibration-take rows."""
-    return df["is_calibration"].astype(str).str.lower().isin(("true", "1", "yes"))
-
-
-def _parse_trials(df: pd.DataFrame, cameras: list[str]) -> list[TrialInfo]:
-    """Parse the trial (non-calibration) rows of trials.csv into TrialInfo."""
-    if "is_calibration" in df.columns:
-        df = df[~_calibration_mask(df)]
-    return _parse_rows(df, cameras)
-
-
-def _parse_calibration_takes(df: pd.DataFrame, cameras: list[str]) -> list[TrialInfo]:
-    """Parse the calibration-take rows of trials.csv into TrialInfo.
+def _parse_rows(df: pd.DataFrame, cameras: list[str], row_type: str) -> list[TrialInfo]:
+    """Parse the trials.csv rows of one type (trial_types) into TrialInfo objects.
 
     A take has the same shape as a trial — one video per camera, with optional
     start/end trimming — so it reuses TrialInfo.
     """
-    if "is_calibration" not in df.columns:
-        return []
-    return _parse_rows(df[_calibration_mask(df)], cameras)
-
-
-def _parse_rows(df: pd.DataFrame, cameras: list[str]) -> list[TrialInfo]:
-    """Parse trials.csv rows into TrialInfo objects."""
+    df = df[row_types(df) == row_type]
     trials = []
     for _, row in df.iterrows():
         camera_videos = {}
@@ -1158,10 +1166,7 @@ def check_trial_videos(
         for suffix in ("_end", "_mtime"):
             trials_df[f"{cam}{suffix}"] = trials_df[f"{cam}{suffix}"].astype(object)
 
-    is_calibration = (
-        _calibration_mask(trials_df) if "is_calibration" in trials_df.columns
-        else pd.Series(False, index=trials_df.index)
-    )
+    is_take = row_types(trials_df) != TRIAL
     cells = [
         (idx, cam) for idx in trials_df.index for cam in cameras
         if not _is_blank_cell(str(trials_df.at[idx, cam]))
@@ -1182,13 +1187,13 @@ def check_trial_videos(
             if not progress(done, len(cells), f"{verb} videos: {exp}/{trial} [{cam}]"):
                 raise LoadCancelled()
 
-        if is_calibration[idx]:
+        if is_take[idx]:
             path = _take_video_path(cell, video_root, camera_dir(exp_dir, cam), root)
         else:
             path = _resolve_video(cell, video_root, exp_dir / "videos", root)
         mtime = _video_mtime(path)
         if mtime is None:
-            if not is_calibration[idx] and _is_external_cell(cell, video_root):
+            if not is_take[idx] and _is_external_cell(cell, video_root):
                 check.missing.append(f"{exp}/{trial} [{cam}]: {path}")
             continue
 

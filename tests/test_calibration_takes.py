@@ -43,14 +43,14 @@ CAMERAS = ["cam1", "cam2"]
 
 def _write_project(root: Path, calib_names: dict[str, dict[str, str]]) -> Path:
     """Build a minimal project; calib_names is {take: {camera: filename}}."""
-    header = ["experiment", "trial", "is_calibration"]
+    header = ["experiment", "trial", "type"]
     for cam in CAMERAS:
         header += [cam, f"{cam}_start", f"{cam}_end"]
 
-    rows = ["exp1,trial1,False," + ",".join(f"{c}_trial1.mp4,0," for c in CAMERAS)]
+    rows = ["exp1,trial1,trial," + ",".join(f"{c}_trial1.mp4,0," for c in CAMERAS)]
     for take, cam_files in calib_names.items():
         cells = ",".join(f"{cam_files[c]},0," for c in CAMERAS)
-        rows.append(f"exp1,{take},True,{cells}")
+        rows.append(f"exp1,{take},calibration,{cells}")
 
     (root / "trials.csv").write_text(",".join(header) + "\n" + "\n".join(rows) + "\n")
 
@@ -103,13 +103,13 @@ class TestTakePairing:
     def test_missing_camera_leaves_take_incomplete(self, tmp_path, qapp):
         """A camera absent from a take must not shift another camera's video in."""
 
-        header = ["experiment", "trial", "is_calibration"]
+        header = ["experiment", "trial", "type"]
         for cam in CAMERAS:
             header += [cam, f"{cam}_start", f"{cam}_end"]
         (tmp_path / "trials.csv").write_text(
             ",".join(header) + "\n"
-            "exp1,trial1,False,cam1_trial1.mp4,0,,cam2_trial1.mp4,0,\n"
-            "exp1,PreCal,True,pre1.mp4,0,,,,\n"
+            "exp1,trial1,trial,cam1_trial1.mp4,0,,cam2_trial1.mp4,0,\n"
+            "exp1,PreCal,calibration,pre1.mp4,0,,,,\n"
         )
         videos = tmp_path / "experiments" / "exp1" / "videos"
         videos.mkdir(parents=True)

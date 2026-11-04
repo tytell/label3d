@@ -6,7 +6,8 @@ layout.plan_upgrade says what a project needs; run_upgrade does it:
    upgrade_backup/{from_version}_{timestamp}/, keeping its path in the project.
 2. The file steps run: CSV working files to Parquet, skeleton.json into
    project.toml, each .slp file into a folder of its own, trials.csv numbered
-   from 1. project.toml is written.
+   from 1, its is_calibration column replaced by a type column. project.toml
+   is written.
 3. If the project's mapped .slp files may have been cut down by an older Sync,
    they are restored (restore_slp_files).
 4. The layout version is recorded in project.toml.
@@ -43,6 +44,7 @@ from label3d.layout import (
     SLP_FOLDERS,
     STEP_TEXT,
     SYNC_HISTORY,
+    TRIAL_TYPES,
     UPGRADE_BACKUP_DIR,
     UpgradePlan,
     flat_slp_files,
@@ -70,6 +72,7 @@ from label3d.project import (
 )
 from label3d.skeleton import Skeleton, assign_in_config
 from label3d.slp_sync import BACKUP_DIR, MODELS_DIR, SLP_DIR, find_slp_files, slp_file_path
+from label3d.trial_types import with_type_column
 from label3d.version import write_project_toml
 
 logger = logging.getLogger(__name__)
@@ -182,6 +185,8 @@ def _run_steps(
         moved = _slp_into_folders(root, config)
     if FRAME_NUMBERS in plan.steps:
         _renumber_frames(root, config)
+    if TRIAL_TYPES in plan.steps:
+        _add_type_column(root)
     write_project_toml(root / "project.toml", config)
     result.messages += [STEP_TEXT[step] for step in plan.steps if step != RESTORE_SLP]
 
@@ -355,6 +360,15 @@ def _renumber_frames(root: Path, config: dict) -> None:
     path = root / "trials.csv"
     write_trials_csv(path, read_trials_csv(path, frame_base=0))
     config.setdefault("trials", {})["frame_base"] = FRAME_BASE
+
+
+# -- To 0.4.0 ----------------------------------------------------------------
+
+
+def _add_type_column(root: Path) -> None:
+    """is_calibration True/False to type calibration/trial, in the same place."""
+    path = root / "trials.csv"
+    write_trials_csv(path, with_type_column(read_trials_csv(path)))
 
 
 # -- Restoring the .slp files --------------------------------------------------

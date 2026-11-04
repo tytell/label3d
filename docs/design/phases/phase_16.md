@@ -59,17 +59,14 @@
 - [x] `align_points(xyz, R_align, origin)` and `unalign_points(...)`: the transform and its inverse (see The transform), vectorized over (N, 3), NaN passed through
 - [x] Remove `apply_alignment_to_cameras()` and `save_aligned_calibration()` (see Current state)
 
-## 16.2 Alignment takes, still images and the `[alignment]` record
+## 16.2 Axis takes, still images and the `[alignment]` record
 
-An alignment take is a calibration take: an `is_calibration = True` row in `trials.csv`, with its files in `experiments/{name}/calibrations/{cam}/`. It may be a single still image per camera. Like calibrations, alignments belong to one experiment; a take is never shared between experiments.
+An axis take is a row of type `axis` in `trials.csv` (`trial_types.py`; the `type` column replaced `is_calibration` in 0.4.0, see 16.9). Like a calibration take, its files are in `experiments/{name}/calibrations/{cam}/`. It may be a single still image per camera. Like calibrations, alignments belong to one experiment; a take is never shared between experiments.
 
 - [ ] `video.py`: `VideoReader` opens image files (`IMAGE_EXTENSIONS`: `.png .jpg .jpeg .tif .tiff .bmp`) with `cv2.imread` as a 1-frame video. `project._frame_count` / `check_trial_videos` measure them as 1 frame (`_end` = 1 in `trials.csv`, 1-based). `_video_mtime` works unchanged
 - [ ] `project.toml` gets one `[alignment.{experiment}]` table per experiment. All writes go through `version.write_project_toml`. **Frame numbers here are 1-based**, as in `trials.csv`; they are converted with `shown_frame` / `stored_frame` when read and written
 
   ```toml
-  [alignment.default]
-  takes = ["Align"]                 # alignment takes; the Calibrate tab leaves them out
-
   [alignment.default.settings]      # last used on the Align tab
   points_per_axis = 2               # 1 or 2
   cross_product = ""                # "", "x", "y" or "z": the axis that is derived
@@ -89,8 +86,8 @@ An alignment take is a calibration take: an `is_calibration = True` row in `tria
   scale_error_pct = { x = 0.4 }     # where a known length was given
 
   [alignment.default.source]        # the frame the alignment was clicked on
-  take = "Align"                    # an alignment take, or an ordinary trial
-  is_calibration = true             # false when a trial frame was used
+  take = "Align"                    # an axis take, or an ordinary trial
+  type = "axis"                     # "trial" when a trial frame was used
   frame = 1                         # synchronized frame, 1-based
 
   [alignment.default.source.videos] # each camera's file and frame within that file, 1-based
@@ -103,9 +100,8 @@ An alignment take is a calibration take: an `is_calibration = True` row in `tria
   - `transform` and `source` are written on Apply and on recompute (16.8). The one they replace is appended to `history`, so a re-alignment can be undone by hand
   - A camera's `frame` under `source.videos` is `cam_start + frame`, so it still names the right image if the take's offsets in `trials.csv` change later
 - [ ] `Project`:
-  - `alignment_takes(experiment)`, `alignment(experiment)` (the transform, or None) and `alignment_source(experiment)` read the table
+  - `alignment(experiment)` (the transform, or None) and `alignment_source(experiment)` read the table
   - `alignment_status(experiment)` returns `"none"`, `"current"` or `"stale"` (see The transform)
-  - `calibration_takes()` stays as it is; a new `charuco_takes()` gives the calibration takes not listed under `takes`, which is what the Calibrate tab and charuco detection use. Takes not listed behave as now
 - [ ] A take name must be unique among the experiment's trials and takes, as now
 - [ ] The Align tab's take list also offers the experiment's ordinary trials, for the occasional use of a trial frame. Nothing is copied for those; `source` records the trial and frame
 - [ ] **Camera aliases**: setup writes `SetupConfig.camera_aliases` to a `[camera_aliases]` table (`LateralOrtho = ["Lateral"]`), and `Project` loads it. Projects without it have no aliases. The add-take dialog (16.4) uses it
@@ -114,34 +110,33 @@ An alignment take is a calibration take: an `is_calibration = True` row in `tria
 
 Alignment files are found much like calibration videos. They're separate recordings with no points in them, never something read from `.slp` files.
 
-- [ ] `SetupConfig`: `align_keywords: list[str]` (e.g. `["Align"]`) and `align_regex: str`. Each keyword names one take, and a regex's `take` group (else group 1, else the whole match) supplies the name, exactly as for `calib_keywords` / `calib_regex`. Both empty (the default): no alignment takes
+- [ ] `SetupConfig`: `align_keywords: list[str]` (e.g. `["Align"]`) and `align_regex: str`. Each keyword names one take, and a regex's `take` group (else group 1, else the whole match) supplies the name, exactly as for `calib_keywords` / `calib_regex`. Both empty (the default): no axis takes
 - [ ] Generalize `_is_calibration` / `_identify_take` / `_match_calibration_takes` to take the keyword list and regex as arguments, so alignment files use the same two-stage match. If keywords can't separate takes, fall back to `calib_match_strategy` (or `match_strategy`). `_match_calibration_takes` keeps its signature as a wrapper
 - [ ] Classification order for each file: align match → alignment; else calibration match → calibration; else trial. A file that matches both an align and a calibration keyword goes in `assignment.errors`, naming the file and both keywords
 - [ ] **Still images**: in `classify_files`, image files that match an align keyword become alignment files. The Phase 9 error for calibration images stays and is checked after alignment images are taken out; other images stay unmatched, as now
 - [ ] Experiment and camera as for calibration: `_in_listed_experiment`, `_identify_experiment`, `_identify_camera` (with `camera_aliases`)
-- [ ] `FileAssignment.alignment_takes: dict[str, dict[str, dict[str, Path]]]`, keyed experiment → take → camera → file, filled by both setup routes:
+- [ ] `FileAssignment.axis_takes: dict[str, dict[str, dict[str, Path]]]`, keyed experiment → take → camera → file, filled by both setup routes:
   - `classify_files` (folder setup): from `source_dir`, videos and images
   - `classify_slp_files` (setup from SLEAP files): `_find_alignment_files(dirs, config)` searches the same folders as `_find_calibration_videos` (`calibration_dir` if given, else `source_dir` and the `.slp` folders), including images. Finding an existing `calibration.toml` doesn't stop the search, since a calibration and an alignment are separate
   - `_unreferenced_source_videos` leaves alignment files out, so they never become trials
-- [ ] Warnings: a take with fewer than two cameras can't be triangulated; two files for one camera in one take; an alignment take for an experiment with no trials. No warning when an experiment has no alignment, since alignment is optional
+- [ ] Warnings: a take with fewer than two cameras can't be triangulated; two files for one camera in one take; an axis take for an experiment with no trials. No warning when an experiment has no alignment, since alignment is optional
 - [ ] `execute_setup`:
   - Alignment files go into `calibrations/{cam}/` and are always brought into the project, as calibration videos are: copied in reference mode, otherwise moved or copied by the video mode
   - A file name that clashes with another file in that folder is an error before anything moves
-  - Rows go into `trials.csv` with `is_calibration = True` and bare file names; `check_trial_videos` measures them
-  - `write_project_toml` gets `alignment_takes` and `camera_aliases`, and writes `[alignment.{exp}] takes` and `[camera_aliases]`
-- [ ] `preview_assignment` lists alignment takes per experiment, with per-camera files and whether each is an image or a video, next to the calibration takes
+  - Rows go into `trials.csv` with `type = axis` and bare file names; `check_trial_videos` measures them
+  - `write_project_toml` gets `camera_aliases` and writes `[camera_aliases]`
+- [ ] `preview_assignment` lists axis takes per experiment, with per-camera files and whether each is an image or a video, next to the calibration takes
 - [ ] CLI: both interactive routes ask for align keywords (`Alignment keywords (blank for none)`), with the regex fallback as for calibration. Setup files take `[setup] align_keywords`, `align_regex`; `config_from_toml` reads them and `save_config_toml` round-trips them. Add them to the template in `setup_project_cli.py`'s docstring
 - [ ] Projects set up before this phase have no `[alignment]` or `[camera_aliases]` table and need nothing done; their takes are added later with the dialog (16.4)
 
-## 16.4 Adding an alignment take later (`widgets/add_alignment_take_dialog.py`)
+## 16.4 Adding an axis take later (`widgets/add_axis_take_dialog.py`)
 
-- [ ] **File > Add alignment take...**, and an **Add take...** button on the Align tab. It works on the active experiment, named in the dialog
-- [ ] The user selects several files, or a folder (its images and videos are listed). Files are matched to cameras by name with the same `_identify_camera` and the project's `[camera_aliases]`. A shared `match_alignment_files(files, cameras, aliases, keywords, regex)` in `setup_project.py` does the matching for setup and for the dialog
+- [ ] **File > Add axis take...**, and an **Add take...** button on the Align tab. It works on the active experiment, named in the dialog
+- [ ] The user selects several files, or a folder (its images and videos are listed). Files are matched to cameras by name with the same `_identify_camera` and the project's `[camera_aliases]`. A shared `match_axis_files(files, cameras, aliases, keywords, regex)` in `setup_project.py` does the matching for setup and for the dialog
 - [ ] Take name: from the align keyword in the file names when there is one, else `Align`, else `Align2`, … The user can edit it; it must be unique among the experiment's trials and takes
 - [ ] A table shows each camera and its file. A combo per camera lets the user change or clear a match. Unmatched files are listed. **Add** is disabled until at least two cameras have a file
 - [ ] On **Add**, the files are **copied** (never moved) into `calibrations/{cam}/`. Refuse a name that clashes with a different file already there. Then:
   - add a row to `trials.csv` (`write_trials_csv`, with backup) and measure it (`check_trial_videos`)
-  - append the take to `[alignment.{exp}] takes`
   - reload the experiment's takes, and select the new take on the Align tab
 - [ ] No GUI for removing a take in this phase
 
@@ -205,7 +200,7 @@ Once an experiment has an alignment, un-aligned 3D points are never output.
 ## 16.9 Versions
 
 - [ ] New pieces: `[alignment]` and `[camera_aliases]` tables in `project.toml`, `alignment_picks.parquet`, still-image takes. Projects without them stay valid, so no upgrade step is needed
-- [ ] Bump `LAYOUT_VERSION` to 0.4.0 anyway, so `check_not_newer` stops older label3d from opening an aligned project; older code would export un-aligned 3D points and couldn't read still-image takes. Add a no-op 0.3.0 → 0.4.0 step in `upgrade.py`, and a 0.3.0 fixture in `tests/fixtures/old_projects/`
+- [x] `LAYOUT_VERSION` is 0.4.0. The `type` column of `trials.csv` (`trial`, `calibration`, `axis`; any case, blank = trial) replaces `is_calibration`. The upgrade step `TRIAL_TYPES` (`layout.py`, `upgrade._add_type_column`) converts it in place, backing up `trials.csv`. A project that records 0.3.0 only gets steps from later layouts. `check_not_newer` also stops older label3d from opening the project. Tested on a hand-built 0.3.0 project in `test_upgrade.py`, not a fixture from a v0.3.0 worktree
 
 ## 16.10 Tests
 
@@ -223,20 +218,20 @@ Once an experiment has an alignment, un-aligned 3D points are never output.
 - [ ] Recompute: saved clicks re-triangulated with a new calibration rebuild the transform
 - [ ] Still-image takes: a 1-frame take loads, measures `_end` = 1, and is left out of charuco detection
 - [ ] Setup (`test_setup_project.py`, `test_setup_from_slp.py`):
-  - align keywords make alignment takes from videos and images, in both routes
+  - align keywords make axis takes from videos and images, in both routes
   - a file matching both an align and a calibration keyword is an error
   - calibration images still raise
   - alignment files never become trials
   - reference mode copies alignment files into the project
-  - `[alignment.{exp}] takes` and `[camera_aliases]` are written
+  - axis rows and `[camera_aliases]` are written
   - `save_config_toml` round-trips `align_keywords` / `align_regex`
-- [ ] Add-take logic (`match_alignment_files` and the function the dialog calls to add the take): camera matching with aliases, unique take names, files copied not moved, `trials.csv` row and `[alignment]` entry added
+- [ ] Add-take logic (`match_axis_files` and the function the dialog calls to add the take): camera matching with aliases, unique take names, files copied not moved, `trials.csv` row and `[alignment]` entry added
 - [ ] Remove the `align` registry test from `test_calibration_registry.py`
 - [ ] Synthetic data: an optional `[alignment_object]` in `synthetic_config.toml` renders a still image of axis markers per camera at a known pose. That gives an end-to-end check that alignment recovers the generator's world frame from the charuco-anchored calibration frame
 
 ## 16.11 Docs
 
-- [ ] `docs/user_workflow.md`: the Align step between Calibrate and Label; adding an alignment take; re-aligning and recomputing; 3D export columns are aligned
-- [ ] `docs/design/data_model.md`: alignment takes, picks file, `[alignment]` and `[camera_aliases]` tables, where the transform applies
+- [ ] `docs/user_workflow.md`: the Align step between Calibrate and Label; adding an axis take; re-aligning and recomputing; 3D export columns are aligned
+- [ ] `docs/design/data_model.md`: axis takes, picks file, `[alignment]` and `[camera_aliases]` tables, where the transform applies
 - [ ] `docs/design/project_setup_from_sleap.md`: alignment files are found beside the `.slp` files like calibration videos
 - [ ] `docs/design/workflows.md`, `DESIGN.md`, `CLAUDE.md` (workflow steps, data files, phase status)

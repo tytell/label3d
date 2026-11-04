@@ -19,7 +19,7 @@ A `.slp` file can hold more than the project: videos of other experiments, or fr
 
 ## Opening a project from an older label3d
 
-label3d records its version in each project's `project.toml`. A project made before that (label3d 0.2.0 or earlier) is upgraded the first time you open it: a dialog lists what changes, and **Upgrade** does it. Every file that changes is first copied to `upgrade_backup/` in the project; if anything goes wrong, the project is put back as it was. Delete `upgrade_backup/` once you have checked the upgraded project.
+label3d records its version in each project's `project.toml`. A project made by an older label3d is upgraded the first time you open it (for 0.3.0 projects, this replaces the `is_calibration` column of `trials.csv` with a `type` column): a dialog lists what changes, and **Upgrade** does it. Every file that changes is first copied to `upgrade_backup/` in the project; if anything goes wrong, the project is put back as it was. Delete `upgrade_backup/` once you have checked the upgraded project.
 
 **The `.slp` files.** Before 0.2.0, **Sync** cut the project's `.slp` files down to the project: videos of other experiments and frames outside the trials were lost. The upgrade puts them back from the `.slp` files the project was set up from. For each file, choose its original:
 

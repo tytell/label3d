@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Could not read {args.project}: {exc}", file=sys.stderr)
         return 1
     if plan is None:
-        print(f"{args.project} already records its layout version; nothing to do.")
+        print(f"{args.project} is up to date (layout {LAYOUT_VERSION}); nothing to do.")
         return 0
 
     print(f"{args.project}: made by label3d {plan.from_version} or similar")

@@ -189,7 +189,7 @@ and `mtime` all work against external paths as-is. Experiment assignment likewis
    unnecessary.
 2. **Calibration videos** — found by the usual `calib_keywords` / `calib_regex` rules in those
    same directories, matched into takes by the existing `_match_calibration_takes()`, and
-   referenced in place like trial videos (rows in `trials.csv` with `is_calibration = True` and
+   referenced in place like trial videos (rows in `trials.csv` with `type = calibration` and
    path-valued cells). The user calibrates in the app as usual.
 3. **Prompt** — the CLI asks for a directory, re-running steps 1–2 against it. "Skip" is
    accepted; the project is created without calibration and the user adds it later.

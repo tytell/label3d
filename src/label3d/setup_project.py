@@ -21,6 +21,7 @@ from label3d.frames import FRAME_BASE
 from label3d.project import Project, check_trial_videos, write_trials_csv
 from label3d.skeleton import Skeleton, assign_in_config, merge_skeletons
 from label3d.slp_sync import MODELS_DIR, SlpMapping, find_slp_files, slp_file_path
+from label3d.trial_types import CALIBRATION, TRIAL, TYPE_COLUMN
 
 logger = logging.getLogger(__name__)
 
@@ -1230,13 +1231,13 @@ def preview_assignment(
 
 
 def _blank_row(
-    experiment: str, name: str, is_calibration: bool, cameras: list[str]
+    experiment: str, name: str, row_type: str, cameras: list[str]
 ) -> dict:
-    """An empty trials.csv row; cells are filled in by _fill_cell."""
-    row: dict[str, str | int | bool] = {
+    """An empty trials.csv row of a type from trial_types; cells are filled in by _fill_cell."""
+    row: dict[str, str | int] = {
         "experiment": experiment,
         "trial": name,
-        "is_calibration": is_calibration,
+        TYPE_COLUMN: row_type,
     }
     for cam in cameras:
         row[cam] = ""
@@ -1311,7 +1312,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     Output layout:
       project/
         project.toml             <- [skeleton] from the setup file, if it has one
-        trials.csv               <- experiment, trial, is_calibration columns
+        trials.csv               <- experiment, trial, type columns
         slp/
         experiments/
           default/
@@ -1355,7 +1356,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         exp_trials = {"default": sorted(assignment.trials)}
 
     # Create directory structure and move/copy files per experiment.
-    # Calibration takes get rows too, flagged with is_calibration.
+    # Calibration takes get rows too, of type calibration.
     all_experiments = sorted(set(exp_trials) | set(assignment.calibration_takes))
     trials_rows: list[dict] = []
     active_calibrations: dict[str, str] = {}
@@ -1392,7 +1393,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
 
         for trial_name in sorted(exp_trials.get(exp_name, [])):
             cam_files = assignment.trials[trial_name]
-            row = _blank_row(exp_name, trial_name, False, config.camera_names)
+            row = _blank_row(exp_name, trial_name, TRIAL, config.camera_names)
             for cam in config.camera_names:
                 if cam in cam_files:
                     src = cam_files[cam]
@@ -1408,14 +1409,14 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         # calibrations/{cam}/ regardless of the video mode.
         for take in sorted(assignment.calibration_takes.get(exp_name, {})):
             cam_files = assignment.calibration_takes[exp_name][take]
-            row = _blank_row(exp_name, take, True, config.camera_names)
+            row = _blank_row(exp_name, take, CALIBRATION, config.camera_names)
             for cam, src in cam_files.items():
                 _fill_cell(row, cam, src.name)
             trials_rows.append(row)
 
     # Write trials.csv at project root with experiment column
     if trials_rows:
-        columns = ["experiment", "trial", "is_calibration"]
+        columns = ["experiment", "trial", TYPE_COLUMN]
         for cam in config.camera_names:
             columns.extend([cam, f"{cam}_start", f"{cam}_end", f"{cam}_mtime"])
         df = pd.DataFrame(trials_rows, columns=columns)

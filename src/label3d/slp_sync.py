@@ -26,6 +26,7 @@ from label3d.points import (
     TEXT_COORDS,
     USER_STATES,
 )
+from label3d.trial_types import TRIAL, row_types
 
 Cell = tuple[str, str, str]  # (experiment, trial, camera)
 
@@ -341,15 +342,11 @@ class SlpMappingEditor:
 def video_cells(trials_df: pd.DataFrame, cameras: list[str]) -> dict[Cell, tuple[str, int]]:
     """Return cell → (video filename, start frame) for every trial video.
 
-    Calibration takes (is_calibration rows) are skipped — they carry no labels.
+    Calibration and axis takes are skipped — they carry no labels.
     """
     cells: dict[Cell, tuple[str, int]] = {}
     has_experiment = "experiment" in trials_df.columns
-    if "is_calibration" in trials_df.columns:
-        is_calib = (
-            trials_df["is_calibration"].astype(str).str.lower().isin(("true", "1", "yes"))
-        )
-        trials_df = trials_df[~is_calib]
+    trials_df = trials_df[row_types(trials_df) == TRIAL]
     for _, row in trials_df.iterrows():
         experiment = str(row["experiment"]) if has_experiment else "default"
         trial = str(row["trial"])

@@ -726,8 +726,8 @@ class CalibrationView(QWidget):
                 return calibration_images_error(cam, len(images))
         return (
             "  No calibration takes for experiment "
-            f"'{self._project.active_experiment}' — add is_calibration rows to "
-            "trials.csv."
+            f"'{self._project.active_experiment}' — add rows of type calibration "
+            "to trials.csv."
         )
 
     def _load_take_media(self) -> bool:

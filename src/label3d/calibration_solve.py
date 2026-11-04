@@ -182,7 +182,7 @@ def take_range(config: dict, experiment: str, take: str) -> tuple[int, int | Non
 
 
 def build_takes(project: Project) -> list[CalibrationTake]:
-    """Build detection takes from the is_calibration rows of trials.csv."""
+    """Build detection takes from the calibration rows of trials.csv."""
     takes: list[CalibrationTake] = []
     for info in project.calibration_takes:
         videos: dict[str, TakeVideo] = {}

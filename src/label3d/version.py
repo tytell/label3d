@@ -34,7 +34,7 @@ try:
 except PackageNotFoundError:
     __version__ = "unknown"
 
-LAYOUT_VERSION = "0.3.0"
+LAYOUT_VERSION = "0.4.0"
 
 VERSION_TABLE = "label3d"
 
