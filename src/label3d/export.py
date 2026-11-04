@@ -10,13 +10,20 @@ where view is a camera or "3d"; x and y are px for cameras and cm for 3d.
 
 Used by File > Export points... and by the label3d-export command line tool.
 
-The pre-flight checks (stale_experiments, uncalibrated_experiments,
-pending_slp_changes) are separate, so the dialog can ask about each one;
-export_points itself only refuses stale experiments.
+3D points of an experiment with an axis alignment (Phase 16) are written in
+the aligned frame; reprojection errors don't change, since the alignment is
+rigid. A Parquet file records each experiment's alignment in its key-value
+metadata under ALIGNMENT_METADATA_KEY.
+
+The pre-flight checks (stale_experiments, stale_alignments,
+uncalibrated_experiments, pending_slp_changes) are separate, so the dialog can
+ask about each one; export_points itself only refuses stale experiments and
+stale alignments, unless those experiments are exported 2D only.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -24,7 +31,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
+from label3d import alignment as alignment_record
+from label3d.alignment import Alignment
 from label3d.geometry import mean_reprojection_errors, triangulation_mask
 from label3d.parquet_io import COMPRESSION
 from label3d.points import INDEX_NAMES, LABELED_STATES, SOURCE_SLEAP_PRED
@@ -35,6 +46,8 @@ if TYPE_CHECKING:
     from label3d.project import Project
 
 VIEW_3D = "3d"
+# Parquet key-value metadata: JSON {experiment: {"R": rows, "origin", "calibration"}}
+ALIGNMENT_METADATA_KEY = "label3d.alignment"
 UNIT_2D = "px"
 UNIT_3D = "cm"
 # Per-camera columns, each written as {camera}_{field}; fixed order, scripts rely on it.
@@ -74,6 +87,8 @@ class ExportOptions:
     output: Path | None = None             # default: exports/points_{timestamp}.{format}
     format: str = "parquet"                # a key of FORMATS; sets the file extension
     layout: str = "wide"                   # "wide" or "long"
+    # Experiments exported without 3D points (None = none); for a stale alignment
+    two_d_only: list[str] | None = None
 
 
 @dataclass
@@ -83,6 +98,8 @@ class ExportResult:
     # experiment -> {(state, source): camera points}
     counts: dict[str, dict[tuple[str, str], int]] = field(default_factory=dict)
     two_d_only: list[str] = field(default_factory=list)  # experiments without a calibration
+    no_3d: list[str] = field(default_factory=list)       # exported 2D only, as asked
+    aligned: list[str] = field(default_factory=list)     # 3D in an alignment's frame
     slp_files_written: int | None = None  # None when the SLP files were not written
     # Why the SLP files could not be written (skeleton conflicts, mixed files)
     slp_problems: list[str] = field(default_factory=list)
@@ -108,6 +125,18 @@ def stale_experiments(project: Project, experiments: list[str] | None = None) ->
     return [
         name for name in selected_experiments(project, experiments)
         if project.triangulation_is_stale(name)
+    ]
+
+
+def stale_alignments(project: Project, experiments: list[str] | None = None) -> list[str]:
+    """Experiments whose alignment was computed with another calibration than the 3D points'.
+
+    Their 3D points can't be exported until the alignment is recomputed, or
+    unless they are exported 2D only.
+    """
+    return [
+        name for name in selected_experiments(project, experiments)
+        if project.alignment_status(name) == alignment_record.STALE
     ]
 
 
@@ -175,11 +204,12 @@ def with_format_suffix(path: Path, format: str) -> Path:
 
 
 def export_points(project: Project, options: ExportOptions | None = None) -> ExportResult:
-    """Write the wide-format CSV and, if asked and possible, the mapped SLP files.
+    """Write the points file and, if asked and possible, the mapped SLP files.
 
-    Raises ValueError if a selected experiment's 3D points are stale. The SLP
-    files are written only when options.write_slp is set and the mapping is
-    complete; check pending_slp_changes first.
+    Raises ValueError if a selected experiment's 3D points or alignment are
+    stale, unless it is in options.two_d_only. The SLP files are written only
+    when options.write_slp is set and the mapping is complete; check
+    pending_slp_changes first.
     """
     options = options or ExportOptions()
     if options.format not in FORMATS:
@@ -187,11 +217,19 @@ def export_points(project: Project, options: ExportOptions | None = None) -> Exp
     if options.layout not in LAYOUTS:
         raise ValueError(f"Unknown layout {options.layout!r}; choose from {', '.join(LAYOUTS)}")
     names = selected_experiments(project, options.experiments)
-    stale = stale_experiments(project, names)
+    no_3d = set(options.two_d_only or ())
+    with_3d = [name for name in names if name not in no_3d]
+    stale = stale_experiments(project, with_3d)
     if stale:
         raise ValueError(
             f"3D points are not from the active calibration in: {', '.join(stale)}. "
             "Triangulate all experiments first."
+        )
+    stale = stale_alignments(project, with_3d)
+    if stale:
+        raise ValueError(
+            f"The alignment was computed with another calibration in: {', '.join(stale)}. "
+            "Recompute the alignment, or export those experiments 2D only."
         )
 
     starts = {cell: start for cell, (_video, start) in
@@ -199,15 +237,27 @@ def export_points(project: Project, options: ExportOptions | None = None) -> Exp
     cameras = project.cameras
     frames = []
     result = ExportResult(path=Path(), n_rows=0)
+    alignments: dict[str, Alignment] = {}
     for name in names:
         df = project.experiment_points_df(name)
         if df.empty:
             continue
         calibration = project.triangulated_with(name)
+        alignment = None
         if project.active_calibration_id(name) is None:
             result.two_d_only.append(name)
             calibration = None
-        rows = experiment_rows(df, cameras, starts, calibration, options, project.skeletons)
+        elif name in no_3d:
+            result.no_3d.append(name)
+            calibration = None
+        else:
+            alignment = project.alignment(name)
+            if alignment is not None:
+                alignments[name] = alignment
+                result.aligned.append(name)
+        rows = experiment_rows(
+            df, cameras, starts, calibration, options, project.skeletons, alignment
+        )
         if project.skeletons is not None:
             for key, n in project.points_outside(name, project.skeletons).items():
                 result.outside[key] = result.outside.get(key, 0) + n
@@ -224,7 +274,7 @@ def export_points(project: Project, options: ExportOptions | None = None) -> Exp
     if options.format == "csv":
         out.to_csv(path, index=False)
     else:
-        out.to_parquet(path, index=False, compression=COMPRESSION)
+        write_parquet(out, path, alignments)
     result.path = path
     result.n_rows = len(out)
 
@@ -233,6 +283,37 @@ def export_points(project: Project, options: ExportOptions | None = None) -> Exp
         if not result.slp_problems:
             result.slp_files_written = project.write_slp_files()
     return result
+
+
+def alignment_metadata(alignments: dict[str, Alignment]) -> dict[str, dict]:
+    """What a Parquet export records of each experiment's alignment."""
+    return {
+        name: {
+            "R": [[float(v) for v in row] for row in a.R_align],
+            "origin": [float(v) for v in a.origin],
+            "calibration": a.calibration,
+        }
+        for name, a in alignments.items()
+    }
+
+
+def write_parquet(out: pd.DataFrame, path: Path, alignments: dict[str, Alignment]) -> None:
+    """Write the export, with the alignments in the file's key-value metadata."""
+    table = pa.Table.from_pandas(out, preserve_index=False)
+    if alignments:
+        metadata = dict(table.schema.metadata or {})
+        metadata[ALIGNMENT_METADATA_KEY.encode()] = json.dumps(
+            alignment_metadata(alignments)
+        ).encode()
+        table = table.replace_schema_metadata(metadata)
+    pq.write_table(table, path, compression=COMPRESSION)
+
+
+def read_alignment_metadata(path: Path) -> dict[str, dict]:
+    """The alignments a Parquet export recorded: {experiment: {R, origin, calibration}}."""
+    metadata = pq.read_schema(path).metadata or {}
+    raw = metadata.get(ALIGNMENT_METADATA_KEY.encode())
+    return json.loads(raw) if raw else {}
 
 
 def state_source_counts(rows: pd.DataFrame, cameras: list[str]) -> dict[tuple[str, str], int]:
@@ -254,12 +335,14 @@ def experiment_rows(
     calibration: str | None,
     options: ExportOptions,
     skeletons: ProjectSkeleton | None = None,
+    alignment: Alignment | None = None,
 ) -> pd.DataFrame:
     """Wide-format rows for one experiment's points DataFrame.
 
     cameras gives the column order. calibration is the id of the calibration
     the 3D points came from, or None for an experiment without one: then the
-    3D and reprojection columns are blank. A camera's cells are blank where it
+    3D and reprojection columns are blank. With an alignment, the 3D columns
+    are in its frame; reprojection errors come from the stored points. A camera's cells are blank where it
     has no point (or a prediction, without include_predictions) or, with
     skeletons, where its skeleton lacks the node; a row is dropped when no
     camera has a point and there is no 3D point. A 3D point counts only when
@@ -273,6 +356,8 @@ def experiment_rows(
     with_3d = calibration is not None
     p3d = df[[(VIEW_3D, c) for c in "xyz"]].to_numpy(dtype=np.float64)
     has_3d = with_3d & ~np.isnan(p3d).any(axis=1)
+    if with_3d and alignment is not None:
+        p3d = alignment.align(p3d)
 
     columns = {}
     reproj = {}
@@ -369,6 +454,10 @@ def format_summary(result: ExportResult) -> str:
         lines.append(f"  {name}: {', '.join(parts) or 'no points'}")
     if result.two_d_only:
         lines.append(f"2D only (no active calibration): {', '.join(result.two_d_only)}")
+    if result.no_3d:
+        lines.append(f"2D only, as asked: {', '.join(result.no_3d)}")
+    if result.aligned:
+        lines.append(f"3D points aligned to the axis object: {', '.join(result.aligned)}")
     if result.outside:
         parts = ", ".join(
             f"{node} in {cam} ({n})" for (cam, node), n in sorted(result.outside.items())

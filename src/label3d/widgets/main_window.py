@@ -36,6 +36,7 @@ from label3d.workers.triangulation_worker import (
     TriangulationWorker,
 )
 
+from label3d import alignment as alignment_record
 from label3d.calibration_registry import entry_summary, entry_tree, find_calibration
 from label3d.export import describe_slp_changes, format_summary, stale_experiments
 from label3d.frames import shown_frame
@@ -212,6 +213,12 @@ class MainWindow(QMainWindow):
         self._calib_status.linkActivated.connect(lambda _link: self._retriangulate_experiment())
         self._calib_status.setVisible(False)
         self._status_bar.addPermanentWidget(self._calib_status)
+        # Shown while the alignment was computed with another calibration than the 3D points
+        self._align_status = QLabel()
+        self._align_status.setStyleSheet("color: #b45309;")
+        self._align_status.linkActivated.connect(lambda _link: self._go_to_alignment())
+        self._align_status.setVisible(False)
+        self._status_bar.addPermanentWidget(self._align_status)
 
         # Menus
         self._setup_menus()
@@ -993,6 +1000,8 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(
             f"Alignment saved for experiment {self._project.active_experiment}", 5000
         )
+        self._label_view.reload_alignment()
+        self._update_alignment_status()
         store = self._project.points
         if self._project.triangulation_is_stale() and store is not None and not store.df.empty:
             reply = QMessageBox.question(
@@ -1003,10 +1012,32 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.StandardButton.Yes:
                 self._retriangulate_experiment()
 
+    def _update_alignment_status(self) -> None:
+        """Warn when the alignment was computed with another calibration than the 3D points."""
+        stale = self._project.alignment_status() == alignment_record.STALE
+        if stale:
+            self._align_status.setText(
+                "Alignment is out of date; <a href='recompute'>recompute</a>"
+            )
+            self._align_status.setToolTip(
+                "The axis alignment was computed with another calibration than the "
+                "3D points. Recompute it from its saved clicks on the Align tab; "
+                "until then, this experiment's 3D points can only be exported 2D only."
+            )
+        self._align_status.setVisible(stale)
+
+    def _go_to_alignment(self, experiment: str | None = None) -> None:
+        """Open the Align tab for an experiment, to recompute its alignment."""
+        if experiment and experiment != self._project.active_experiment:
+            self._state.current_experiment = experiment
+        if self._tabs.isTabEnabled(ALIGN_TAB):
+            self._tabs.setCurrentIndex(ALIGN_TAB)
+
     def _update_calibration_status(self) -> None:
         """Warn when the 3D points were computed with another calibration."""
         project = self._project
         self._update_export_action()
+        self._update_alignment_status()
         store = project.points
         if project.triangulation_is_stale() and (store is None or store.df.empty):
             # Nothing to re-triangulate yet: new points use the active one.
@@ -1795,6 +1826,8 @@ class MainWindow(QMainWindow):
             self._project.points.save_if_changed()
         dialog = ExportDialog(self._project, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
+            if dialog.recompute_requested:
+                self._go_to_alignment(dialog.recompute_requested)
             return
 
         progress = self._busy_dialog("Exporting points…", "Export points")

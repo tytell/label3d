@@ -162,6 +162,7 @@ The dialog has:
 
 When you click **Export**:
 
+- **Experiments whose axis alignment is out of date** (it was computed with another calibration than the 3D points): label3d lists them and offers **Recompute alignment**, which opens the Align tab, or **Export 2D only**, which leaves their 3D and reprojection columns empty. Their 3D points are never exported un-aligned.
 - **Experiments without an active calibration:** label3d warns you and, if you choose **Export anyway**, exports only their 2D points.
 - **New points in the SLP files:** if the SLP files have points that label3d doesn't have yet (for example, predictions saved from the SLEAP GUI), label3d says so and exports nothing. Run **Sync with Sleap**, triangulate, then export again.
 - Otherwise it writes the file and the SLP files, then shows how many rows it wrote and the points per experiment by state and source.
@@ -171,12 +172,12 @@ When you click **Export**:
 After a large inference job you can export without opening the app:
 
 ```
-uv run label3d-export <project folder> [-o out] [--format parquet|csv] [--layout wide|long] [--experiments a,b] [--no-predictions] [--only-3d] [--no-slp]
+uv run label3d-export <project folder> [-o out] [--format parquet|csv] [--layout wide|long] [--experiments a,b] [--no-predictions] [--only-3d] [--no-slp] [--no-3d]
 ```
 
 It writes Parquet in the wide layout unless you ask otherwise. `-o` gets the extension of the format, so `-o out.csv` without `--format csv` writes `out.parquet`.
 
-It runs the same checks. It stops with an error (exit code 1) if an experiment's 3D points are out of date or the SLP files have new points. It doesn't triangulate, so run **Triangulate all experiments** in label3d first. `--no-slp` skips the SLP files entirely.
+It runs the same checks. It stops with an error (exit code 1) if an experiment's 3D points or its axis alignment are out of date, or the SLP files have new points. It doesn't triangulate or recompute alignments, so run **Triangulate all experiments** and the Align tab's recompute in label3d first. `--no-3d` exports the 2D points only, with the 3D and reprojection columns empty, and skips the out-of-date checks. `--no-slp` skips the SLP files entirely.
 
 ### Export columns
 
@@ -193,10 +194,12 @@ One row per point: experiment, trial, frame, instance and bodypart, as in the pr
 | `{cam}_source` | `label3d`, `sleap_user` (labelled in SLEAP) or `sleap_pred` (predicted by SLEAP) |
 | `{cam}_score` | SLEAP's score, where there is one |
 | `{cam}_xr.px`, `{cam}_yr.px`, `{cam}_error.px` | where the 3D point reprojects in that camera, and its distance from (`x`, `y`); empty without a 3D point |
-| `x.cm`, `y.cm`, `z.cm` | the triangulated 3D point |
+| `x.cm`, `y.cm`, `z.cm` | the triangulated 3D point; in the axis object's frame when the experiment has an alignment |
 | `n_cameras` | the number of cameras used to triangulate (points `set` or `predicted`) |
 | `mean_error.px` | the mean reprojection error over those cameras |
 | `calibration` | the id of the calibration used |
+
+When an experiment has an axis alignment, its 3D points are written in the alignment's frame: its origin and x, y, z axes. The reprojection columns don't change, since the alignment only rotates and shifts the points. A Parquet file also records each experiment's alignment in its metadata, under the key `label3d.alignment`: a JSON object with, for each experiment, `R` (3×3, by rows; the columns are the new axes in calibration coordinates), `origin` (cm) and `calibration`. A point in the calibration's frame is `R @ p_aligned + origin`. In Python: `json.loads(pyarrow.parquet.read_schema(path).metadata[b"label3d.alignment"])`.
 
 A camera's columns are empty where it has no point. The 3D columns are empty for a point seen by fewer than two cameras, or in an experiment without a calibration. Points never placed in any camera are left out. **Include predictions** off empties the prediction cells but keeps the 3D point, which may have used them; `n_cameras` and `mean_error.px` always describe the triangulation.
 

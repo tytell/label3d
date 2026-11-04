@@ -127,6 +127,7 @@ class LabelView(QWidget):
         self._view_3d: View3D | None = None
         if SHOW_3D_VIEW:
             self._view_3d = View3D(self._cameras if self._cameras else None)
+            self._view_3d.set_alignment(project.alignment())
             splitter.addWidget(self._view_3d)
 
         # Set initial sizes: sidebar ~150px, grid gets the rest, 3D ~300px
@@ -178,6 +179,13 @@ class LabelView(QWidget):
             self._epipolar_cache = None
         if self._view_3d is not None:
             self._view_3d.set_cameras(self._cameras)
+        self.reload_alignment()
+
+    def reload_alignment(self) -> None:
+        """Draw the 3D view in the experiment's axis alignment, if it has one."""
+        if self._view_3d is not None:
+            self._view_3d.set_alignment(self._project.alignment())
+            self._update_3d_view()
 
     def reload_calibration(self) -> None:
         """Pick up a change of active calibration and redraw."""

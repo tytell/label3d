@@ -17,6 +17,7 @@ from label3d.project import Project
 from label3d.state import ProjectState
 from label3d.widgets.axis_alignment_view import AxisAlignmentView, target_label
 from label3d.widgets.main_window import ALIGN_TAB, LABEL_TAB, MainWindow
+from label3d.widgets.view_3d import View3D
 from tests.helpers import make_current
 from tests.test_axis_alignment import O_TRUE, R_TRUE, look_at, to_cal
 
@@ -189,3 +190,31 @@ def test_main_window_has_an_align_tab(project, qapp):
     assert window._stack.currentWidget() is window._align_view
     assert window._frame_controls.isHidden()
     window.deleteLater()
+
+
+def test_status_bar_warns_of_a_stale_alignment(view, project, qapp):
+    click_all(view, rig(), ONE_POINT)
+    view.apply()
+    window = MainWindow(project, ProjectState())
+    assert window._align_status.isHidden()
+
+    alignment = project.alignment()
+    alignment.calibration = "another-calibration"
+    project.save_alignment(alignment, project.alignment_source())
+    window._update_calibration_status()
+    assert not window._align_status.isHidden()
+    assert "out of date" in window._align_status.text()
+    window._align_status.linkActivated.emit("recompute")
+    assert window._tabs.currentIndex() == ALIGN_TAB
+    window.deleteLater()
+
+
+def test_3d_view_draws_the_aligned_frame(view, project, qapp):
+    click_all(view, rig(), ONE_POINT)
+    view.apply()
+    view_3d = View3D()
+    p_cal = to_cal(np.array([1.0, 2.0, 3.0]))[np.newaxis]
+    np.testing.assert_allclose(view_3d._shown(p_cal), p_cal)
+    view_3d.set_alignment(project.alignment())
+    np.testing.assert_allclose(view_3d._shown(p_cal), [[1.0, 2.0, 3.0]], atol=1e-4)
+    view_3d.deleteLater()

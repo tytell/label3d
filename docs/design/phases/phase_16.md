@@ -2,7 +2,7 @@
 
 **Goal**: Re-orient an experiment's 3D output to a physical reference object with a clear origin and x, y, z axes. The user clicks points on the object in two or more cameras. label3d triangulates them with the active calibration and computes an **alignment**: a rotation and an origin that are applied to the 3D points coming out of the calibration. The calibration itself is not changed. Once an experiment has an alignment, every 3D point it outputs is aligned.
 
-**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup), 16.4 (adding axis takes later), 16.5 (saved clicks, computing from them) and 16.6 (the Align tab) done; 16.7 (aligned output) and 16.8 (recomputing) are next.
+**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup), 16.4 (adding axis takes later), 16.5 (saved clicks, computing from them), 16.6 (the Align tab) and 16.7 (aligned output) done; 16.8 (recomputing) is next.
 
 **Builds on**: Phase 9 (calibration takes), Phase 11 (registry, `[calibration.active]` / `[calibration.triangulated_with]`), Phase 12 (refinement aligns its result back onto the start), Phase 13 (batch triangulation, export), Phase 15 (Parquet working files), Phase 20 (versions and upgrades), and 1-based frame numbers wherever the user sees or types them (`frames.py`).
 
@@ -182,14 +182,14 @@ Axis files are found much like calibration videos. They're separate recordings w
 
 Once an experiment has an alignment, un-aligned 3D points are never output.
 
-- [ ] `export.py`: compute reprojection errors from the stored calibration-frame points first (as now, at the `p3d` step), then replace the `3d` x, y, z columns with `align_points(...)`, in both wide and long layouts
-- [ ] A stale alignment blocks export of that experiment's 3D columns:
-  - GUI (`export_dialog.py`): says which experiments are stale and offers **Recompute alignment** (16.8) or exporting 2D only
-  - CLI (`label3d-export`): exits with an error naming the experiments, unless `--no-3d` is given
+- [x] `export.py`: compute reprojection errors from the stored calibration-frame points first (as now, at the `p3d` step), then replace the `3d` x, y, z columns with `align_points(...)`, in both wide and long layouts. `experiment_rows` takes the `Alignment`; the long layout is built from the aligned wide rows
+- [x] A stale alignment blocks export of that experiment's 3D columns (`stale_alignments`; `export_points` raises unless the experiment is in `ExportOptions.two_d_only`, which also skips the stale-triangulation check for it):
+  - GUI (`export_dialog.py`): says which experiments are stale and offers **Recompute alignment** or **Export 2D only** for them. Recompute closes the dialog with `recompute_requested`, and the main window opens the Align tab for that experiment; the recompute itself is 16.8
+  - CLI (`label3d-export`): exits with an error naming the experiments, unless `--no-3d` is given. `--no-3d` exports every selected experiment 2D only
   - An experiment with no alignment exports as now
-- [ ] Export records the alignment: Parquet key-value metadata holds each experiment's `R`, `origin` and `calibration`; CSV gets nothing extra. The columns stay as they are (`docs/user_workflow.md#export-columns`); the docs say that 3D is aligned when the experiment has an alignment
-- [ ] `view_3d.py` (hidden by `SHOW_3D_VIEW`): draw aligned points when an alignment exists, so turning it on shows the right frame
-- [ ] Main window status bar: next to the stale-triangulation warning, show "alignment is out of date; *recompute*" when stale
+- [x] Export records the alignment: Parquet key-value metadata `label3d.alignment` holds JSON with each experiment's `R` (by rows), `origin` and `calibration` (`read_alignment_metadata`); CSV gets nothing extra. The columns stay as they are; the docs say that 3D is aligned when the experiment has an alignment, and the summary lists the aligned experiments
+- [x] `view_3d.py` (hidden by `SHOW_3D_VIEW`): `set_alignment` draws points, edges and camera frustums aligned; `LabelView.reload_alignment` sets it on experiment change and after Apply
+- [x] Main window status bar: next to the stale-triangulation warning, "Alignment is out of date; *recompute*" when stale. The link opens the Align tab until 16.8 adds the recompute
 
 ## 16.8 Recomputing and re-aligning
 

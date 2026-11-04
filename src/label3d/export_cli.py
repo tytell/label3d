@@ -2,12 +2,14 @@
 
     uv run label3d-export <project> [-o out] [--format parquet|csv]
         [--layout wide|long] [--experiments a,b] [--no-predictions] [--only-3d]
-        [--no-slp]
+        [--no-slp] [--no-3d]
 
-The format sets the file extension; -o gets it if it has another one.
+The format sets the file extension; -o gets it if it has another one. 3D
+points of an experiment with an axis alignment are written aligned.
 
-Exit code 0 when the export is written; 1 when an experiment's 3D points are
-stale, the SLP files hold points label3d doesn't have yet, or loading fails.
+Exit code 0 when the export is written; 1 when an experiment's 3D points or
+its alignment are stale (unless --no-3d), the SLP files hold points label3d
+doesn't have yet, or loading fails.
 """
 
 from __future__ import annotations
@@ -26,7 +28,9 @@ from label3d.export import (
     export_points,
     format_summary,
     pending_slp_changes,
+    selected_experiments,
     slp_mapping_complete,
+    stale_alignments,
     stale_experiments,
     uncalibrated_experiments,
 )
@@ -59,6 +63,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="only points that have a 3D point")
     parser.add_argument("--no-slp", action="store_true",
                         help="don't check or write the SLP files")
+    parser.add_argument("--no-3d", action="store_true",
+                        help="export the 2D points only, leaving the 3D and reprojection "
+                        "columns blank; allowed when an alignment is out of date")
     return parser.parse_args(argv)
 
 
@@ -86,11 +93,22 @@ def main(argv: list[str] | None = None) -> int:
         layout=args.layout,
     )
     try:
-        stale = stale_experiments(project, experiments)
+        if args.no_3d:
+            options.two_d_only = selected_experiments(project, experiments)
+        stale = [] if args.no_3d else stale_experiments(project, experiments)
         if stale:
             print(
                 f"3D points are not from the active calibration in: {', '.join(stale)}. "
-                "Triangulate all experiments in label3d first.",
+                "Triangulate all experiments in label3d first, or use --no-3d.",
+                file=sys.stderr,
+            )
+            return 1
+        stale = [] if args.no_3d else stale_alignments(project, experiments)
+        if stale:
+            print(
+                "The axis alignment was computed with another calibration than the 3D "
+                f"points in: {', '.join(stale)}. Recompute it on the Align tab in label3d, "
+                "or use --no-3d to export the 2D points only.",
                 file=sys.stderr,
             )
             return 1

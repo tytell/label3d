@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 if TYPE_CHECKING:
+    from label3d.alignment import Alignment
     from label3d.geometry import CameraParams
     from label3d.points import PointsStore
     from label3d.skeleton import Skeleton
@@ -108,6 +109,7 @@ class View3D(QWidget):
     def __init__(self, cameras: dict[str, "CameraParams"] | None = None, parent=None):
         super().__init__(parent)
         self._cameras = cameras or {}
+        self._alignment: Alignment | None = None
         self._gl_available = False
         self._gl = None
         self._view = None
@@ -183,6 +185,18 @@ class View3D(QWidget):
         if self._gl_available:
             self._build_frustums()
 
+    def set_alignment(self, alignment: "Alignment | None") -> None:
+        """Draw points and cameras in this axis alignment's frame (None: the calibration's)."""
+        self._alignment = alignment
+        if self._gl_available:
+            self._build_frustums()
+
+    def _shown(self, xyz: np.ndarray) -> np.ndarray:
+        """(N, 3) calibration-frame points as drawn: aligned when there is an alignment."""
+        if self._alignment is None:
+            return xyz
+        return self._alignment.align(xyz)
+
     def update_frame(
         self,
         points_store: "PointsStore | None",
@@ -237,6 +251,9 @@ class View3D(QWidget):
             positions.append([float(x3), float(y3), float(z3)])
             colors.append(color)
 
+        if positions:
+            # Edges and points are drawn in the alignment's frame
+            positions = self._shown(np.array(positions, dtype=np.float64)).tolist()
         if not positions:
             self._clear_points()
         else:
@@ -315,7 +332,7 @@ class View3D(QWidget):
         for ci, (cam_name, cam) in enumerate(sorted(self._cameras.items())):
             col = cam_colors[ci % len(cam_colors)]
             for seg in _frustum_lines(cam):
-                pts = seg.astype(np.float32)
+                pts = self._shown(np.asarray(seg, dtype=np.float64)).astype(np.float32)
                 colors = np.array([col, col], dtype=np.float32)
                 line = self._gl.GLLinePlotItem(
                     pos=pts, color=colors, width=1.0, antialias=True

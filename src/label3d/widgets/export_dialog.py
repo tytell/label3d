@@ -26,6 +26,7 @@ from label3d.export import (
     FORMATS,
     ExportOptions,
     default_output_path,
+    stale_alignments,
     uncalibrated_experiments,
     with_format_suffix,
 )
@@ -36,12 +37,19 @@ class ExportDialog(QDialog):
     """Experiments, filters, format, layout and output path for the export.
 
     On Export, experiments without an active calibration are listed in a
-    warning; Cancel there returns to this dialog.
+    warning; Cancel there returns to this dialog. Experiments whose axis
+    alignment is out of date are exported 2D only, or the dialog closes with
+    recompute_requested set to the first of them, for the Align tab.
     """
+
+    # Answers to the stale-alignment question
+    TWO_D_ONLY, RECOMPUTE, CANCEL = "2d", "recompute", "cancel"
 
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
         self._project = project
+        self._two_d_only: list[str] = []
+        self.recompute_requested: str | None = None
         self.setWindowTitle("Export points")
         layout = QVBoxLayout(self)
 
@@ -110,6 +118,7 @@ class ExportDialog(QDialog):
             output=with_format_suffix(Path(self._path.text().strip()), self.format()),
             format=self.format(),
             layout=self._layout.currentData(),
+            two_d_only=list(self._two_d_only),
         )
 
     def _format_changed(self) -> None:
@@ -134,6 +143,17 @@ class ExportDialog(QDialog):
         if not self._path.text().strip():
             QMessageBox.information(self, "Export points", "Choose an output file.")
             return
+        self._two_d_only = []
+        stale = stale_alignments(self._project, names)
+        if stale:
+            answer = self._ask_stale_alignment(stale)
+            if answer == self.RECOMPUTE:
+                self.recompute_requested = stale[0]
+                self.reject()
+                return
+            if answer != self.TWO_D_ONLY:
+                return
+            self._two_d_only = stale
         uncalibrated = uncalibrated_experiments(self._project, names)
         if uncalibrated:
             box = QMessageBox(self)
@@ -149,3 +169,28 @@ class ExportDialog(QDialog):
             if box.clickedButton() is not export:
                 return
         super().accept()
+
+    def _ask_stale_alignment(self, stale: list[str]) -> str:
+        """TWO_D_ONLY, RECOMPUTE or CANCEL for experiments with an out-of-date alignment."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Alignment out of date")
+        box.setText(
+            "The axis alignment of these experiments was computed with another "
+            "calibration than their 3D points, so their 3D points can't be exported "
+            "aligned:\n\n" + "\n".join(stale)
+        )
+        box.setInformativeText(
+            "Recompute the alignment from its saved clicks, or export these "
+            "experiments' 2D points only."
+        )
+        recompute = box.addButton("Recompute alignment", QMessageBox.ButtonRole.ActionRole)
+        two_d = box.addButton("Export 2D only", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is recompute:
+            return self.RECOMPUTE
+        if clicked is two_d:
+            return self.TWO_D_ONLY
+        return self.CANCEL
