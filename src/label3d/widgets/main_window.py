@@ -216,7 +216,9 @@ class MainWindow(QMainWindow):
         # Shown while the alignment was computed with another calibration than the 3D points
         self._align_status = QLabel()
         self._align_status.setStyleSheet("color: #b45309;")
-        self._align_status.linkActivated.connect(lambda _link: self._go_to_alignment())
+        self._align_status.linkActivated.connect(
+            lambda _link: self._go_to_alignment(recompute=True)
+        )
         self._align_status.setVisible(False)
         self._status_bar.addPermanentWidget(self._align_status)
 
@@ -1021,17 +1023,21 @@ class MainWindow(QMainWindow):
             )
             self._align_status.setToolTip(
                 "The axis alignment was computed with another calibration than the "
-                "3D points. Recompute it from its saved clicks on the Align tab; "
-                "until then, this experiment's 3D points can only be exported 2D only."
+                "3D points. Recompute it from its saved clicks on the Align tab and "
+                "Apply; until then, this experiment can only be exported 2D only."
             )
         self._align_status.setVisible(stale)
+        self._align_view.update_status()
 
-    def _go_to_alignment(self, experiment: str | None = None) -> None:
-        """Open the Align tab for an experiment, to recompute its alignment."""
+    def _go_to_alignment(self, experiment: str | None = None, recompute: bool = False) -> None:
+        """Open the Align tab for an experiment and, if asked, recompute its alignment."""
         if experiment and experiment != self._project.active_experiment:
             self._state.current_experiment = experiment
-        if self._tabs.isTabEnabled(ALIGN_TAB):
-            self._tabs.setCurrentIndex(ALIGN_TAB)
+        if not self._tabs.isTabEnabled(ALIGN_TAB):
+            return
+        self._tabs.setCurrentIndex(ALIGN_TAB)
+        if recompute:
+            self._align_view.recompute()
 
     def _update_calibration_status(self) -> None:
         """Warn when the 3D points were computed with another calibration."""
@@ -1827,7 +1833,7 @@ class MainWindow(QMainWindow):
         dialog = ExportDialog(self._project, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             if dialog.recompute_requested:
-                self._go_to_alignment(dialog.recompute_requested)
+                self._go_to_alignment(dialog.recompute_requested, recompute=True)
             return
 
         progress = self._busy_dialog("Exporting points…", "Export points")

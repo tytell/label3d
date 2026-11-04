@@ -2,7 +2,7 @@
 
 **Goal**: Re-orient an experiment's 3D output to a physical reference object with a clear origin and x, y, z axes. The user clicks points on the object in two or more cameras. label3d triangulates them with the active calibration and computes an **alignment**: a rotation and an origin that are applied to the 3D points coming out of the calibration. The calibration itself is not changed. Once an experiment has an alignment, every 3D point it outputs is aligned.
 
-**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup), 16.4 (adding axis takes later), 16.5 (saved clicks, computing from them), 16.6 (the Align tab) and 16.7 (aligned output) done; 16.8 (recomputing) is next.
+**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup), 16.4 (adding axis takes later), 16.5 (saved clicks, computing from them), 16.6 (the Align tab), 16.7 (aligned output) and 16.8 (recomputing) done; 16.10 (remaining tests, synthetic axis object) and 16.11 (docs) are left.
 
 **Builds on**: Phase 9 (calibration takes), Phase 11 (registry, `[calibration.active]` / `[calibration.triangulated_with]`), Phase 12 (refinement aligns its result back onto the start), Phase 13 (batch triangulation, export), Phase 15 (Parquet working files), Phase 20 (versions and upgrades), and 1-based frame numbers wherever the user sees or types them (`frames.py`).
 
@@ -193,10 +193,10 @@ Once an experiment has an alignment, un-aligned 3D points are never output.
 
 ## 16.8 Recomputing and re-aligning
 
-- [ ] An experiment can be re-aligned at any time: new clicks (same or another take/frame) and **Apply** replace the transform, keeping the old one in `history`
-- [ ] **Recompute** (Align tab, status-bar link, export dialog): re-triangulate the saved clicks for `source` from `alignment_picks.parquet` with the calibration the 3D points now come from, and rebuild the transform with the saved settings. The result is shown on the Align tab, as after Compute, for the user to **Apply**
-- [ ] After a new charuco solve, or a switch to a calibration the alignment wasn't computed with, the status turns stale; nothing is recomputed silently
-- [ ] When the clicks no longer triangulate well with the new calibration (errors well above the previous `max_error_px`), say so in the results; the user may need to re-click
+- [x] An experiment can be re-aligned at any time: new clicks (same or another take/frame) and **Apply** replace the transform, keeping the old one in `history` (`alignment.with_alignment`, since 16.2)
+- [x] **Recompute** (Align tab button, status-bar link, export dialog): `AxisAlignmentView.recompute` shows the take and frame of `source` with their saved clicks from `alignment_picks.parquet`, and computes again with the current settings, which are the saved ones. The result is shown as after Compute, headed "Recomputed from the clicks saved for …", for the user to **Apply**. The button is greyed out without an alignment. It triangulates with the **active** calibration, as Compute does, not with `triangulated_with`: when the two differ, the 3D points are stale anyway, and Apply then offers to re-triangulate. The status-bar link and the export dialog's **Recompute alignment** open the Align tab (switching experiment if needed) and recompute
+- [x] After a new charuco solve, or a switch to a calibration the alignment wasn't computed with, the status turns stale once the 3D points come from it (re-triangulation sets `triangulated_with`); the status bar and the Align tab's status say so. Nothing is recomputed silently
+- [x] When the clicks no longer triangulate well with the new calibration (largest error above both 2 × the previous `max_error_px` and that + 1 px; `RECOMPUTE_ERROR_FACTOR`, `RECOMPUTE_ERROR_MIN_PX`), the results say so and suggest checking the drawn axes and clicking again. Missing clicks or a removed take are reported instead of computing
 
 ## 16.9 Versions
 
@@ -216,7 +216,7 @@ Once an experiment has an alignment, un-aligned 3D points are never output.
 - [ ] `[alignment]` record: written and read back, with 1-based frames in the file and 0-based in memory; per-camera frames include `cam_start` for a trial with a nonzero offset; re-apply moves the old transform to `history`
 - [ ] `alignment_status`: current for the same entry and for a refine child of it, stale for another charuco entry, none without a transform
 - [ ] Export: 3D columns aligned in wide and long layouts; reprojection errors unchanged by the alignment; stale alignment refused (GUI helper and CLI), `--no-3d` allowed; Parquet metadata holds the transform
-- [ ] Recompute: saved clicks re-triangulated with a new calibration rebuild the transform
+- [x] Recompute: saved clicks re-triangulated with a new calibration rebuild the transform (`TestRecompute` in `test_axis_alignment_view.py`: the same rig in a moved frame gives `Q @ R_TRUE`, a shifted camera gives the warning, the status-bar link recomputes)
 - [ ] Still-image takes: a 1-frame take loads, measures `_end` = 1, and is left out of charuco detection
 - [ ] Setup (`test_setup_project.py`, `test_setup_from_slp.py`):
   - align keywords make axis takes from videos and images, in both routes

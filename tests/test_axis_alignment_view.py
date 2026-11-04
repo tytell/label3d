@@ -218,3 +218,98 @@ def test_3d_view_draws_the_aligned_frame(view, project, qapp):
     view_3d.set_alignment(project.alignment())
     np.testing.assert_allclose(view_3d._shown(p_cal), [[1.0, 2.0, 3.0]], atol=1e-4)
     view_3d.deleteLater()
+
+
+# -- Recompute (Phase 16.8) ------------------------------------------------------
+
+Q_MOVE, _ = cv2.Rodrigues(np.array([0.0, 0.0, 0.4]))
+T_MOVE = np.array([10.0, -5.0, 2.0])
+
+
+def moved_rig(perturb_cm: float = 0.0) -> dict[str, CameraParams]:
+    """The same cameras described in another frame, p' = Q p + t, as a new solve gives.
+
+    perturb_cm shifts cam1 along x, a calibration the old clicks don't fit.
+    """
+    cameras = {}
+    for cam, params in rig().items():
+        R, _ = cv2.Rodrigues(params.rvec)
+        R_new = R @ Q_MOVE.T
+        t_new = params.tvec - R_new @ T_MOVE
+        if cam == "cam1":
+            t_new = t_new + np.array([perturb_cm, 0.0, 0.0])
+        rvec, _ = cv2.Rodrigues(R_new)
+        cameras[cam] = CameraParams(cam, params.matrix, params.dist, rvec.ravel(), t_new, params.size)
+    return cameras
+
+
+def switch_calibration(project, project_root, cameras) -> str:
+    """Save and activate another solve, with the 3D points triangulated with it."""
+    exp = project_root / "experiments" / "exp1"
+    entry = save_calibration(exp, build_camera_group(cameras), "second solve", "charuco")
+    project.set_active_calibration(None, entry.id)
+    project.set_triangulated_with(None, entry.id)
+    return entry.id
+
+
+class TestRecompute:
+    def test_rebuilds_the_transform_with_the_new_calibration(self, view, project, project_root):
+        assert not view._recompute_button.isEnabled()
+        click_all(view, rig(), ONE_POINT)
+        view.apply()
+        assert view._recompute_button.isEnabled()
+        old_R = project.alignment().R_align
+
+        entry_id = switch_calibration(project, project_root, moved_rig())
+        assert project.alignment_status() == alignment_record.STALE
+        view.reload_calibration()
+        assert "Recompute" in view._status.text()
+
+        view.set_frame(0)
+        view.clear_picks()      # recompute goes back to the saved clicks, not the shown ones
+        click_all(view, rig(), ONE_POINT)
+        computation = view.recompute()
+        np.testing.assert_allclose(computation.result.R_align, Q_MOVE @ R_TRUE, atol=1e-5)
+        np.testing.assert_allclose(computation.result.origin, Q_MOVE @ O_TRUE + T_MOVE, atol=1e-4)
+        text = view._results.toPlainText()
+        assert text.startswith("Recomputed from the clicks saved for 'Align', frame 1")
+        assert "up from" not in text
+        # Nothing is saved until Apply
+        np.testing.assert_allclose(project.alignment().R_align, old_R)
+
+        assert view.apply()
+        assert project.alignment().calibration == entry_id
+        assert project.alignment_status() == alignment_record.CURRENT
+        assert len(project.alignment_history()) == 1
+        # The same physical point comes out the same in either calibration's frame
+        p_new = Q_MOVE @ to_cal([1.0, 2.0, 3.0]) + T_MOVE
+        np.testing.assert_allclose(project.alignment().align(p_new[np.newaxis]), [[1.0, 2.0, 3.0]], atol=1e-4)
+
+    def test_warns_when_the_clicks_no_longer_fit(self, view, project, project_root):
+        click_all(view, rig(), ONE_POINT)
+        view.apply()
+        switch_calibration(project, project_root, moved_rig(perturb_cm=3.0))
+        view.reload_calibration()
+        assert view.recompute() is not None
+        assert "up from" in view._results.toPlainText()
+
+    def test_needs_an_alignment_and_its_clicks(self, view, project):
+        assert view.recompute() is None
+        assert "no alignment" in view._results.toPlainText()
+        click_all(view, rig(), ONE_POINT)
+        view.apply()
+        view.clear_picks()
+        assert view.recompute() is None
+        assert "No clicks are saved" in view._results.toPlainText()
+
+    def test_status_bar_link_recomputes(self, view, project, project_root, qapp):
+        click_all(view, rig(), ONE_POINT)
+        view.apply()
+        switch_calibration(project, project_root, moved_rig())
+        window = MainWindow(project, ProjectState())
+        assert not window._align_status.isHidden()
+        window._align_status.linkActivated.emit("recompute")
+        assert window._tabs.currentIndex() == ALIGN_TAB
+        computation = window._align_view.computation()
+        np.testing.assert_allclose(computation.result.R_align, Q_MOVE @ R_TRUE, atol=1e-5)
+        window.deleteLater()

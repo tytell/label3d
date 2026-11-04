@@ -4,8 +4,10 @@ The user picks an axis take and frame, then clicks each target (origin and
 one or two points per axis) in at least two cameras. Clicks are saved as they
 are made (alignment_picks). Compute triangulates them with the active
 calibration (alignment.compute_alignment) and draws the new axes on every
-camera; Apply saves the alignment in project.toml. The calibration and the
-points file are never changed.
+camera; Apply saves the alignment in project.toml. Recompute (Phase 16.8)
+goes back to the take and frame the alignment in use was clicked on and
+computes again from its saved clicks with the active calibration, for the user
+to Apply. The calibration and the points file are never changed.
 """
 
 from __future__ import annotations
@@ -62,6 +64,9 @@ from label3d.widgets.epipolar_overlay import camera_color
 AXIS_COLORS = {"x": QColor(240, 80, 80), "y": QColor(80, 220, 80), "z": QColor(90, 150, 255)}
 ORIGIN_COLOR = QColor(255, 255, 255)
 SCALE_WARNING_PCT = 2.0
+# Recompute warns when the clicks' largest error grows past both of these
+RECOMPUTE_ERROR_FACTOR = 2.0   # times the alignment's max_error_px
+RECOMPUTE_ERROR_MIN_PX = 1.0   # px above it
 REMOVE_RADIUS_PX = 12      # screen pixels around a pick that a right click removes
 MARKER_RADIUS_PX = 6
 
@@ -273,10 +278,17 @@ class AxisAlignmentView(QWidget):
         self._apply_button = QPushButton("Apply")
         self._apply_button.setToolTip("Save this alignment; exported 3D points use it")
         self._apply_button.clicked.connect(self.apply)
+        self._recompute_button = QPushButton("Recompute")
+        self._recompute_button.setToolTip(
+            "Compute the alignment in use again from its saved clicks with the active "
+            "calibration; Apply to keep it"
+        )
+        self._recompute_button.clicked.connect(self.recompute)
         buttons.addWidget(self._next_button, 0, 0)
         buttons.addWidget(self._clear_button, 0, 1)
         buttons.addWidget(self._compute_button, 1, 0)
         buttons.addWidget(self._apply_button, 1, 1)
+        buttons.addWidget(self._recompute_button, 2, 0, 1, 2)
         layout.addLayout(buttons)
 
         self._results = QPlainTextEdit()
@@ -326,7 +338,7 @@ class AxisAlignmentView(QWidget):
         self._epipolar = EpipolarCache(self._cameras) if self._cameras else None
         self._computation = None
         self._results.clear()
-        self._update_status()
+        self.update_status()
         self._redraw()
 
     def refresh_takes(self, select: str | None = None) -> None:
@@ -653,6 +665,68 @@ class AxisAlignmentView(QWidget):
             lines.append(f"Change from the alignment in use: {angle:.2f}° rotation, {shift:.2f} cm origin shift")
         return "\n".join(lines)
 
+    def recompute(self) -> Computation | None:
+        """Compute the alignment in use again from its saved clicks, with the active calibration.
+
+        Shows the take and frame it was clicked on and the result, as after
+        Compute; nothing is saved until Apply. Says so when the clicks fit the
+        calibration much worse than when the alignment was made.
+        """
+        if not self._loaded:
+            self.reload_for_experiment()
+        alignment = self._project.alignment()
+        source = self._project.alignment_source()
+        if alignment is None or source is None:
+            self._results.setPlainText(
+                "There is no alignment to recompute: click the points, then Compute."
+            )
+            return None
+        if source.take not in [t.name for t in self._project.axis_takes]:
+            self._results.setPlainText(
+                f"The axis take '{source.take}' the alignment was clicked on is gone; "
+                "click the points again on another take."
+            )
+            return None
+        self.show_take_frame(source.take, source.frame)
+        if not self._picks:
+            self._results.setPlainText(
+                f"No clicks are saved for '{source.take}', frame {shown_frame(source.frame)}; "
+                "click the points again."
+            )
+            return None
+        computation = self.compute()
+        if computation is None:
+            return None
+        lines = [
+            f"Recomputed from the clicks saved for '{source.take}', frame "
+            f"{shown_frame(source.frame)}, with '{self._calibration_label()}'. "
+            "Apply to use it."
+        ]
+        old = alignment.max_error_px
+        new = computation.max_error_px
+        if old is not None and new > max(RECOMPUTE_ERROR_FACTOR * old, old + RECOMPUTE_ERROR_MIN_PX):
+            lines.append(
+                f"!  The clicks' largest reprojection error is {new:.2f} px, up from "
+                f"{old:.2f} px when the alignment was made. The new calibration may not "
+                "fit them; check the axes drawn on the cameras, and click again if they are off."
+            )
+        self._results.setPlainText("\n".join(lines) + "\n\n" + self._results.toPlainText())
+        return computation
+
+    def show_take_frame(self, take: str, frame: int) -> None:
+        """Select an axis take and a frame (0-based) of it, with its saved clicks."""
+        if self._take_combo.currentText() != take:
+            self._take_combo.setCurrentText(take)
+        self._frame_spin.blockSignals(True)
+        self._frame_spin.setValue(shown_frame(frame))
+        self._frame_spin.blockSignals(False)
+        self.set_frame(frame)
+
+    def _calibration_label(self) -> str:
+        entry_id = self._project.active_calibration_id()
+        entry = find_calibration(self._exp_dir(), entry_id) if entry_id else None
+        return entry.label if entry else (entry_id or "no calibration")
+
     def apply(self) -> bool:
         """Save the computed alignment against the active calibration."""
         if self._computation is None and self.compute() is None:
@@ -664,12 +738,16 @@ class AxisAlignmentView(QWidget):
             self._computation.alignment(calibration),
             self._project.alignment_source_for(self._take.name, self._frame),
         )
-        self._update_status()
+        self.update_status()
         self.alignment_applied.emit()
         return True
 
-    def _update_status(self) -> None:
+    def update_status(self) -> None:
+        """Say whether there is an alignment and whether it is current."""
         project = self._project
+        self._recompute_button.setEnabled(
+            project.alignment() is not None and project.alignment_source() is not None
+        )
         status = project.alignment_status()
         alignment = project.alignment()
         if status == alignment_record.NONE:
@@ -685,5 +763,6 @@ class AxisAlignmentView(QWidget):
                 entry = find_calibration(exp_dir, used) if used else None
                 now = entry.label if entry else (used or "no calibration")
                 text = (f"<span style='color:#b45309'>The alignment was computed with '{label}'; "
-                        f"the 3D points now come from '{now}'. Compute and Apply again.</span>")
+                        f"the 3D points now come from '{now}'. Recompute it from the saved "
+                        "clicks, or click again, then Apply.</span>")
         self._status.setText(text)
