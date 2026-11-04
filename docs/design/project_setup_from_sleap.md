@@ -198,6 +198,10 @@ Because calibration videos are referenced rather than moved, `Project.video_path
 calibration take must fall through to the path-resolution rule when the cell is path-valued
 (see § 1).
 
+Axis takes (Phase 16, [phase_16.md](phases/phase_16.md)) are found in the same folders by
+`align_keywords` / `align_regex`, videos or still images, whether or not a `calibration.toml`
+was found, and copied into the project like calibration videos.
+
 ### Tasks
 
 - [x] `_find_calibration_toml(dirs, camera_names) -> Path | None` — parse-and-validate, not just

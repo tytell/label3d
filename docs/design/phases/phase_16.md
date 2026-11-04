@@ -2,7 +2,7 @@
 
 **Goal**: Re-orient an experiment's 3D output to a physical reference object with a clear origin and x, y, z axes. The user clicks points on the object in two or more cameras. label3d triangulates them with the active calibration and computes an **alignment**: a rotation and an origin that are applied to the 3D points coming out of the calibration. The calibration itself is not changed. Once an experiment has an alignment, every 3D point it outputs is aligned.
 
-**Status**: In progress on branch `axis-alignment`. 16.1 (geometry) and 16.2 (axis takes, `[alignment]` record) done, apart from what the Align tab and setup do; the `CameraPanel` pick mode exists; everything else is not started.
+**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record) and 16.3 (setup) done, apart from the Align tab's part of 16.2; the `CameraPanel` pick mode exists; everything else is not started.
 
 **Builds on**: Phase 9 (calibration takes), Phase 11 (registry, `[calibration.active]` / `[calibration.triangulated_with]`), Phase 12 (refinement aligns its result back onto the start), Phase 13 (batch triangulation, export), Phase 15 (Parquet working files), Phase 20 (versions and upgrades), and 1-based frame numbers wherever the user sees or types them (`frames.py`).
 
@@ -104,32 +104,32 @@ An axis take is a row of type `axis` in `trials.csv` (`trial_types.py`; the `typ
   - `alignment_status(experiment)` returns `alignment.NONE`, `CURRENT` or `STALE` (see The transform), for `triangulated_with`, or the active calibration before anything is triangulated
   - `alignment_source_for(take_or_trial, frame)` builds the `source` record, adding each camera's start offset
   - `axis_takes` and `get_take` (calibration or axis take)
-- [ ] A take name must be unique among the experiment's trials and takes; checked by setup (16.3) and the add-take dialog (16.4)
+- [ ] A take name must be unique among the experiment's trials and takes; checked by setup (16.3, done) and the add-take dialog (16.4)
 - [ ] The Align tab's take list also offers the experiment's ordinary trials, for the occasional use of a trial frame. Nothing is copied for those; `source` records the trial and frame
 - [x] **Camera aliases**: setup writes `SetupConfig.camera_aliases` to a `[camera_aliases]` table (`LateralOrtho = ["Lateral"]`), and `Project` loads it. Projects without it have no aliases (`Project.camera_aliases`). The add-take dialog (16.4) uses it
 
 ## 16.3 Project setup (`setup_project.py`, `setup_project_cli.py`)
 
-Alignment files are found much like calibration videos. They're separate recordings with no points in them, never something read from `.slp` files.
+Axis files are found much like calibration videos. They're separate recordings with no points in them, never something read from `.slp` files.
 
-- [ ] `SetupConfig`: `align_keywords: list[str]` (e.g. `["Align"]`) and `align_regex: str`. Each keyword names one take, and a regex's `take` group (else group 1, else the whole match) supplies the name, exactly as for `calib_keywords` / `calib_regex`. Both empty (the default): no axis takes
-- [ ] Generalize `_is_calibration` / `_identify_take` / `_match_calibration_takes` to take the keyword list and regex as arguments, so alignment files use the same two-stage match. If keywords can't separate takes, fall back to `calib_match_strategy` (or `match_strategy`). `_match_calibration_takes` keeps its signature as a wrapper
-- [ ] Classification order for each file: align match → alignment; else calibration match → calibration; else trial. A file that matches both an align and a calibration keyword goes in `assignment.errors`, naming the file and both keywords
-- [ ] **Still images**: in `classify_files`, image files that match an align keyword become alignment files. The Phase 9 error for calibration images stays and is checked after alignment images are taken out; other images stay unmatched, as now
-- [ ] Experiment and camera as for calibration: `_in_listed_experiment`, `_identify_experiment`, `_identify_camera` (with `camera_aliases`)
-- [ ] `FileAssignment.axis_takes: dict[str, dict[str, dict[str, Path]]]`, keyed experiment → take → camera → file, filled by both setup routes:
+- [x] `SetupConfig`: `align_keywords: list[str]` (e.g. `["Align"]`) and `align_regex: str`. Each keyword names one take, and a regex's `take` group (else group 1, else the whole match) supplies the name, exactly as for `calib_keywords` / `calib_regex`. Both empty (the default): no axis takes
+- [x] Generalize the take matching: `_is_calibration` is now `_matches_take`, `_match_takes(config, files, keywords, regex)` does the grouping, and `_match_calibration_takes` keeps its signature as a wrapper. `SetupConfig.is_axis_file` / `is_calibration_file` test a name. If keywords can't separate takes, fall back to `calib_match_strategy` (or `match_strategy`)
+- [x] Classification order for each file: align match → axis; else calibration match → calibration; else trial. A file that matches both an align and a calibration keyword goes in `assignment.errors`, naming the file (`_file_kind`)
+- [x] **Still images**: in `classify_files`, image files that match an align keyword become axis files. The Phase 9 error for calibration images stays and is checked after axis images are taken out; other images stay unmatched, as now
+- [x] Experiment and camera as for calibration: `_in_listed_experiment`, `_identify_experiment`, `_identify_camera` (with `camera_aliases`)
+- [x] `FileAssignment.axis_takes: dict[str, dict[str, dict[str, Path]]]`, keyed experiment → take → camera → file, filled by both setup routes:
   - `classify_files` (folder setup): from `source_dir`, videos and images
-  - `classify_slp_files` (setup from SLEAP files): `_find_alignment_files(dirs, config)` searches the same folders as `_find_calibration_videos` (`calibration_dir` if given, else `source_dir` and the `.slp` folders), including images. Finding an existing `calibration.toml` doesn't stop the search, since a calibration and an alignment are separate
-  - `_unreferenced_source_videos` leaves alignment files out, so they never become trials
-- [ ] Warnings: a take with fewer than two cameras can't be triangulated; two files for one camera in one take; an axis take for an experiment with no trials. No warning when an experiment has no alignment, since alignment is optional
-- [ ] `execute_setup`:
-  - Alignment files go into `calibrations/{cam}/` and are always brought into the project, as calibration videos are: copied in reference mode, otherwise moved or copied by the video mode
-  - A file name that clashes with another file in that folder is an error before anything moves
+  - `classify_slp_files` (setup from SLEAP files): `_find_axis_files(dirs, config, assignment)` searches the same folders as `_find_calibration_videos` (`_take_search_dirs`) (`calibration_dir` if given, else `source_dir` and the `.slp` folders), including images. Finding an existing `calibration.toml` doesn't stop the search, since a calibration and an alignment are separate
+  - `_unreferenced_source_videos` leaves axis files out, so they never become trials
+- [x] `_assign_axis_takes` groups them per experiment after the trials and calibration takes are known. Errors: a take name that is also a trial or calibration take of the experiment; files whose take can't be determined (two files for one camera with no other way to separate them). Warnings: a take with fewer than two cameras can't be triangulated; an axis take for an experiment with no trials. No warning when an experiment has no alignment, since alignment is optional
+- [x] `execute_setup`:
+  - Axis files go into `calibrations/{cam}/` and are always brought into the project, as calibration videos are: copied in reference mode, otherwise moved or copied by the video mode
+  - A file name that clashes with another file in that folder is an error before anything moves (`_take_file_clashes`)
   - Rows go into `trials.csv` with `type = axis` and bare file names; `check_trial_videos` measures them
   - `write_project_toml` gets `camera_aliases` and writes `[camera_aliases]`
-- [ ] `preview_assignment` lists axis takes per experiment, with per-camera files and whether each is an image or a video, next to the calibration takes
-- [ ] CLI: both interactive routes ask for align keywords (`Alignment keywords (blank for none)`), with the regex fallback as for calibration. Setup files take `[setup] align_keywords`, `align_regex`; `config_from_toml` reads them and `save_config_toml` round-trips them. Add them to the template in `setup_project_cli.py`'s docstring
-- [ ] Projects set up before this phase have no `[alignment]` or `[camera_aliases]` table and need nothing done; their takes are added later with the dialog (16.4)
+- [x] `preview_assignment` lists axis takes per experiment, with per-camera files and whether each is an image or a video, next to the calibration takes
+- [x] CLI: both interactive routes ask for axis take keywords (`prompt_axis_takes`), with the regex fallback as for calibration; `--from-slp` takes `--align-keywords`. Setup files take `[setup] align_keywords`, `align_regex`; `config_from_toml` reads them and `save_config_toml` round-trips them. Add them to the template in `setup_project_cli.py`'s docstring
+- [x] Projects set up before this phase have no `[alignment]` or `[camera_aliases]` table and need nothing done; their takes are added later with the dialog (16.4)
 
 ## 16.4 Adding an axis take later (`widgets/add_axis_take_dialog.py`)
 

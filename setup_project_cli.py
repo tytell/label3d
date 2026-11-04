@@ -18,6 +18,8 @@ Config file format (TOML):
     calib_keyword = "calib"          # legacy single keyword
     calib_keywords = ["PreCal", "PostCal"]   # one keyword per calibration take
     calib_regex = ""                 # alternative: regex naming each take, e.g. "cal\\d+"
+    align_keywords = ["Align"]       # axis takes (videos or still images), one keyword per take
+    align_regex = ""                 # alternative: regex naming each axis take
     experiment_keywords = ["PS", "BG"]   # omit or [] for single experiment named "default";
                                          # videos naming no listed experiment are left out
     camera_aliases = { left = ["Lft"] }  # other names a camera goes by in filenames
@@ -180,6 +182,8 @@ def save_config_toml(config: SetupConfig, path: Path) -> None:
             "calib_keyword": config.calib_keyword,
             "calib_keywords": config.calib_keywords,
             "calib_regex": config.calib_regex,
+            "align_keywords": config.align_keywords,
+            "align_regex": config.align_regex,
             "experiment_keywords": config.experiment_keywords,
             "match_strategy": config.match_strategy,
         },
@@ -211,6 +215,20 @@ def save_config_toml(config: SetupConfig, path: Path) -> None:
         data["charuco"] = config.charuco
     with open(path, "w") as f:
         toml.dump(data, f)
+
+
+def prompt_axis_takes() -> dict:
+    """Prompt for the keywords, or a regex, naming axis takes; blank for none."""
+    print()
+    print("--- Axis takes (axis alignment) ---")
+    print("  Videos or still images of an object with marked x, y, z axes. Each")
+    print("  keyword names one take, e.g. Align. Leave blank if there are none;")
+    print("  they can be added later in the app (File > Add axis take...).")
+    align_keywords = prompt_optional_list("Axis take keywords")
+    align_regex = ""
+    if not align_keywords:
+        align_regex = input("Axis take regex (blank for none): ").strip()
+    return {"align_keywords": align_keywords, "align_regex": align_regex}
 
 
 def prompt_trial_matching() -> dict:
@@ -298,6 +316,7 @@ def run_interactive_slp(dry_run: bool = False, do_import: bool = True) -> None:
     calib_keywords = prompt_optional_list(
         "Calibration keywords for calibration videos [calib]"
     )
+    axis = prompt_axis_takes()
 
     charuco = prompt_charuco()
 
@@ -316,6 +335,7 @@ def run_interactive_slp(dry_run: bool = False, do_import: bool = True) -> None:
         calibration_dir=calibration_dir,
         charuco=charuco,
         project_name=project_name,
+        **axis,
         **matching,
     )
 
@@ -388,6 +408,7 @@ def run_interactive(copy_files: bool = False, dry_run: bool = False) -> None:
         print("  e.g. _(?P<take>(?:Pre|Post)Cal)_  (leave blank to use 'calib')")
         calib_regex = input("Calibration regex: ").strip()
     calib_keyword = calib_keywords[0] if calib_keywords else "calib"
+    axis = prompt_axis_takes()
 
     allow_missing = input(
         "Continue if some videos cannot be found? [y/N]: "
@@ -445,6 +466,7 @@ def run_interactive(copy_files: bool = False, dry_run: bool = False) -> None:
         charuco=charuco,
         project_name=project_name,
         copy_files=copy_files,
+        **axis,
     )
 
     # Classify files
@@ -534,6 +556,7 @@ def slp_config_from_args(args) -> SetupConfig:
         camera_aliases=parse_camera_aliases(args.camera_alias or []),
         calib_keyword=calib_keywords[0] if calib_keywords else "calib",
         calib_keywords=calib_keywords,
+        align_keywords=[s.strip() for s in args.align_keywords.split(",") if s.strip()],
         experiment_keywords=[
             s.strip() for s in (args.experiments or "").split(",") if s.strip()
         ],
@@ -660,6 +683,11 @@ def main() -> None:
         "--calib-keywords",
         default="calib",
         help="Comma-separated calibration take keywords (default: calib)",
+    )
+    slp.add_argument(
+        "--align-keywords",
+        default="",
+        help="Comma-separated axis take keywords, e.g. Align (default: none)",
     )
     slp.add_argument(
         "--video-mode",

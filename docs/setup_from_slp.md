@@ -114,6 +114,8 @@ All keys go under `[setup]` unless noted otherwise.
 | `match_strategy` | How videos are grouped into trials: `keyword` (with `trial_keyword`; the filename up to the keyword and its number, e.g. `PS21_Trial7`, names the trial), `regex` (with `trial_regex`; group 1 is the trial), `number`, `datestamp` (with `datestamp_window_sec`), or `mtime` (with `mtime_window_sec`). |
 | `calib_keywords` | One keyword per calibration take, e.g. `["Pre-Cal", "Post-Cal"]`. |
 | `calib_regex` | Alternative to `calib_keywords`: each distinct match is a take, named by the `take` group if there is one. |
+| `align_keywords` | One keyword per axis take (an object with marked axes, for axis alignment), e.g. `["Align"]`. Axis takes may be still images. Default: none. |
+| `align_regex` | Alternative to `align_keywords`, as `calib_regex` is to `calib_keywords`. |
 | `video_mode` | `reference` (leave videos in place), `copy`, or `move`. Calibration videos are always copied into the project. |
 | `video_search_dirs` | Folders to search when a recorded video path no longer exists. |
 | `calibration_dir` | Folder to search for calibration videos or a `calibration.toml`. Without it, setup searches `source_dir` and the `.slp` files' folders. |
@@ -143,6 +145,10 @@ For each experiment, setup uses the first of these it finds:
 3. Calibration videos in the searched folders, found by `calib_keywords` or `calib_regex`. With `experiment_keywords` set, a calibration video's filename must also name its experiment, e.g. `Pre-Cal_PS21_Charuco_Ventral.mp4`.
 
 An experiment with none of these is set up without a calibration.
+
+### Axis takes
+
+Axis takes (Phase 16) are recordings of an object with marked x, y, z axes, used to align the 3D points to that object. They're found in the same folders as calibration videos, by `align_keywords` or `align_regex`; a still image per camera is fine. Each one becomes a row of type `axis` in `trials.csv`, and its files are copied into `experiments/{experiment}/calibrations/{camera}/`, like calibration videos, whatever the `video_mode`. Finding a `calibration.toml` doesn't stop the search. A file matching both an align keyword and a calibration keyword stops setup. Axis takes can also be added later in the app.
 
 ### Skeletons
 
@@ -199,7 +205,7 @@ You can also run it without a setup file, before writing one:
 uv run python inspect_slp_cli.py BGvPS_flat/ --cameras LateralOrtho,LateralOffAxis,Ventral
 ```
 
-The other flags are `--trial-keyword`, `--mtime-window`, `--datestamp-window` and `--calib-keywords`.
+The other flags are `--trial-keyword`, `--mtime-window`, `--datestamp-window`, `--calib-keywords` and `--align-keywords`.
 
 ### Reading the problems
 

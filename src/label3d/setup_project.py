@@ -21,7 +21,7 @@ from label3d.frames import FRAME_BASE
 from label3d.project import Project, check_trial_videos, write_trials_csv
 from label3d.skeleton import Skeleton, assign_in_config, merge_skeletons
 from label3d.slp_sync import MODELS_DIR, SlpMapping, find_slp_files, slp_file_path
-from label3d.trial_types import CALIBRATION, TRIAL, TYPE_COLUMN
+from label3d.trial_types import AXIS, CALIBRATION, TRIAL, TYPE_COLUMN
 from label3d.video import IMAGE_EXTENSIONS
 
 logger = logging.getLogger(__name__)
@@ -67,6 +67,11 @@ class SetupConfig:
     calib_regex: str = ""
     # Strategy used to separate takes when keywords/regex cannot; "" → match_strategy
     calib_match_strategy: str = ""
+    # Axis take identification (Phase 16), as for calibration takes: each
+    # keyword names one take, e.g. ["Align"], and align_regex is the
+    # alternative. Axis takes may be still images. Both empty: no axis takes.
+    align_keywords: list[str] = field(default_factory=list)
+    align_regex: str = ""
     # --- SLP-first setup (see docs/design/project_setup_from_sleap.md) ---
     # Source .slp files; when set, classify_slp_files() replaces classify_files()
     # and source_dir is unused.
@@ -121,6 +126,13 @@ class SetupConfig:
             return list(self.calib_keywords)
         return [self.calib_keyword] if self.calib_keyword else []
 
+    def is_axis_file(self, filename: str) -> bool:
+        """Does a file name match the axis take keywords or regex?"""
+        return _matches_take(filename, self.align_keywords, self.align_regex)
+
+    def is_calibration_file(self, filename: str) -> bool:
+        return _matches_take(filename, self.effective_calib_keywords(), self.calib_regex)
+
 
 @dataclass
 class VideoReference:
@@ -149,6 +161,8 @@ class FileAssignment:
     exp_calibration: dict[str, dict[str, list[Path]]] = field(default_factory=dict)
     # experiment_name -> take_name -> {camera_name: calib video} (Phase 9)
     calibration_takes: dict[str, dict[str, dict[str, Path]]] = field(default_factory=dict)
+    # experiment_name -> take_name -> {camera_name: video or image} (Phase 16)
+    axis_takes: dict[str, dict[str, dict[str, Path]]] = field(default_factory=dict)
     # files that couldn't be assigned
     unmatched: list[Path] = field(default_factory=list)
     # videos left out because they name no listed experiment
@@ -207,12 +221,10 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         elif ext in IMAGE_EXTENSIONS:
             image_files.append(f)
 
-    # Classify each file by camera
-    calib_kws = config.effective_calib_keywords()
-
-    # Separate calibration vs data files
+    # Separate axis, calibration and data files
     calib_videos: list[tuple[str, Path]] = []  # (camera, path)
     calib_images: list[tuple[str, Path]] = []
+    axis_files: list[tuple[str, Path]] = []    # videos and images
     data_videos: list[tuple[str, Path]] = []
 
     for f in video_files:
@@ -226,9 +238,12 @@ def classify_files(config: SetupConfig) -> FileAssignment:
                 _no_camera_warning(f)
             )
             continue
-        if _is_calibration(f.name, calib_kws, config.calib_regex):
+        kind = _file_kind(f, config, assignment)
+        if kind == AXIS:
+            axis_files.append((camera, f))
+        elif kind == CALIBRATION:
             calib_videos.append((camera, f))
-        else:
+        elif kind == TRIAL:
             data_videos.append((camera, f))
 
     for f in image_files:
@@ -236,9 +251,16 @@ def classify_files(config: SetupConfig) -> FileAssignment:
         if camera is None:
             assignment.unmatched.append(f)
             continue
-        if _is_calibration(f.name, calib_kws, config.calib_regex):
+        kind = _file_kind(f, config, assignment)
+        if kind == AXIS:
+            # Axis takes may be still images; calibration takes may not
+            if _in_listed_experiment(f.name, config.experiment_keywords):
+                axis_files.append((camera, f))
+            else:
+                assignment.excluded.append(f)
+        elif kind == CALIBRATION:
             calib_images.append((camera, f))
-        else:
+        elif kind == TRIAL:
             assignment.unmatched.append(f)
 
     if calib_images:
@@ -403,8 +425,98 @@ def classify_files(config: SetupConfig) -> FileAssignment:
                 f"Experiment '{exp}' has no calibration video for: {', '.join(missing)}"
             )
 
+    _assign_axis_takes(config, assignment, axis_files)
     _apply_config_skeleton(config, assignment)
     return assignment
+
+
+def _file_kind(f: Path, config: SetupConfig, assignment: FileAssignment) -> str:
+    """AXIS, CALIBRATION or TRIAL by the take keywords; "" (with an error) for both."""
+    axis = config.is_axis_file(f.name)
+    calibration = config.is_calibration_file(f.name)
+    if axis and calibration:
+        assignment.errors.append(
+            f"'{f.name}' matches both an axis take keyword and a calibration keyword; "
+            "rename it or change align_keywords / calib_keywords"
+        )
+        return ""
+    return AXIS if axis else CALIBRATION if calibration else TRIAL
+
+
+def _assign_axis_takes(
+    config: SetupConfig, assignment: FileAssignment, axis_files: list[tuple[str, Path]]
+) -> None:
+    """Group axis files into takes per experiment (Phase 16), as calibration takes are.
+
+    Run after the trials and calibration takes are known: a take's name must
+    differ from every trial and calibration take of its experiment.
+    """
+    by_exp: dict[str, list[tuple[str, Path]]] = {}
+    for camera, filepath in axis_files:
+        exp = (
+            _identify_experiment(filepath.name, config.experiment_keywords)
+            if config.experiment_keywords
+            else "default"
+        )
+        by_exp.setdefault(exp, []).append((camera, filepath))
+
+    for exp, files in sorted(by_exp.items()):
+        takes, unresolved = _match_takes(config, files, config.align_keywords, config.align_regex)
+        if unresolved:
+            names = ", ".join(sorted(fp.name for fp in unresolved))
+            assignment.errors.append(
+                f"Could not determine the axis take for: {names}. Give each take its own "
+                "keyword via align_keywords, or set align_regex to a pattern that "
+                "matches each take's name."
+            )
+        if not takes:
+            continue
+        assignment.axis_takes[exp] = takes
+        trials = {t for t in assignment.trials if assignment.trial_experiment.get(t, "default") == exp}
+        taken = trials | set(assignment.calibration_takes.get(exp, {}))
+        for take, cam_files in sorted(takes.items()):
+            if take in taken:
+                assignment.errors.append(
+                    f"Axis take '{take}' in experiment '{exp}' has the same name as a "
+                    "trial or calibration take"
+                )
+            if len(cam_files) < 2:
+                assignment.warnings.append(
+                    f"Axis take '{take}' in experiment '{exp}' has {len(cam_files)} camera; "
+                    "at least two are needed to triangulate its points"
+                )
+        if not trials:
+            assignment.warnings.append(
+                f"Axis take(s) for experiment '{exp}', which has no trials"
+            )
+
+
+def _take_search_dirs(config: SetupConfig, slp_paths: list[Path]) -> list[Path]:
+    """Where SLP-first setup looks for calibration and axis files."""
+    if config.calibration_dir is not None:
+        return [Path(config.calibration_dir)]
+    return sorted({Path(config.source_dir), *(p.parent for p in slp_paths)})
+
+
+def _find_axis_files(
+    dirs: list[Path], config: SetupConfig, assignment: FileAssignment
+) -> list[tuple[str, Path]]:
+    """Axis take videos and images found in dirs, as (camera, path) pairs."""
+    found: list[tuple[str, Path]] = []
+    for directory in dirs:
+        if not directory.is_dir():
+            continue
+        for f in sorted(directory.iterdir()):
+            if not f.is_file() or f.suffix.lower() not in VIDEO_EXTENSIONS | IMAGE_EXTENSIONS:
+                continue
+            if not config.is_axis_file(f.name) or _file_kind(f, config, assignment) != AXIS:
+                continue
+            if not _in_listed_experiment(f.name, config.experiment_keywords):
+                continue
+            camera = _identify_camera_from_path(f, config.camera_names, config.camera_aliases)
+            if camera is not None:
+                found.append((camera, f.resolve()))
+    return found
 
 
 def classify_slp_files(config: SetupConfig) -> FileAssignment:
@@ -533,6 +645,9 @@ def classify_slp_files(config: SetupConfig) -> FileAssignment:
         assignment.warnings.append(_missing_video_warning(ref, slp_name))
 
     _assign_calibration(config, assignment, slp_paths)
+    _assign_axis_takes(
+        config, assignment, _find_axis_files(_take_search_dirs(config, slp_paths), config, assignment)
+    )
     _apply_config_skeleton(config, assignment)
     return assignment
 
@@ -589,6 +704,8 @@ def config_from_toml(
         calib_keywords=setup.get("calib_keywords", []),
         calib_regex=setup.get("calib_regex", ""),
         calib_match_strategy=setup.get("calib_match_strategy", ""),
+        align_keywords=setup.get("align_keywords", []),
+        align_regex=setup.get("align_regex", ""),
         experiment_keywords=setup.get("experiment_keywords", []),
         camera_aliases={
             str(cam): [str(a) for a in ([names] if isinstance(names, str) else names)]
@@ -662,7 +779,8 @@ def _unreferenced_source_videos(
 ) -> list[tuple[str, Path]]:
     """Data videos in source_dir that no .slp file refers to, as (camera, path).
 
-    Calibration videos are left out; _assign_calibration finds them.
+    Calibration and axis videos are left out; _assign_calibration and
+    _find_axis_files find them.
     """
     source = Path(config.source_dir)
     if not source.is_dir():
@@ -672,7 +790,7 @@ def _unreferenced_source_videos(
     for f in sorted(source.iterdir()):
         if not f.is_file() or f.suffix.lower() not in VIDEO_EXTENSIONS:
             continue
-        if _is_calibration(f.name, keywords, config.calib_regex):
+        if _matches_take(f.name, keywords, config.calib_regex) or config.is_axis_file(f.name):
             continue
         resolved = f.resolve()
         if resolved in seen:
@@ -844,8 +962,10 @@ def _find_calibration_videos(
         for f in sorted(directory.iterdir()):
             if not f.is_file() or f.suffix.lower() not in VIDEO_EXTENSIONS:
                 continue
-            if not _is_calibration(f.name, keywords, config.calib_regex):
+            if not _matches_take(f.name, keywords, config.calib_regex):
                 continue
+            if config.is_axis_file(f.name):
+                continue  # an axis file, or one matching both (_find_axis_files says so)
             if not _in_listed_experiment(f.name, config.experiment_keywords):
                 continue
             camera = _identify_camera_from_path(f, config.camera_names, config.camera_aliases)
@@ -870,11 +990,7 @@ def _assign_calibration(
             assignment.calibration_toml[exp] = Path(config.calibration_toml)
         return
 
-    dirs = (
-        [Path(config.calibration_dir)]
-        if config.calibration_dir is not None
-        else sorted({Path(config.source_dir), *(p.parent for p in slp_paths)})
-    )
+    dirs = _take_search_dirs(config, slp_paths)
 
     found_toml = _find_calibration_toml(dirs, config.camera_names)
     if found_toml is not None:
@@ -1072,6 +1188,37 @@ def _preview_calibration(config: SetupConfig, assignment: FileAssignment) -> lis
     return lines
 
 
+def _preview_axis_takes(
+    config: SetupConfig, assignment: FileAssignment, verbosity: int
+) -> list[str]:
+    """Every experiment's axis takes: each camera's file, an image or a video.
+
+    Verbosity 1 and below names the takes only. Nothing when no align keywords
+    or regex were given.
+    """
+    if not (config.align_keywords or config.align_regex):
+        return []
+    if not assignment.axis_takes:
+        return ["Axis takes: none found", ""]
+    n_takes = sum(len(t) for t in assignment.axis_takes.values())
+    lines = [f"Axis takes ({n_takes}):"]
+    for exp_name in sorted(assignment.axis_takes):
+        takes = assignment.axis_takes[exp_name]
+        if verbosity <= 1:
+            lines.append(f"  [{exp_name}]  {', '.join(sorted(takes))}")
+            continue
+        lines.append(f"  [{exp_name}]")
+        for take in sorted(takes):
+            parts = []
+            for cam in config.camera_names:
+                f = takes[take].get(cam)
+                kind = "-- !" if f is None else "image" if f.suffix.lower() in IMAGE_EXTENSIONS else "video"
+                parts.append(f"{cam}: {kind}")
+            lines.append(f"    {take} — " + "  ".join(parts))
+    lines.append("")
+    return lines
+
+
 def preview_assignment(
     config: SetupConfig, assignment: FileAssignment, verbosity: int = 3
 ) -> str:
@@ -1124,6 +1271,7 @@ def preview_assignment(
         lines += _preview_calibration_summary(config, assignment)
     else:
         lines += _preview_calibration(config, assignment)
+    lines += _preview_axis_takes(config, assignment, verbosity)
 
     # Multi-group split
     if assignment.needs_split:
@@ -1327,6 +1475,12 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
 
     if assignment.errors:
         raise ValueError("Setup can't go ahead:\n  " + "\n  ".join(assignment.errors))
+    clashes = _take_file_clashes(assignment)
+    if clashes:
+        raise ValueError(
+            "Files of different takes would have the same name in calibrations/:\n  "
+            + "\n  ".join(clashes)
+        )
 
     if assignment.missing_videos and not config.allow_missing_videos:
         names = ", ".join(str(ref) for ref, _ in assignment.missing_videos[:5])
@@ -1357,7 +1511,9 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
 
     # Create directory structure and move/copy files per experiment.
     # Calibration takes get rows too, of type calibration.
-    all_experiments = sorted(set(exp_trials) | set(assignment.calibration_takes))
+    all_experiments = sorted(
+        set(exp_trials) | set(assignment.calibration_takes) | set(assignment.axis_takes)
+    )
     trials_rows: list[dict] = []
     active_calibrations: dict[str, str] = {}
     for exp_name in all_experiments:
@@ -1378,6 +1534,12 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
             cam_dir = camera_dir(exp_dir, cam)
             cam_dir.mkdir(parents=True, exist_ok=True)
             for f in files:
+                calib_transfer(str(f), str(cam_dir / f.name))
+        # Axis take files (Phase 16) go beside them, the same way
+        for cam_files in assignment.axis_takes.get(exp_name, {}).values():
+            for cam, f in cam_files.items():
+                cam_dir = camera_dir(exp_dir, cam)
+                cam_dir.mkdir(parents=True, exist_ok=True)
                 calib_transfer(str(f), str(cam_dir / f.name))
 
         # An existing aniposelib calibration becomes an "imported" registry
@@ -1411,6 +1573,11 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
             cam_files = assignment.calibration_takes[exp_name][take]
             row = _blank_row(exp_name, take, CALIBRATION, config.camera_names)
             for cam, src in cam_files.items():
+                _fill_cell(row, cam, src.name)
+            trials_rows.append(row)
+        for take in sorted(assignment.axis_takes.get(exp_name, {})):
+            row = _blank_row(exp_name, take, AXIS, config.camera_names)
+            for cam, src in assignment.axis_takes[exp_name][take].items():
                 _fill_cell(row, cam, src.name)
             trials_rows.append(row)
 
@@ -1464,6 +1631,26 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
     )
 
     return out
+
+
+def _take_file_clashes(assignment: FileAssignment) -> list[str]:
+    """Different files that would land on one name in an experiment's calibrations/{cam}/."""
+    clashes: list[str] = []
+    experiments = set(assignment.exp_calibration) | set(assignment.axis_takes)
+    for exp in sorted(experiments):
+        by_dest: dict[tuple[str, str], set[Path]] = {}
+        for cam, files in assignment.exp_calibration.get(exp, {}).items():
+            for f in files:
+                by_dest.setdefault((cam, f.name), set()).add(Path(f).resolve())
+        for cam_files in assignment.axis_takes.get(exp, {}).values():
+            for cam, f in cam_files.items():
+                by_dest.setdefault((cam, f.name), set()).add(Path(f).resolve())
+        for (cam, name), sources in sorted(by_dest.items()):
+            if len(sources) > 1:
+                clashes.append(
+                    f"[{exp}] {cam}/{name}: " + ", ".join(str(s) for s in sorted(sources))
+                )
+    return clashes
 
 
 def import_labels(project_dir: Path) -> dict[str, int]:
@@ -1863,8 +2050,8 @@ def _run_match_strategy(
     raise ValueError(f"Unknown match strategy: {strategy}")
 
 
-def _is_calibration(filename: str, keywords: list[str], regex: str) -> bool:
-    """Stage 1: does this file look like calibration at all?"""
+def _matches_take(filename: str, keywords: list[str], regex: str) -> bool:
+    """Stage 1: does this file belong to a take (calibration or axis) at all?"""
     low = filename.lower()
     if any(kw.lower() in low for kw in keywords):
         return True
@@ -1874,7 +2061,7 @@ def _is_calibration(filename: str, keywords: list[str], regex: str) -> bool:
 
 
 def _identify_take(filename: str, keywords: list[str], regex: str) -> str | None:
-    """Stage 2: which calibration take does this file belong to?
+    """Stage 2: which take does this file belong to?
 
     The matched keyword *is* the take name. With a regex, a named group "take"
     (else group 1, else the whole match) supplies it. Returns None when the
@@ -1910,18 +2097,27 @@ def _identify_take(filename: str, keywords: list[str], regex: str) -> str | None
 def _match_calibration_takes(
     config: SetupConfig, calib_videos: list[tuple[str, Path]]
 ) -> tuple[dict[str, dict[str, Path]], list[Path]]:
-    """Group one experiment's calibration videos into takes.
+    """Group one experiment's calibration videos into takes (see _match_takes)."""
+    return _match_takes(config, calib_videos, config.effective_calib_keywords(), config.calib_regex)
+
+
+def _match_takes(
+    config: SetupConfig,
+    calib_videos: list[tuple[str, Path]],
+    keywords: list[str],
+    regex: str,
+) -> tuple[dict[str, dict[str, Path]], list[Path]]:
+    """Group one experiment's take files (calibration or axis) into takes.
 
     Tries keyword/regex first. If that leaves a take undetermined — or puts two
     files from the same camera in one take — falls back to the configured
     match strategy. Returns (takes, unresolved_files).
     """
-    keywords = config.effective_calib_keywords()
     takes: dict[str, dict[str, Path]] = {}
     ambiguous = False
 
     for cam, fp in calib_videos:
-        take = _identify_take(fp.name, keywords, config.calib_regex)
+        take = _identify_take(fp.name, keywords, regex)
         if take is None or cam in takes.get(take, {}):
             ambiguous = True
             break
