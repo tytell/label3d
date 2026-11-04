@@ -156,9 +156,11 @@ def add_from_files(project: Project, take: str, files: dict[str, Path]) -> None:
 def add_from_frame(project: Project, take: str, source: str, frame: int) -> AlignmentSource:
     """Extract one frame (0-based, synchronized) of a calibration take or trial as an axis take.
 
-    Each camera's video is read at its start offset plus frame. The stills are
-    {take}_{camera}.png in calibrations/{camera}/, and where they came from is
-    recorded in [alignment.{exp}.extracted.{take}]. Returns that record.
+    Each camera's video is read at its start offset plus frame. The stills go
+    in calibrations/{camera}/ named by video and frame in it
+    (setup_project.axis_still_name); one already there is that same frame and
+    is used as it is. Where they came from is recorded in
+    [alignment.{exp}.extracted.{take}]. Returns that record.
     """
     check_take_name(project, take)
     info, source_type = _find_source(project, source)
@@ -170,13 +172,12 @@ def add_from_frame(project: Project, take: str, source: str, frame: int) -> Alig
         video = project.video_path(source, cam)
         if start + frame >= frame_count(video):
             raise AxisTakeError(f"'{source}' has no frame {shown_frame(frame)} for {cam}.")
-        still = camera_dir(exp_dir, cam) / axis_still_name(take, cam)
-        if still.exists():
-            raise AxisTakeError(f"calibrations/{cam}/{still.name} already exists.")
+        still = camera_dir(exp_dir, cam) / axis_still_name(video, start + frame)
         plan[cam] = (video, start + frame, still)
     _check_cameras(project, plan)
     for video, video_frame, still in plan.values():
-        extract_frame(video, video_frame, still)
+        if not still.exists():
+            extract_frame(video, video_frame, still)
 
     record = AlignmentSource(
         take=source, type=source_type, frame=frame,

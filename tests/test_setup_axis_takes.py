@@ -297,12 +297,12 @@ class TestAxisFrames:
 
         out = execute_setup(config, assignment)
         for cam in CAMERAS:
-            still = out / "experiments/default/calibrations" / cam / f"Align_{cam}.png"
+            still = out / "experiments/default/calibrations" / cam / f"{cam}_calib-axis-fr0003.png"
             assert frame_value(still) == pytest.approx(80, abs=4)
         df = pd.read_csv(out / "trials.csv")
         row = df[df["trial"] == "Align"].iloc[0]
         assert row["type"] == "axis"
-        assert row["cam1"] == "Align_cam1.png"
+        assert row["cam1"] == "cam1_calib-axis-fr0003.png"
         assert row["cam1_end"] == 1
 
         extracted = toml.load(out / "project.toml")["alignment"]["default"]["extracted"]["Align"]
@@ -317,7 +317,7 @@ class TestAxisFrames:
         config = folder_config(frames_folder, align_keywords=[], axis_frames={"Align": ("Trial2", 0)})
         out = execute_setup(config, classify_files(config))
         assert not (frames_folder / "cam1_Trial2.mp4").exists()     # moved
-        still = out / "experiments/default/calibrations/cam1/Align_cam1.png"
+        still = out / "experiments/default/calibrations/cam1/cam1_Trial2-axis-fr0001.png"
         assert frame_value(still) == pytest.approx(0, abs=4)
         project = Project.load(out)
         assert project.trial_names() == ["Trial1", "Trial2"]
@@ -358,7 +358,7 @@ class TestAxisFrames:
             slp_paths=slps, video_mode="reference", axis_frames={"Align": ("Trial1", 1)},
         )
         out = execute_setup(config, classify_slp_files(config))
-        still = out / "experiments/default/calibrations/cam2/Align_cam2.png"
+        still = out / "experiments/default/calibrations/cam2/cam2_Trial1-axis-fr0002.png"
         assert frame_value(still) == pytest.approx(40, abs=4)
         assert videos[("cam2", "Trial1")].is_file()   # referenced in place, untouched
 

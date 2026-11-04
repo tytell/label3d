@@ -166,9 +166,13 @@ class AxisFrame:
     videos: dict[str, Path]     # camera -> source video
 
 
-def axis_still_name(take: str, camera: str) -> str:
-    """File name of an extracted axis take still in calibrations/{camera}/."""
-    return f"{take}_{camera}.png"
+def axis_still_name(video: Path, frame: int) -> str:
+    """File name of an axis take still extracted from frame (0-based) of a video.
+
+    The video's name, then the frame within that video numbered from
+    FRAME_BASE: cam1_PreCal.mp4, frame 0 -> cam1_PreCal-axis-fr0001.png.
+    """
+    return f"{Path(video).stem}-axis-fr{shown_frame(frame):04d}.png"
 
 
 @dataclass
@@ -1651,7 +1655,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         for take, axis_frame in sorted(assignment.axis_frames.get(exp_name, {}).items()):
             for cam, video in axis_frame.videos.items():
                 extract_frame(video, axis_frame.frame,
-                              camera_dir(exp_dir, cam) / axis_still_name(take, cam))
+                              camera_dir(exp_dir, cam) / axis_still_name(video, axis_frame.frame))
 
         # Calibration videos always come into the project, even in reference
         # mode: they are small, they come from calibration_dir rather than
@@ -1710,8 +1714,8 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
             trials_rows.append(row)
         for take, axis_frame in sorted(assignment.axis_frames.get(exp_name, {}).items()):
             row = _blank_row(exp_name, take, AXIS, config.camera_names)
-            for cam in axis_frame.videos:
-                _fill_cell(row, cam, axis_still_name(take, cam))
+            for cam, video in axis_frame.videos.items():
+                _fill_cell(row, cam, axis_still_name(video, axis_frame.frame))
             trials_rows.append(row)
 
     # Write trials.csv at project root with experiment column
@@ -1795,7 +1799,7 @@ def _take_file_clashes(assignment: FileAssignment) -> list[str]:
         for take, axis_frame in assignment.axis_frames.get(exp, {}).items():
             for cam, video in axis_frame.videos.items():
                 still = f"{video} frame {shown_frame(axis_frame.frame)}"
-                by_dest.setdefault((cam, axis_still_name(take, cam)), set()).add(Path(still))
+                by_dest.setdefault((cam, axis_still_name(video, axis_frame.frame)), set()).add(Path(still))
         for (cam, name), sources in sorted(by_dest.items()):
             if len(sources) > 1:
                 clashes.append(

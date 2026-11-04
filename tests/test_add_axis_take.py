@@ -13,6 +13,7 @@ import toml
 from label3d import axis_takes
 from label3d.axis_takes import AxisTakeError
 from label3d.project import Project
+from label3d.setup_project import axis_still_name
 from label3d.widgets.add_axis_take_dialog import FRAME_TAB, AddAxisTakeDialog
 from tests.helpers import make_current
 
@@ -150,8 +151,8 @@ class TestFromFrame:
     def test_frame_of_a_trial_uses_offsets(self, project, project_root):
         record = axis_takes.add_from_frame(project, "Align", "trial1", 1)
         calib = project_root / "experiments/exp1/calibrations"
-        assert mean(calib / "cam1/Align_cam1.png") == pytest.approx(40, abs=4)
-        assert mean(calib / "cam2/Align_cam2.png") == pytest.approx(120, abs=4)
+        assert mean(calib / "cam1/cam1_t1-axis-fr0002.png") == pytest.approx(40, abs=4)
+        assert mean(calib / "cam2/cam2_t1-axis-fr0004.png") == pytest.approx(120, abs=4)
         assert record.videos == {"cam1": ("cam1_t1.mp4", 1), "cam2": ("cam2_t1.mp4", 3)}
 
         on_disk = toml.load(project_root / "project.toml")["alignment"]["exp1"]["extracted"]["Align"]
@@ -163,15 +164,33 @@ class TestFromFrame:
 
     def test_frame_of_a_calibration_take(self, project, project_root):
         axis_takes.add_from_frame(project, "Align", "PreCal", 0)
-        assert mean(project_root / "experiments/exp1/calibrations/cam2/Align_cam2.png") == pytest.approx(0, abs=4)
+        assert mean(project_root / "experiments/exp1/calibrations/cam2/cam2_pre-axis-fr0001.png") == pytest.approx(0, abs=4)
         assert project.extracted_axis_takes()["Align"].type == "calibration"
+
+    def test_still_names(self):
+        assert axis_still_name(Path("/v/cam1_PreCal.mp4"), 0) == "cam1_PreCal-axis-fr0001.png"
+        assert axis_still_name(Path("cam2_t1.avi"), 12344) == "cam2_t1-axis-fr12345.png"
+
+    def test_rows_name_the_stills(self, project, project_root):
+        axis_takes.add_from_frame(project, "Align", "trial1", 1)
+        raw = pd.read_csv(project_root / "trials.csv")
+        row = raw[raw["trial"] == "Align"].iloc[0]
+        assert (row["cam1"], row["cam2"]) == ("cam1_t1-axis-fr0002.png", "cam2_t1-axis-fr0004.png")
+
+    def test_second_take_from_the_same_frame_reuses_the_stills(self, project, project_root):
+        axis_takes.add_from_frame(project, "Align", "PreCal", 0)
+        still = project_root / "experiments/exp1/calibrations/cam1/cam1_pre-axis-fr0001.png"
+        stamp = still.stat().st_mtime_ns
+        axis_takes.add_from_frame(project, "Align2", "PreCal", 0)
+        assert still.stat().st_mtime_ns == stamp
+        assert [t.name for t in project.axis_takes] == ["Align", "Align2"]
 
     def test_missing_frame_writes_nothing(self, project, project_root):
         before = (project_root / "trials.csv").read_text()
         with pytest.raises(AxisTakeError, match="no frame 5 for cam2"):
             axis_takes.add_from_frame(project, "Align", "trial1", 4)   # cam2 runs out at 4 + 2
         assert (project_root / "trials.csv").read_text() == before
-        assert not list((project_root / "experiments/exp1/calibrations").rglob("Align_*.png"))
+        assert not list((project_root / "experiments/exp1/calibrations").rglob("*-axis-*.png"))
 
     def test_unknown_source(self, project):
         with pytest.raises(AxisTakeError, match="no calibration take or trial 'Nope'"):

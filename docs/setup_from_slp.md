@@ -151,7 +151,7 @@ An experiment with none of these is set up without a calibration.
 
 Axis takes (Phase 16) are recordings of an object with marked x, y, z axes, used to align the 3D points to that object. They're found in the same folders as calibration videos, by `align_keywords` or `align_regex`; a still image per camera is fine. Each one becomes a row of type `axis` in `trials.csv`, and its files are copied into `experiments/{experiment}/calibrations/{camera}/`, like calibration videos, whatever the `video_mode`. Finding a `calibration.toml` doesn't stop the search. A file matching both an align keyword and a calibration keyword stops setup. Axis takes can also be added later in the app.
 
-When the object is in a calibration take or a trial instead, name it in `[setup.axis_frames]`; setup saves that frame (numbered from 1, default 1) of each camera's video as a still, `{take}_{camera}.png`, and records where it came from under `[alignment]` in `project.toml`:
+When the object is in a calibration take or a trial instead, name it in `[setup.axis_frames]`; setup saves that frame (numbered from 1, default 1) of each camera's video as a still named after the video and the frame in it, e.g. `cam1_PreCal-axis-fr0001.png`, and records where it came from under `[alignment]` in `project.toml`:
 
 ```toml
 [setup.axis_frames]
