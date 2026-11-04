@@ -2,7 +2,7 @@
 
 **Goal**: Re-orient an experiment's 3D output to a physical reference object with a clear origin and x, y, z axes. The user clicks points on the object in two or more cameras. label3d triangulates them with the active calibration and computes an **alignment**: a rotation and an origin that are applied to the 3D points coming out of the calibration. The calibration itself is not changed. Once an experiment has an alignment, every 3D point it outputs is aligned.
 
-**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup), 16.4 (adding axis takes later) and 16.5 (saved clicks, computing from them) done, apart from the Align tab's parts; the `CameraPanel` pick mode exists; everything else is not started.
+**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup), 16.4 (adding axis takes later), 16.5 (saved clicks, computing from them) and 16.6 (the Align tab) done; 16.7 (aligned output) and 16.8 (recomputing) are next.
 
 **Builds on**: Phase 9 (calibration takes), Phase 11 (registry, `[calibration.active]` / `[calibration.triangulated_with]`), Phase 12 (refinement aligns its result back onto the start), Phase 13 (batch triangulation, export), Phase 15 (Parquet working files), Phase 20 (versions and upgrades), and 1-based frame numbers wherever the user sees or types them (`frames.py`).
 
@@ -142,7 +142,7 @@ Axis files are found much like calibration videos. They're separate recordings w
 ## 16.4 Adding an axis take later (`axis_takes.py`, `widgets/add_axis_take_dialog.py`)
 
 - [x] **File > Add axis take...** opens `AddAxisTakeDialog` for the active experiment, named in the dialog
-- [ ] An **Add take...** button on the Align tab opens it too, and the Align tab selects the new take (16.6)
+- [x] An **Add take...** button on the Align tab opens it too, and the Align tab selects the new take (16.6); File > Add axis take... refreshes the Align tab's list
 - [x] **Files** tab: choose several files, or a folder (its images and videos, `axis_takes.media_files`). `axis_takes.match_files` matches them to cameras as setup does (`setup_project.identify_camera`, with `[camera_aliases]`); a second file for a camera, or one naming no camera, is listed as unmatched. A combo per camera lets the user change or clear a match. **Add** is disabled until at least two cameras have a file
 - [x] Take name: what the file names share once the camera's name is taken out (`PS18_Align_cam1.png` → `PS18_Align`, `suggest_take_name`), else `Align`; `Align2`, … when taken. The user can edit it; it must be unique among the experiment's trials and takes (`check_take_name`, checked as the user types)
 - [x] `axis_takes.add_from_files`: the files are **copied** (never moved) into `calibrations/{cam}/` (`setup_project.copy_file`). The same file already there is fine; a different file of that name is refused before anything changes
@@ -162,34 +162,21 @@ Axis files are found much like calibration videos. They're separate recordings w
 
 ## 16.6 Align tab (`widgets/axis_alignment_view.py`)
 
-- [ ] Main window: tabs become **Calibrate | Align | Label** (stack 0, 1, 2). Fix `_on_tab_changed` and session save/restore, which assume Label is index 1, and keep starting on Label. Align is disabled with a tooltip while the experiment has no active calibration. The top bar's experiment and calibration selectors apply as on the other tabs
-- [ ] `AxisAlignmentView(QWidget)` has its own `CameraGrid` and frame provider. The Label tab's grid isn't shared, and there's no `ProjectState` coupling. It reloads on experiment switch and when the active calibration changes (`calibrations_changed`)
-- [ ] Left: axis take combo and frame controls (the spinbox shows 1-based frames via `shown_frame` / `stored_frame`; hidden for 1-frame takes)
-- [ ] Right panel:
-  - Status line: no alignment / current / stale ("computed with *label*; the 3D points now come from *label*"), with **Recompute** when stale (16.8)
-  - Mode: **1 point per axis** / **2 points per axis**
-  - Third axis: **Clicked** / **X from Y × Z** / **Y from Z × X** / **Z from X × Y**. A derived axis's pick rows are hidden
-  - Pick table: one row per target (Origin, X / X near, X far, …). Columns: number of cameras picked, mean reprojection error after Compute. Clicking a row makes it the active target
-  - Primary axis: **Longest (auto)** / **Lowest error (auto)** / **X** / **Y** / **Z**
-  - Flip X / Y / Z checkboxes
-  - Known length (cm, optional) per axis
-  - **Compute**, **Apply**, **Clear picks**; a read-only results area
-- [ ] Picking:
-  1. Choosing a target puts every `CameraPanel` into pick mode (`set_pick_mode(True)`)
-  2. A left click in a camera sets (or replaces) that camera's pick for the active target, via `raw_clicked`. A right click on a pick removes it. Escape leaves pick mode
-  3. Picks are drawn as labelled markers (`O`, `X1`, `X2`, …). For the active target, epipolar lines from the other cameras' picks are shown (`EpipolarCache`)
-  4. Once a target has picks in every camera that shows it, **Next** (or Enter) moves to the next target
-  5. A target needs ≥ 2 cameras to be triangulated
-  6. Opening the tab on an axis take with saved clicks shows them, so an existing alignment can be adjusted and re-applied
-- [ ] **Compute**: triangulate each target with the active calibration, then build the axes (16.1). The results area shows:
-  - per-point reprojection error and cameras used
-  - raw angles between the axes and how far each moved in Gram-Schmidt
-  - primary axis and why it was chosen
-  - scale check: measured vs. known, with % difference; a warning above 2%
-  - `R_align` and `origin`; when an alignment already exists, the rotation angle and origin shift between the two
-
-  It also overlays the reprojected picks, and the new origin and axes on every camera, for a visual check. The axes are coloured x/y/z arrows, drawn by un-aligning them (`unalign_points`) and projecting, with length = the known length or the clicked distance. Errors (fewer than two axes, parallel axes, left-handed picks) appear in the results area, not as dialogs
-- [ ] **Apply**: write `[alignment.{exp}.transform]` and `source` (16.2), moving any earlier transform to `history`. It is recorded against the active calibration. If the 3D points come from another calibration, ask to re-triangulate first (`_retriangulate_experiment`), since the alignment would be stale at once. The calibration and the points file are not touched. Emit a signal so the main window updates its alignment status
+- [x] Main window: tabs are **Calibrate | Align | Label** (`CALIBRATE_TAB`, `ALIGN_TAB`, `LABEL_TAB` = 0, 1, 2; stack in the same order). `_on_tab_changed` shows the frame controls only on Label; the window still starts on Label. Align is disabled, with a tooltip, while the experiment has no active calibration (`_update_align_tab`, on load, experiment switch and calibration change). The session file doesn't record the tab, so nothing there changed
+- [x] `AxisAlignmentView(QWidget)` has its own `CameraGrid` and `FrameProvider` (an image is a 1-frame video). No `ProjectState` coupling. It loads when first shown, and reloads on experiment switch and when the active calibration changes; the frame is drawn once the tab is shown, since hidden panels skip frame updates
+- [x] One panel on the right, top to bottom: status line; **Axis take** (take combo, **Add take…**, frame spinbox numbered from 1, hidden for 1-frame takes); **Axes** (clicks per axis, third axis, primary axis, flip X/Y/Z, known lengths in cm, — for none); the pick table (point, cameras clicked, mean error after Compute; clicking a row makes it the active point); **Next point**, **Clear clicks**, **Compute**, **Apply**; the results area
+  - Status line: no alignment / in use (computed with *label*) / stale ("computed with *label*; the 3D points now come from *label*"). **Recompute** comes with 16.8
+  - Settings are saved to `[alignment.{exp}.settings]` as they change. A derived axis can't stay the primary one
+- [x] Picking:
+  1. The active point puts every `CameraPanel` into pick mode; **Esc** stops (the panels pan again)
+  2. A left click sets (or replaces) that camera's click for the active point (`raw_clicked`); a right click within 12 screen pixels of a click removes it (`empty_right_clicked`)
+  3. Clicks are drawn as labelled markers (`O`, `X1`, `X2`, …, coloured by axis). The active point's clicks draw epipolar lines in the other cameras (`EpipolarCache`)
+  4. Once the active point has a click in every camera the take has, the next unfinished point becomes active; **Next point** or **Enter** moves on by hand
+  5. A point needs clicks in ≥ 2 cameras to be triangulated (`compute_alignment` says which don't)
+  6. Clicks are saved as they are made (`write_picks`) and shown again when the take and frame are opened
+- [x] **Compute** (`alignment.compute_alignment`, 16.5) with the active calibration. The results area shows per-point, per-camera reprojection errors; angles between the clicked axes and how far each moved; the primary axis and why; the scale check (a `!` beyond 2%); `R_align` and the origin; and, when an alignment is in use, the rotation angle and origin shift from it. The overlay adds hollow markers at the reprojected points and x/y/z arrows from the new origin (un-aligned with `unalign_points` and projected; length = the known length or the clicked distance). Errors appear in the results area
+- [x] **Apply** saves `[alignment.{exp}.transform]` and `source` against the active calibration (`Project.save_alignment`, earlier transform to `history`) and emits `alignment_applied`. The main window then offers to re-triangulate when the 3D points come from another calibration (`_retriangulate_experiment`). The calibration and the points file are not touched
+- [x] Tests: `tests/test_axis_alignment_view.py` (picking, saving, settings, Compute, Apply, the main window's tabs), driven through the view's methods; checked by rendering the tab offscreen, not yet in the app
 
 ## 16.7 Aligned output
 

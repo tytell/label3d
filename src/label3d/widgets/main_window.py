@@ -46,6 +46,7 @@ from label3d.state import ProjectState
 from label3d.version import project_version, version_string
 from label3d.video import FrameProvider
 from label3d.widgets.add_axis_take_dialog import AddAxisTakeDialog
+from label3d.widgets.axis_alignment_view import AxisAlignmentView
 from label3d.widgets.calibration_view import CalibrationView
 from label3d.widgets.camera_grid import CameraGrid, LayoutMode
 from label3d.widgets.export_dialog import ExportDialog
@@ -63,6 +64,10 @@ from label3d.widgets.load_skeleton_dialog import LoadSkeletonDialog
 from label3d.widgets.sync_summary_dialog import SyncSummaryDialog, dropped_text
 
 logger = logging.getLogger(__name__)
+
+
+# Tab (and stacked view) indices
+CALIBRATE_TAB, ALIGN_TAB, LABEL_TAB = 0, 1, 2
 
 
 class MainWindow(QMainWindow):
@@ -103,8 +108,9 @@ class MainWindow(QMainWindow):
         # Tab bar
         self._tabs = QTabBar()
         self._tabs.addTab("Calibrate")
+        self._tabs.addTab("Align")
         self._tabs.addTab("Label")
-        self._tabs.setCurrentIndex(1)  # Start on Label tab
+        self._tabs.setCurrentIndex(LABEL_TAB)  # Start on Label tab
         top_layout.addWidget(self._tabs)
 
         top_layout.addStretch()
@@ -172,11 +178,16 @@ class MainWindow(QMainWindow):
             self._on_active_calibration_changed
         )
 
-        # Stacked widget: index matches tab index (0=Calibrate, 1=Label)
+        # Align view (Phase 16): its own camera grid
+        self._align_view = AxisAlignmentView(project)
+        self._align_view.alignment_applied.connect(self._on_alignment_applied)
+
+        # Stacked widget: index matches tab index
         self._stack = QStackedWidget()
-        self._stack.addWidget(self._calibration_view)  # 0
-        self._stack.addWidget(self._label_view)        # 1
-        self._stack.setCurrentIndex(1)
+        self._stack.addWidget(self._calibration_view)  # CALIBRATE_TAB
+        self._stack.addWidget(self._align_view)        # ALIGN_TAB
+        self._stack.addWidget(self._label_view)        # LABEL_TAB
+        self._stack.setCurrentIndex(LABEL_TAB)
         main_layout.addWidget(self._stack, stretch=1)
 
         # Frame controls (bottom) — only relevant in Label tab
@@ -188,7 +199,8 @@ class MainWindow(QMainWindow):
         self._tabs.currentChanged.connect(self._on_tab_changed)
         # An experiment with no active calibration needs calibrating before labeling
         if not project.has_calibration:
-            self._tabs.setCurrentIndex(0)
+            self._tabs.setCurrentIndex(CALIBRATE_TAB)
+        self._update_align_tab()
 
         # Status bar
         self._status_bar = QStatusBar()
@@ -835,6 +847,7 @@ class MainWindow(QMainWindow):
         dialog = AddAxisTakeDialog(self._project, parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        self._align_view.refresh_takes(select=dialog.take())
         self._status_bar.showMessage(
             f"Added axis take '{dialog.take()}' to experiment {self._project.active_experiment}", 5000
         )
@@ -893,8 +906,10 @@ class MainWindow(QMainWindow):
         self._connect_store(self._project.points)
         self._label_view.reload_for_experiment()
         self._calibration_view.reload_for_experiment()
+        self._align_view.reload_for_experiment()
+        self._update_align_tab()
         if not self._project.has_calibration:
-            self._tabs.setCurrentIndex(0)
+            self._tabs.setCurrentIndex(CALIBRATE_TAB)
 
         # Repopulate trial combo without triggering _on_trial_changed
         self._trial_combo.blockSignals(True)
@@ -956,8 +971,37 @@ class MainWindow(QMainWindow):
     def _on_active_calibration_changed(self) -> None:
         """The active calibration or the registry changed: reload and redraw."""
         self._label_view.reload_calibration()
+        self._align_view.reload_calibration()
+        self._update_align_tab()
         self._refresh_calibration_combo()
         self._update_calibration_status()
+
+    def _update_align_tab(self) -> None:
+        """The Align tab needs a calibration to triangulate the clicks with."""
+        enabled = self._project.has_calibration
+        self._tabs.setTabEnabled(ALIGN_TAB, enabled)
+        self._tabs.setTabToolTip(
+            ALIGN_TAB,
+            "Align the 3D points to an object with marked axes" if enabled
+            else "Calibrate first: the axis clicks are triangulated with the calibration",
+        )
+        if not enabled and self._tabs.currentIndex() == ALIGN_TAB:
+            self._tabs.setCurrentIndex(CALIBRATE_TAB)
+
+    def _on_alignment_applied(self) -> None:
+        """An alignment was saved; offer to re-triangulate if the 3D points are from elsewhere."""
+        self._status_bar.showMessage(
+            f"Alignment saved for experiment {self._project.active_experiment}", 5000
+        )
+        store = self._project.points
+        if self._project.triangulation_is_stale() and store is not None and not store.df.empty:
+            reply = QMessageBox.question(
+                self, "Re-triangulate?",
+                "The alignment was computed with the active calibration, but the 3D points "
+                "come from another one. Re-triangulate them with the active calibration?",
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self._retriangulate_experiment()
 
     def _update_calibration_status(self) -> None:
         """Warn when the 3D points were computed with another calibration."""
@@ -1061,9 +1105,9 @@ class MainWindow(QMainWindow):
     def _on_tab_changed(self, index: int):
         """Switch main content area when tab changes."""
         self._stack.setCurrentIndex(index)
-        # Frame controls are only meaningful in the Label tab (index 1)
-        self._frame_controls.setVisible(index == 1)
-        if index == 1:
+        # Frame controls are only meaningful in the Label tab
+        self._frame_controls.setVisible(index == LABEL_TAB)
+        if index == LABEL_TAB:
             # Hidden panels skip frame updates, so the Label tab has no images
             # if it was hidden until now; draw them once its layout settles.
             QTimer.singleShot(
