@@ -2,7 +2,7 @@
 
 **Goal**: Re-orient an experiment's 3D output to a physical reference object with a clear origin and x, y, z axes. The user clicks points on the object in two or more cameras. label3d triangulates them with the active calibration and computes an **alignment**: a rotation and an origin that are applied to the 3D points coming out of the calibration. The calibration itself is not changed. Once an experiment has an alignment, every 3D point it outputs is aligned.
 
-**Status**: In progress on branch `axis-alignment`. 16.1 (geometry) done; the `CameraPanel` pick mode exists; everything else is not started.
+**Status**: In progress on branch `axis-alignment`. 16.1 (geometry) and 16.2 (axis takes, `[alignment]` record) done, apart from what the Align tab and setup do; the `CameraPanel` pick mode exists; everything else is not started.
 
 **Builds on**: Phase 9 (calibration takes), Phase 11 (registry, `[calibration.active]` / `[calibration.triangulated_with]`), Phase 12 (refinement aligns its result back onto the start), Phase 13 (batch triangulation, export), Phase 15 (Parquet working files), Phase 20 (versions and upgrades), and 1-based frame numbers wherever the user sees or types them (`frames.py`).
 
@@ -63,15 +63,15 @@
 
 An axis take is a row of type `axis` in `trials.csv` (`trial_types.py`; the `type` column replaced `is_calibration` in 0.4.0, see 16.9). Like a calibration take, its files are in `experiments/{name}/calibrations/{cam}/`. It may be a single still image per camera. Like calibrations, alignments belong to one experiment; a take is never shared between experiments.
 
-- [ ] `video.py`: `VideoReader` opens image files (`IMAGE_EXTENSIONS`: `.png .jpg .jpeg .tif .tiff .bmp`) with `cv2.imread` as a 1-frame video. `project._frame_count` / `check_trial_videos` measure them as 1 frame (`_end` = 1 in `trials.csv`, 1-based). `_video_mtime` works unchanged
-- [ ] `project.toml` gets one `[alignment.{experiment}]` table per experiment. All writes go through `version.write_project_toml`. **Frame numbers here are 1-based**, as in `trials.csv`; they are converted with `shown_frame` / `stored_frame` when read and written
+- [x] `video.py`: `VideoReader` opens image files (`IMAGE_EXTENSIONS`, now defined only here: `.png .jpg .jpeg .tif .tiff .bmp`) with `cv2.imread` as a 1-frame video. `video.frame_count` replaces `project._frame_count`, so `check_trial_videos` and trial lengths measure an image as 1 frame (`_end` = 1 in `trials.csv`, 1-based). `_video_mtime` works unchanged
+- [x] `project.toml` gets one `[alignment.{experiment}]` table per experiment (`alignment.py`). All writes go through `version.write_project_toml`. **Frame numbers here are 1-based**, as in `trials.csv`; they are converted with `shown_frame` / `stored_frame` when read and written
 
   ```toml
   [alignment.default.settings]      # last used on the Align tab
   points_per_axis = 2               # 1 or 2
   cross_product = ""                # "", "x", "y" or "z": the axis that is derived
   primary = "longest"               # "longest", "lowest_error", "x", "y", "z"
-  flip = [false, false, false]
+  flip = ["z"]                      # axes to reverse
   known_length_cm = { x = 10.0 }    # optional, per axis
 
   [alignment.default.transform]     # the alignment in use; absent until the first Apply
@@ -99,12 +99,14 @@ An axis take is a row of type `axis` in `trials.csv` (`trial_types.py`; the `typ
 
   - `transform` and `source` are written on Apply and on recompute (16.8). The one they replace is appended to `history`, so a re-alignment can be undone by hand
   - A camera's `frame` under `source.videos` is `cam_start + frame`, so it still names the right image if the take's offsets in `trials.csv` change later
-- [ ] `Project`:
-  - `alignment(experiment)` (the transform, or None) and `alignment_source(experiment)` read the table
-  - `alignment_status(experiment)` returns `"none"`, `"current"` or `"stale"` (see The transform)
-- [ ] A take name must be unique among the experiment's trials and takes, as now
+- [x] `Project`:
+  - `alignment`, `alignment_source`, `alignment_settings` and `alignment_history` read the table; `save_alignment` (old transform to `history`) and `save_alignment_settings` write it
+  - `alignment_status(experiment)` returns `alignment.NONE`, `CURRENT` or `STALE` (see The transform), for `triangulated_with`, or the active calibration before anything is triangulated
+  - `alignment_source_for(take_or_trial, frame)` builds the `source` record, adding each camera's start offset
+  - `axis_takes` and `get_take` (calibration or axis take)
+- [ ] A take name must be unique among the experiment's trials and takes; checked by setup (16.3) and the add-take dialog (16.4)
 - [ ] The Align tab's take list also offers the experiment's ordinary trials, for the occasional use of a trial frame. Nothing is copied for those; `source` records the trial and frame
-- [ ] **Camera aliases**: setup writes `SetupConfig.camera_aliases` to a `[camera_aliases]` table (`LateralOrtho = ["Lateral"]`), and `Project` loads it. Projects without it have no aliases. The add-take dialog (16.4) uses it
+- [x] **Camera aliases**: setup writes `SetupConfig.camera_aliases` to a `[camera_aliases]` table (`LateralOrtho = ["Lateral"]`), and `Project` loads it. Projects without it have no aliases (`Project.camera_aliases`). The add-take dialog (16.4) uses it
 
 ## 16.3 Project setup (`setup_project.py`, `setup_project_cli.py`)
 

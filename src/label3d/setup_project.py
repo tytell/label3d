@@ -22,12 +22,12 @@ from label3d.project import Project, check_trial_videos, write_trials_csv
 from label3d.skeleton import Skeleton, assign_in_config, merge_skeletons
 from label3d.slp_sync import MODELS_DIR, SlpMapping, find_slp_files, slp_file_path
 from label3d.trial_types import CALIBRATION, TRIAL, TYPE_COLUMN
+from label3d.video import IMAGE_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".cine"}
 SLP_EXTENSION = ".slp"
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 
 # Default charuco board parameters (from DESIGN.md)
 CHARUCO_DEFAULTS = {
@@ -1460,6 +1460,7 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         slp_mapping=_slp_mapping_config(assignment),
         active_calibrations=active_calibrations,
         skeleton=skeleton_section,
+        camera_aliases=config.camera_aliases,
     )
 
     return out
@@ -1553,10 +1554,12 @@ def write_project_toml(
     slp_mapping: dict | None = None,
     active_calibrations: dict[str, str] | None = None,
     skeleton: dict | None = None,
+    camera_aliases: dict[str, list[str]] | None = None,
 ) -> Path:
     """Write project.toml to the project directory.
 
-    active_calibrations (experiment -> registry id) becomes [calibration.active].
+    active_calibrations (experiment -> registry id) becomes [calibration.active];
+    camera_aliases becomes [camera_aliases], for matching files added later.
     """
     config_data: dict = {
         "project": {"name": project_name},
@@ -1575,6 +1578,10 @@ def write_project_toml(
         config_data["calibration"] = {"active": dict(sorted(active_calibrations.items()))}
     if skeleton:
         config_data["skeleton"] = skeleton
+    if camera_aliases:
+        config_data["camera_aliases"] = {
+            cam: list(names) for cam, names in sorted(camera_aliases.items())
+        }
 
     path = project_dir / "project.toml"
     version.write_project_toml(path, config_data, new_project=True)

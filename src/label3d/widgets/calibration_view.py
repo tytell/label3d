@@ -87,8 +87,8 @@ from label3d.calibration_solve import (
     rows_for_take,
     rows_in_range,
 )
+from label3d.video import IMAGE_EXTENSIONS
 from label3d.workers.calibration_worker import (
-    IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
     DetectionWorker,
     MultiTakeCalibrationWorker,

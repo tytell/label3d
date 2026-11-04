@@ -245,7 +245,7 @@ class TestVideoCheck:
         def fail(path):
             raise AssertionError(f"opened {path}")
 
-        monkeypatch.setattr(project_module, "_frame_count", fail)
+        monkeypatch.setattr(project_module, "frame_count", fail)
         proj = Project.load(root)
         assert proj.trial_length("trial1") == 10
         assert (root / "trials.csv").read_text() == before

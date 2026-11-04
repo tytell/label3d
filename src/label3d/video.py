@@ -1,4 +1,8 @@
-"""Video reader with LRU frame cache and per-trial frame provider."""
+"""Video reader with LRU frame cache and per-trial frame provider.
+
+A still image (an axis take is often one per camera) is read as a video of
+one frame.
+"""
 
 from __future__ import annotations
 
@@ -8,19 +12,45 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+
+
+def is_image(path: Path) -> bool:
+    return Path(path).suffix.lower() in IMAGE_EXTENSIONS
+
+
+def frame_count(path: Path) -> int:
+    """Frames in a video, 1 for a readable image, 0 if the file can't be read."""
+    if is_image(path):
+        return 1 if cv2.imread(str(path)) is not None else 0
+    cap = cv2.VideoCapture(str(path))
+    try:
+        return int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
+    finally:
+        cap.release()
+
 
 class VideoReader:
-    """Wraps cv2.VideoCapture with an LRU frame cache."""
+    """Wraps cv2.VideoCapture with an LRU frame cache; an image is one frame."""
 
     def __init__(self, path: Path, cache_size: int = 8):
         self._path = Path(path)
+        self._cache: OrderedDict[int, np.ndarray] = OrderedDict()
+        self._cache_size = cache_size
+        self._last_read: int = -1
+        self._cap = None
+        if is_image(self._path):
+            image = cv2.imread(str(self._path))
+            if image is None:
+                raise IOError(f"Cannot open image: {self._path}")
+            self._frame_count = 1
+            self._cache[0] = image
+            self._cache_size = max(cache_size, 1)
+            return
         self._cap = cv2.VideoCapture(str(self._path))
         if not self._cap.isOpened():
             raise IOError(f"Cannot open video: {self._path}")
         self._frame_count = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self._cache: OrderedDict[int, np.ndarray] = OrderedDict()
-        self._cache_size = cache_size
-        self._last_read: int = -1
 
     @property
     def frame_count(self) -> int:
@@ -35,6 +65,9 @@ class VideoReader:
         if n in self._cache:
             self._cache.move_to_end(n)
             return self._cache[n]
+
+        if self._cap is None:
+            return None
 
         # Sequential read is faster than seeking for n == last_read + 1
         if n != self._last_read + 1:

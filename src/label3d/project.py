@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pandas as pd
 import pyarrow as pa
@@ -19,7 +18,9 @@ logger = logging.getLogger(__name__)
 
 from sleap_io.io.slp import read_videos
 
+from label3d import alignment as alignment_record
 from label3d.adapters.sleap_adapter import SleapAdapter, basename_lookup
+from label3d.alignment import Alignment, AlignmentSettings, AlignmentSource
 from label3d.calibration_registry import (
     CalibrationEntry,
     camera_dir,
@@ -61,6 +62,7 @@ from label3d.trial_types import (
     row_types,
 )
 from label3d.version import check_not_newer, write_project_toml
+from label3d.video import frame_count
 
 
 # Per-camera trials.csv columns: {cam}_start, {cam}_end, {cam}_mtime. Any other
@@ -420,6 +422,76 @@ class Project:
         name = experiment or self.active_experiment
         active = self.active_calibration_id(name)
         return active is not None and self.triangulated_with(name) != active
+
+    # -- Axis alignment (Phase 16) ----------------------------------------------
+
+    def alignment(self, experiment: str | None = None) -> Alignment | None:
+        """The experiment's alignment in use, or None."""
+        return alignment_record.read_alignment(self.config, experiment or self.active_experiment)
+
+    def alignment_source(self, experiment: str | None = None) -> AlignmentSource | None:
+        return alignment_record.read_source(self.config, experiment or self.active_experiment)
+
+    def alignment_settings(self, experiment: str | None = None) -> AlignmentSettings:
+        return alignment_record.read_settings(self.config, experiment or self.active_experiment)
+
+    def alignment_history(self, experiment: str | None = None) -> list[Alignment]:
+        return alignment_record.read_history(self.config, experiment or self.active_experiment)
+
+    def alignment_status(self, experiment: str | None = None) -> str:
+        """alignment.NONE, CURRENT or STALE for the calibration the 3D points come from.
+
+        That is [calibration.triangulated_with], or the active calibration
+        before any point has been triangulated.
+        """
+        name = experiment or self.active_experiment
+        points_from = self.triangulated_with(name) or self.active_calibration_id(name)
+        exp_dir = self.root / "experiments" / name
+        return alignment_record.alignment_status(
+            self.alignment(name), points_from, lambda entry_id: find_calibration(exp_dir, entry_id)
+        )
+
+    def save_alignment(
+        self, alignment: Alignment, source: AlignmentSource, experiment: str | None = None
+    ) -> None:
+        """Make this the experiment's alignment; the one it replaces goes to history."""
+        name = experiment or self.active_experiment
+        self.save_config_sections(
+            {alignment_record.TABLE: alignment_record.with_alignment(self.config, name, alignment, source)}
+        )
+
+    def save_alignment_settings(
+        self, settings: AlignmentSettings, experiment: str | None = None
+    ) -> None:
+        name = experiment or self.active_experiment
+        self.save_config_sections(
+            {alignment_record.TABLE: alignment_record.with_settings(self.config, name, settings)}
+        )
+
+    def alignment_source_for(self, name: str, frame: int) -> AlignmentSource:
+        """The source record for a synchronized frame (0-based) of a take or trial.
+
+        Each camera's frame within its file is its start offset plus frame.
+        """
+        try:
+            info, row_type = self.get_trial(name), TRIAL
+        except KeyError:
+            info = self.get_take(name)
+            row_type = AXIS if any(t.name == name for t in self.axis_takes) else CALIBRATION
+        videos = {
+            cam: (Path(filename).name, start + frame)
+            for cam, (filename, start, _end) in info.camera_videos.items()
+            if not _is_blank_cell(filename)
+        }
+        return AlignmentSource(take=name, type=row_type, frame=frame, videos=videos)
+
+    @property
+    def camera_aliases(self) -> dict[str, list[str]]:
+        """Other names each camera goes by in file names, from [camera_aliases]."""
+        return {
+            str(cam): [str(n) for n in names]
+            for cam, names in self.config.get("camera_aliases", {}).items()
+        }
 
     def _set_pointer(self, table: str, experiment: str, entry_id: str | None) -> None:
         # save_config_sections replaces whole sections, so copy [calibration]
@@ -1119,14 +1191,6 @@ def _video_mtime(path: Path) -> str | None:
     )
 
 
-def _frame_count(path: Path) -> int:
-    cap = cv2.VideoCapture(str(path))
-    try:
-        return int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
-    finally:
-        cap.release()
-
-
 def _take_video_path(
     cell: str, video_root: Path | None, calib_dir: Path, project_root: Path
 ) -> Path:
@@ -1207,7 +1271,7 @@ def check_trial_videos(
             )
 
         if end_blank:
-            total = _frame_count(path)
+            total = frame_count(path)
             if total > 0:
                 trials_df.at[idx, f"{cam}_end"] = total - 1
                 check.changed = True
@@ -1271,10 +1335,7 @@ def _resolve_trial_length(
                 continue
             video_path = _resolve_video(filename, video_root, videos_dir, root)
             if video_path.exists():
-                cap = cv2.VideoCapture(str(video_path))
-                total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                cap.release()
-                end = total - 1
+                end = frame_count(video_path) - 1
                 trial.camera_videos[cam] = (filename, start, end)
             else:
                 continue

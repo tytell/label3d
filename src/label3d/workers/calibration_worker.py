@@ -43,8 +43,8 @@ from label3d.calibration_solve import (
     rows_for_take,
     take_camera_sizes,
 )
+from label3d.video import IMAGE_EXTENSIONS
 
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".cine"}
 
 
