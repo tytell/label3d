@@ -26,7 +26,19 @@ import numpy as np
 
 from label3d.calibration_registry import CalibrationEntry
 from label3d.frames import shown_frame, stored_frame
-from label3d.geometry import AXES, PRIMARY_RULES, AlignmentResult, align_points
+from label3d.alignment_picks import ORIGIN, Picks, axis_targets, targets_for
+from label3d.geometry import (
+    AXES,
+    PRIMARY_RULES,
+    AlignmentError,
+    AlignmentResult,
+    CameraParams,
+    align_points,
+    axis_vector,
+    compute_axis_alignment,
+    scale_check,
+    triangulate_pick,
+)
 from label3d.trial_types import TRIAL
 
 TABLE = "alignment"
@@ -187,6 +199,74 @@ class AlignmentSource:
                 for cam, v in table.get("videos", {}).items()
             },
         )
+
+
+# -- From clicks to an alignment ------------------------------------------------
+
+
+@dataclass
+class Computation:
+    """What Compute shows: the triangulated clicks, the alignment and its checks."""
+
+    points: dict[str, np.ndarray]                 # target -> calibration-frame point
+    errors: dict[str, dict[str, float]]           # target -> camera -> reprojection error, px
+    axes: dict[str, np.ndarray]                   # clicked axis vectors
+    result: AlignmentResult
+    scale: dict[str, dict[str, float]]            # scale_check, where a length is known
+    max_error_px: float
+
+    def alignment(self, calibration: str, created: datetime | None = None) -> Alignment:
+        return Alignment.from_result(
+            self.result, calibration, max_error_px=self.max_error_px,
+            scale_error_pct={k: v["error_pct"] for k, v in self.scale.items()},
+            created=created,
+        )
+
+    def mean_error(self, target: str) -> float | None:
+        errors = self.errors.get(target)
+        return float(np.mean(list(errors.values()))) if errors else None
+
+
+def compute_alignment(
+    cameras: dict[str, CameraParams], picks: Picks, settings: AlignmentSettings
+) -> Computation:
+    """Triangulate the clicks and build the alignment the settings describe.
+
+    Every target the settings need (alignment_picks.targets_for) must have
+    clicks in at least two cameras; AlignmentError says which don't.
+    """
+    needed = targets_for(settings.points_per_axis, settings.cross_product)
+    points: dict[str, np.ndarray] = {}
+    errors: dict[str, dict[str, float]] = {}
+    short = []
+    for target in needed:
+        clicks = {cam: xy for cam, xy in picks.get(target, {}).items() if cam in cameras}
+        found = triangulate_pick(cameras, clicks) if len(clicks) >= 2 else None
+        if found is None:
+            short.append(target)
+            continue
+        points[target], errors[target] = found
+    if short:
+        raise AlignmentError(
+            "Click these in at least two cameras: " + ", ".join(short)
+        )
+
+    origin = points[ORIGIN]
+    axes, axis_errors = {}, {}
+    for axis in AXES:
+        if axis == settings.cross_product:
+            continue
+        targets = axis_targets(axis, settings.points_per_axis)
+        axes[axis] = axis_vector(origin, *(points[t] for t in targets))
+        axis_errors[axis] = float(np.mean([e for t in targets for e in errors[t].values()]))
+    result = compute_axis_alignment(
+        origin, axes, rule=settings.primary, errors=axis_errors, flip=settings.flip
+    )
+    max_error = max(e for per_cam in errors.values() for e in per_cam.values())
+    return Computation(
+        points=points, errors=errors, axes=axes, result=result,
+        scale=scale_check(axes, settings.known_length_cm), max_error_px=float(max_error),
+    )
 
 
 # -- Reading and writing [alignment.{experiment}] ------------------------------

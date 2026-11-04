@@ -2,7 +2,7 @@
 
 **Goal**: Re-orient an experiment's 3D output to a physical reference object with a clear origin and x, y, z axes. The user clicks points on the object in two or more cameras. label3d triangulates them with the active calibration and computes an **alignment**: a rotation and an origin that are applied to the 3D points coming out of the calibration. The calibration itself is not changed. Once an experiment has an alignment, every 3D point it outputs is aligned.
 
-**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup) and 16.4 (adding axis takes later) done, apart from the Align tab's parts; the `CameraPanel` pick mode exists; everything else is not started.
+**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup), 16.4 (adding axis takes later) and 16.5 (saved clicks, computing from them) done, apart from the Align tab's parts; the `CameraPanel` pick mode exists; everything else is not started.
 
 **Builds on**: Phase 9 (calibration takes), Phase 11 (registry, `[calibration.active]` / `[calibration.triangulated_with]`), Phase 12 (refinement aligns its result back onto the start), Phase 13 (batch triangulation, export), Phase 15 (Parquet working files), Phase 20 (versions and upgrades), and 1-based frame numbers wherever the user sees or types them (`frames.py`).
 
@@ -151,11 +151,14 @@ Axis files are found much like calibration videos. They're separate recordings w
 - [x] No GUI for removing a take in this phase
 - [x] Tests: `tests/test_add_axis_take.py` (matching, names, both ways of adding, refusals that change nothing, the dialog)
 
-## 16.5 Picks working file
+## 16.5 Picks working file (`alignment_picks.py`)
 
-- [ ] `experiments/{name}/calibrations/alignment_picks.parquet` holds the 2D clicks, saved as they are made (Phase 15 Parquet conventions, `parquet_io.COMPRESSION`). Columns: `take, frame, target, camera, x, y`. `frame` is 0-based, like the other working files. `target` is one of `origin, x1, x2, y1, y2, z1, z2`; in 4-point mode only `x1, y1, z1` are used. Raw pixels, as everywhere
-- [ ] Settings are in `[alignment.{exp}.settings]` (16.2)
-- [ ] Keeping the 2D clicks means the alignment can be **recomputed** with a new calibration (16.8) without clicking again
+- [x] `experiments/{name}/calibrations/alignment_picks.parquet` holds the 2D clicks, saved as they are made (Phase 15 Parquet conventions, `parquet_io.write_table`). Columns: `take, frame, target, camera, x, y`. `frame` is 0-based, like the other working files. `target` is one of `origin, x1, x2, y1, y2, z1, z2` (`TARGETS`); in 1-point mode only `x1, y1, z1` are used, and in 2-point mode the axis runs `x1` → `x2`. Raw pixels, as everywhere
+- [x] `read_picks(exp_dir, take, frame)`, `write_picks(...)` (replaces that frame's rows, keeps the rest; empty picks remove the frame), `picked_frames(exp_dir, take)`, `targets_for(points_per_axis, cross_product)`
+- [x] Settings are in `[alignment.{exp}.settings]` (16.2)
+- [x] `alignment.compute_alignment(cameras, picks, settings)` triangulates every target the settings need, builds the axes (`axis_vector`, `compute_axis_alignment` with the primary rule, per-axis mean errors and flips) and the scale check, and returns a `Computation` (points, per-camera errors, axes, result, scale, max error; `.alignment(calibration)` makes the record). A target with fewer than two cameras is an `AlignmentError` naming it. Compute (16.6) and Recompute (16.8) both use it
+- [x] Keeping the 2D clicks means the alignment can be **recomputed** with a new calibration (16.8) without clicking again
+- [x] Tests: `tests/test_alignment_picks.py`
 
 ## 16.6 Align tab (`widgets/axis_alignment_view.py`)
 
