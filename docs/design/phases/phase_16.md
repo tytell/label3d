@@ -2,7 +2,7 @@
 
 **Goal**: Re-orient an experiment's 3D output to a physical reference object with a clear origin and x, y, z axes. The user clicks points on the object in two or more cameras. label3d triangulates them with the active calibration and computes an **alignment**: a rotation and an origin that are applied to the 3D points coming out of the calibration. The calibration itself is not changed. Once an experiment has an alignment, every 3D point it outputs is aligned.
 
-**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record) and 16.3 (setup) done, apart from the Align tab's part of 16.2; the `CameraPanel` pick mode exists; everything else is not started.
+**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup) and 16.4 (adding axis takes later) done, apart from the Align tab's parts; the `CameraPanel` pick mode exists; everything else is not started.
 
 **Builds on**: Phase 9 (calibration takes), Phase 11 (registry, `[calibration.active]` / `[calibration.triangulated_with]`), Phase 12 (refinement aligns its result back onto the start), Phase 13 (batch triangulation, export), Phase 15 (Parquet working files), Phase 20 (versions and upgrades), and 1-based frame numbers wherever the user sees or types them (`frames.py`).
 
@@ -111,7 +111,7 @@ An axis take is a row of type `axis` in `trials.csv` (`trial_types.py`; the `typ
   - `alignment_status(experiment)` returns `alignment.NONE`, `CURRENT` or `STALE` (see The transform), for `triangulated_with`, or the active calibration before anything is triangulated
   - `alignment_source_for(take_or_trial, frame)` builds the `source` record, adding each camera's start offset
   - `axis_takes` and `get_take` (calibration or axis take)
-- [ ] A take name must be unique among the experiment's trials and takes; checked by setup (16.3, done) and the add-take dialog (16.4)
+- [x] A take name must be unique among the experiment's trials and takes; checked by setup (16.3) and the add-take dialog (16.4)
 - [x] ~~The Align tab also offers ordinary trials~~ Dropped: a frame of a calibration take or trial is extracted into an axis take (16.3, 16.4), and the Align tab lists axis takes only. `extracted` records where it came from (`Project.extracted_axis_takes`)
 - [x] **Camera aliases**: setup writes `SetupConfig.camera_aliases` to a `[camera_aliases]` table (`LateralOrtho = ["Lateral"]`), and `Project` loads it. Projects without it have no aliases (`Project.camera_aliases`). The add-take dialog (16.4) uses it
 
@@ -139,17 +139,17 @@ Axis files are found much like calibration videos. They're separate recordings w
 - [x] CLI: both interactive routes ask for axis take keywords (`prompt_axis_takes`), with the regex fallback as for calibration; `--from-slp` takes `--align-keywords`. Setup files take `[setup] align_keywords`, `align_regex`; `config_from_toml` reads them and `save_config_toml` round-trips them. Add them to the template in `setup_project_cli.py`'s docstring
 - [x] Projects set up before this phase have no `[alignment]` or `[camera_aliases]` table and need nothing done; their takes are added later with the dialog (16.4)
 
-## 16.4 Adding an axis take later (`widgets/add_axis_take_dialog.py`)
+## 16.4 Adding an axis take later (`axis_takes.py`, `widgets/add_axis_take_dialog.py`)
 
-- [ ] **File > Add axis take...**, and an **Add take...** button on the Align tab. It works on the active experiment, named in the dialog
-- [ ] The user selects several files, or a folder (its images and videos are listed). Files are matched to cameras by name with the same `_identify_camera` and the project's `[camera_aliases]`. A shared `match_axis_files(files, cameras, aliases, keywords, regex)` in `setup_project.py` does the matching for setup and for the dialog
-- [ ] Take name: from the align keyword in the file names when there is one, else `Align`, else `Align2`, … The user can edit it; it must be unique among the experiment's trials and takes
-- [ ] A table shows each camera and its file. A combo per camera lets the user change or clear a match. Unmatched files are listed. **Add** is disabled until at least two cameras have a file
-- [ ] On **Add**, the files are **copied** (never moved) into `calibrations/{cam}/`. Refuse a name that clashes with a different file already there. Then:
-  - add a row to `trials.csv` (`write_trials_csv`, with backup) and measure it (`check_trial_videos`)
-  - reload the experiment's takes, and select the new take on the Align tab
-- [ ] Or make the take from one frame of a calibration take or trial of the experiment: pick it and a frame (from 1, default 1); each camera's frame is its start offset plus the frame. The stills are written as in setup (`video.extract_frame`, `{take}_{cam}.png`), with an `axis` row and an `[alignment.{exp}.extracted]` record. One non-GUI function does this for the dialog and is tested on its own
-- [ ] No GUI for removing a take in this phase
+- [x] **File > Add axis take...** opens `AddAxisTakeDialog` for the active experiment, named in the dialog
+- [ ] An **Add take...** button on the Align tab opens it too, and the Align tab selects the new take (16.6)
+- [x] **Files** tab: choose several files, or a folder (its images and videos, `axis_takes.media_files`). `axis_takes.match_files` matches them to cameras as setup does (`setup_project.identify_camera`, with `[camera_aliases]`); a second file for a camera, or one naming no camera, is listed as unmatched. A combo per camera lets the user change or clear a match. **Add** is disabled until at least two cameras have a file
+- [x] Take name: what the file names share once the camera's name is taken out (`PS18_Align_cam1.png` → `PS18_Align`, `suggest_take_name`), else `Align`; `Align2`, … when taken. The user can edit it; it must be unique among the experiment's trials and takes (`check_take_name`, checked as the user types)
+- [x] `axis_takes.add_from_files`: the files are **copied** (never moved) into `calibrations/{cam}/` (`setup_project.copy_file`). The same file already there is fine; a different file of that name is refused before anything changes
+- [x] **Frame of a take or trial** tab: pick a calibration take or trial and a frame (from 1, default 1; the spinbox stops at its length, `source_length`). `axis_takes.add_from_frame` reads each camera's video at its start offset plus the frame and writes `{take}_{cam}.png` (`video.extract_frame`), and records `[alignment.{exp}.extracted.{take}]`. A frame a camera's video lacks, or a still that already exists, is refused before anything is written
+- [x] Either way an `axis` row is added to `trials.csv` (with `trials.csv.bak`, and a `type` column if the file had none), measured with `check_trial_videos`, and `Project.refresh_takes` re-reads the takes, so no reload is needed
+- [x] No GUI for removing a take in this phase
+- [x] Tests: `tests/test_add_axis_take.py` (matching, names, both ways of adding, refusals that change nothing, the dialog)
 
 ## 16.5 Picks working file
 

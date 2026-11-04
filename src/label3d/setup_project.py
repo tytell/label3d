@@ -1565,6 +1565,10 @@ def _copy_file(src: str, dst: str) -> str:
     return dst
 
 
+# Used to add axis takes after setup (axis_takes.py)
+copy_file = _copy_file
+
+
 def _move_file(src: str, dst: str) -> str:
     """shutil.move, copying with _copy_file when it has to copy across drives."""
     return shutil.move(src, dst, copy_function=_copy_file)
@@ -2328,6 +2332,10 @@ def _identify_camera(
     if all(cam == camera or name.lower() in best.lower() for name, cam in matches[1:]):
         return camera
     return None
+
+
+# Used to match files added after setup (axis_takes.py)
+identify_camera = _identify_camera
 
 
 def _extract_calib_prefix(

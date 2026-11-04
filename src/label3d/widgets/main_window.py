@@ -45,6 +45,7 @@ from label3d.project import Project
 from label3d.state import ProjectState
 from label3d.version import project_version, version_string
 from label3d.video import FrameProvider
+from label3d.widgets.add_axis_take_dialog import AddAxisTakeDialog
 from label3d.widgets.calibration_view import CalibrationView
 from label3d.widgets.camera_grid import CameraGrid, LayoutMode
 from label3d.widgets.export_dialog import ExportDialog
@@ -278,6 +279,13 @@ class MainWindow(QMainWindow):
             "hidden, not triangulated and not written to the SLP files"
         )
         remove_outside_action.triggered.connect(self._do_remove_points_outside)
+        file_menu.addSeparator()
+        add_axis_take_action = file_menu.addAction("Add axis take...")
+        add_axis_take_action.setToolTip(
+            "Add images or videos of an object with marked axes, for axis alignment, "
+            "or a frame of a calibration take or trial"
+        )
+        add_axis_take_action.triggered.connect(self._do_add_axis_take)
         file_menu.addSeparator()
         self._export_action = file_menu.addAction("Export points...")
         self._export_action.triggered.connect(self._do_export)
@@ -821,6 +829,15 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is setup:
             self._do_setup_slp()
         return False
+
+    def _do_add_axis_take(self) -> None:
+        """Add an axis take to the active experiment (Phase 16.4)."""
+        dialog = AddAxisTakeDialog(self._project, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._status_bar.showMessage(
+            f"Added axis take '{dialog.take()}' to experiment {self._project.active_experiment}", 5000
+        )
 
     def _do_load_skeleton(self) -> None:
         """Assign a skeleton to all cameras or chosen ones (new .slp files only)."""

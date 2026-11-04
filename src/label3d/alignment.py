@@ -243,6 +243,13 @@ def with_alignment(
     return _updated(config, experiment, update)
 
 
+def with_extracted(config: dict, experiment: str, take: str, source: AlignmentSource) -> dict:
+    """The [alignment] section recording where an extracted axis take came from."""
+    def update(table: dict) -> None:
+        table["extracted"] = {**table.get("extracted", {}), take: source.to_config()}
+    return _updated(config, experiment, update)
+
+
 def with_settings(config: dict, experiment: str, settings: AlignmentSettings) -> dict:
     """The [alignment] section with new settings for one experiment."""
     def update(table: dict) -> None:

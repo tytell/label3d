@@ -1008,6 +1008,18 @@ class Project:
             self.points._save_path = points_path
         self._attach_latest_sync()
 
+    def refresh_takes(self) -> None:
+        """Re-read trials.csv for its axis takes, after one was added (axis_takes.py)."""
+        trials_df = read_trials_csv(self.trials_csv_path)
+        cameras = _extract_cameras(trials_df.columns.tolist())
+        for name, exp in self.experiments.items():
+            rows = (
+                trials_df[trials_df["experiment"] == name]
+                if "experiment" in trials_df.columns else trials_df
+            )
+            exp.axis_takes = _parse_rows(rows, cameras, AXIS)
+        self.trials_df = trials_df
+
     def reload_calibration(self, experiment: str | None = None) -> None:
         """Re-read an experiment's active calibration (default: the active
         experiment), after the pointer moved or a calibration was written."""
