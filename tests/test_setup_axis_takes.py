@@ -199,6 +199,17 @@ class TestSlpSetup:
         assert sorted(assignment.axis_takes["default"]["Align"]) == CAMERAS
         assert sorted(assignment.trials) == ["Trial1", "Trial2"]
 
+    def test_axis_videos_too(self, slp_source):
+        for cam in CAMERAS:
+            (slp_source["slp_dir"] / f"Align_{cam}.png").unlink()
+            _make_video(slp_source["slp_dir"] / f"Align_{cam}.mp4")
+        assignment = classify_slp_files(slp_config(slp_source))
+        take = assignment.axis_takes["default"]["Align"]
+        assert sorted(take) == CAMERAS
+        assert take["cam1"].name == "Align_cam1.mp4"
+        assert sorted(assignment.trials) == ["Trial1", "Trial2"]
+        assert not assignment.errors
+
     def test_found_with_a_calibration_toml(self, slp_source):
         calib = slp_source["tmp"] / "calibration.toml"
         calib.write_text("")
