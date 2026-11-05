@@ -200,7 +200,7 @@ Once an experiment has an alignment, un-aligned 3D points are never output.
 
 ## 16.9 Versions
 
-- [ ] New pieces: `[alignment]` and `[camera_aliases]` tables in `project.toml`, `alignment_picks.parquet`, still-image takes. Projects without them stay valid, so no upgrade step is needed
+- [x] New pieces: `[alignment]` and `[camera_aliases]` tables in `project.toml`, `alignment_picks.parquet`, still-image takes. Projects without them stay valid, so no upgrade step is needed
 - [x] `LAYOUT_VERSION` is 0.4.0. The `type` column of `trials.csv` (`trial`, `calibration`, `axis`; any case, blank = trial) replaces `is_calibration`. The upgrade step `TRIAL_TYPES` (`layout.py`, `upgrade._add_type_column`) converts it in place, backing up `trials.csv`. A project that records 0.3.0 only gets steps from later layouts. `check_not_newer` also stops older label3d from opening the project. Tested on a hand-built 0.3.0 project in `test_upgrade.py`, not a fixture from a v0.3.0 worktree
 
 ## 16.10 Tests
