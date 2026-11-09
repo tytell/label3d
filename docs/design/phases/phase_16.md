@@ -2,7 +2,7 @@
 
 **Goal**: Re-orient an experiment's 3D output to a physical reference object with a clear origin and x, y, z axes. The user clicks points on the object in two or more cameras. label3d triangulates them with the active calibration and computes an **alignment**: a rotation and an origin that are applied to the 3D points coming out of the calibration. The calibration itself is not changed. Once an experiment has an alignment, every 3D point it outputs is aligned.
 
-**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup), 16.4 (adding axis takes later), 16.5 (saved clicks, computing from them), 16.6 (the Align tab), 16.7 (aligned output), 16.8 (recomputing) and 16.11 (docs) done; awaiting a check in the app. Left: the rest of 16.10 (remaining tests, synthetic axis object), deferred for now.
+**Status**: In progress on branch `axis-alignment`. 16.1 (geometry), 16.2 (axis takes, `[alignment]` record), 16.3 (setup), 16.4 (adding axis takes later), 16.5 (saved clicks, computing from them), 16.6 (the Align tab), 16.7 (aligned output), 16.8 (recomputing), 16.10 (tests) and 16.11 (docs) done; awaiting a check in the app. Deferred: the synthetic axis object (16.10).
 
 **Builds on**: Phase 9 (calibration takes), Phase 11 (registry, `[calibration.active]` / `[calibration.triangulated_with]`), Phase 12 (refinement aligns its result back onto the start), Phase 13 (batch triangulation, export), Phase 15 (Parquet working files), Phase 20 (versions and upgrades), and 1-based frame numbers wherever the user sees or types them (`frames.py`).
 
@@ -200,25 +200,25 @@ Once an experiment has an alignment, un-aligned 3D points are never output.
 
 ## 16.9 Versions
 
-- [ ] New pieces: `[alignment]` and `[camera_aliases]` tables in `project.toml`, `alignment_picks.parquet`, still-image takes. Projects without them stay valid, so no upgrade step is needed
+- [x] New pieces: `[alignment]` and `[camera_aliases]` tables in `project.toml`, `alignment_picks.parquet`, still-image takes. Projects without them stay valid, so no upgrade step is needed
 - [x] `LAYOUT_VERSION` is 0.4.0. The `type` column of `trials.csv` (`trial`, `calibration`, `axis`; any case, blank = trial) replaces `is_calibration`. The upgrade step `TRIAL_TYPES` (`layout.py`, `upgrade._add_type_column`) converts it in place, backing up `trials.csv`. A project that records 0.3.0 only gets steps from later layouts. `check_not_newer` also stops older label3d from opening the project. Tested on a hand-built 0.3.0 project in `test_upgrade.py`, not a fixture from a v0.3.0 worktree
 
 ## 16.10 Tests
 
-- [ ] `tests/test_axis_alignment.py`, on a synthetic rig with a known rotation and origin; picks are made by projecting known 3D points:
+- [x] `tests/test_axis_alignment.py`, on a synthetic rig with a known rotation and origin; picks are made by projecting known 3D points:
   - 4-point and 7-point modes recover `R_align` and `origin`; 7-point is unaffected by the axis points being displaced from the origin
   - Each two-axis pair with the third from the cross product gives det +1 and the expected third axis
-  - Left-handed picks raise; parallel axes raise; fewer than two axes raise
+  - Left-handed picks raise (a flip makes them right-handed); parallel axes raise; fewer than two axes raise; a zero-length axis raises
   - Primary-axis rules: longest, lowest error, explicit; a derived axis can't be primary
   - Noisy picks: the primary axis is kept exactly, the others move by the reported angles
   - Scale check flags a mis-scaled rig
   - `align_points` / `unalign_points` round-trip, keep distances, pass NaN through
-- [ ] `[alignment]` record: written and read back, with 1-based frames in the file and 0-based in memory; per-camera frames include `cam_start` for a trial with a nonzero offset; re-apply moves the old transform to `history`
-- [ ] `alignment_status`: current for the same entry and for a refine child of it, stale for another charuco entry, none without a transform
-- [ ] Export: 3D columns aligned in wide and long layouts; reprojection errors unchanged by the alignment; stale alignment refused (GUI helper and CLI), `--no-3d` allowed; Parquet metadata holds the transform
+- [x] `[alignment]` record (`tests/test_alignment_record.py`): written and read back, with 1-based frames in the file and 0-based in memory; per-camera frames include `cam_start` for a trial with a nonzero offset; re-apply moves the old transform to `history`
+- [x] `alignment_status` (`test_alignment_record.py`): current for the same entry and for refine descendants of it, stale for another charuco entry, its refinements, a deleted entry or nothing triangulated; none without a transform
+- [x] Export (`tests/test_export_alignment.py`): 3D columns aligned in wide and long layouts; reprojection errors unchanged by the alignment; stale alignment refused (dialog and CLI), `--no-3d` allowed; Parquet metadata holds the transform
 - [x] Recompute: saved clicks re-triangulated with a new calibration rebuild the transform (`TestRecompute` in `test_axis_alignment_view.py`: the same rig in a moved frame gives `Q @ R_TRUE`, a shifted camera gives the warning, the status-bar link recomputes)
-- [ ] Still-image takes: a 1-frame take loads, measures `_end` = 1, and is left out of charuco detection
-- [ ] Setup (`test_setup_project.py`, `test_setup_from_slp.py`):
+- [x] Still-image takes (`test_alignment_record.py`): a 1-frame take loads, measures `_end` = 1, and is left out of charuco detection
+- [x] Setup (`tests/test_setup_axis_takes.py`, rather than `test_setup_project.py` / `test_setup_from_slp.py`; `[camera_aliases]` in `test_alignment_record.py`):
   - align keywords make axis takes from videos and images, in both routes
   - a file matching both an align and a calibration keyword is an error
   - calibration images still raise
@@ -226,9 +226,9 @@ Once an experiment has an alignment, un-aligned 3D points are never output.
   - reference mode copies alignment files into the project
   - axis rows and `[camera_aliases]` are written
   - `save_config_toml` round-trips `align_keywords` / `align_regex`
-- [ ] Add-take logic (`match_axis_files` and the function the dialog calls to add the take): camera matching with aliases, unique take names, files copied not moved, `trials.csv` row and `[alignment]` entry added
-- [ ] Remove the `align` registry test from `test_calibration_registry.py`
-- [ ] Synthetic data: an optional `[alignment_object]` in `synthetic_config.toml` renders a still image of axis markers per camera at a known pose. That gives an end-to-end check that alignment recovers the generator's world frame from the charuco-anchored calibration frame
+- [x] Add-take logic (`tests/test_add_axis_take.py`; `axis_takes.match_files`, `add_from_files`, `add_from_frame`): camera matching with aliases, unique take names, files copied not moved, `trials.csv` row and `[alignment]` `extracted` entry added
+- [x] The `align` registry test is gone from `test_calibration_registry.py` (removed with 16.1)
+- [ ] Deferred: synthetic data, an optional `[alignment_object]` in `synthetic_config.toml` that renders a still image of axis markers per camera at a known pose. That would give an end-to-end check that alignment recovers the generator's world frame from the charuco-anchored calibration frame
 
 ## 16.11 Docs
 
