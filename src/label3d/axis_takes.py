@@ -26,6 +26,7 @@ import pandas as pd
 from label3d import alignment as alignment_record
 from label3d.alignment import AlignmentSource
 from label3d.calibration_registry import camera_dir
+from label3d.drives import read_video_roots
 from label3d.frames import shown_frame
 from label3d.project import (
     Project,
@@ -246,10 +247,7 @@ def _append_axis_row(project: Project, take: str, cells: dict[str, str]) -> None
         row[cam] = cells.get(cam, "")
         row[f"{cam}_start"] = 0 if cam in cells else pd.NA
     trials_df = pd.concat([trials_df, pd.DataFrame([row])], ignore_index=True)
-    video_roots = {
-        str(name): Path(str(value)).expanduser()
-        for name, value in project.config.get("video_roots", {}).items()
-    }
+    video_roots = read_video_roots(project.config)
     check_trial_videos(trials_df, project.root, video_roots, project.cameras)
     write_trials_csv(path, trials_df)
     project.refresh_takes()

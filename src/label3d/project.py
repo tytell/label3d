@@ -27,6 +27,7 @@ from label3d.calibration_registry import (
     find_calibration,
     list_calibrations,
 )
+from label3d.drives import convert_video_roots, read_video_roots, unmounted_drives
 from label3d.frames import FRAME_BASE
 from label3d.parquet_io import write_table
 from label3d.points import (
@@ -261,10 +262,11 @@ class Project:
         trials_df = read_trials_csv(trials_path)
         cameras = _extract_cameras(trials_df.columns.tolist())
 
-        video_roots = {
-            str(name): Path(str(value)).expanduser()
-            for name, value in config.get("video_roots", {}).items()
-        }
+        # A plain root under a [drives] root is rewritten as {drive}/rest, so
+        # the project opens on the other systems too.
+        if convert_video_roots(config) and config_path.exists():
+            write_project_toml(config_path, config)
+        video_roots = read_video_roots(config)
 
         # Videos referenced outside the project must exist — a broken reference
         # is a stale [video_roots] entry or an unmounted drive, and failing here
@@ -274,7 +276,11 @@ class Project:
             raise FileNotFoundError(
                 "Referenced videos not found:\n  "
                 + "\n  ".join(check.missing)
-                + "\nCheck the [video_roots] section of project.toml."
+                + "\nCheck the [video_roots] and [drives] sections of project.toml."
+                + "".join(
+                    f"\nDrive not found (not mounted?): {drive}"
+                    for drive in unmounted_drives(config)
+                )
             )
         if check.changed:
             write_trials_csv(trials_path, trials_df)

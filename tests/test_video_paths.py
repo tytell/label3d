@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 import toml
 
+from label3d.drives import current_platform
 from label3d.project import Project, _resolve_video
 from tests.helpers import make_current
 
@@ -20,6 +21,7 @@ def _write_project(
     root: Path,
     cells: dict[str, str],
     video_roots: dict[str, str] | None = None,
+    drives: dict[str, dict[str, str]] | None = None,
 ) -> Path:
     """Write a minimal one-trial project; cells maps camera name -> csv cell."""
     cameras = sorted(cells)
@@ -35,6 +37,8 @@ def _write_project(
     config: dict = {"project": {"name": "test"}}
     if video_roots:
         config["video_roots"] = video_roots
+    if drives:
+        config["drives"] = drives
     (root / "project.toml").write_text(toml.dumps(config))
     return make_current(root)
 
@@ -148,3 +152,60 @@ class TestProjectVideoPath:
         )
         proj = Project.load(root)
         assert proj.video_path("trial1", "cam1") == external / "trial1_cam1.mp4"
+
+
+class TestDrives:
+    """[video_roots] given relative to a named drive in [drives.{system}]."""
+
+    def test_drive_root_resolution(self, tmp_path):
+        share = tmp_path / "share"
+        external = share / "rig" / "day1"
+        external.mkdir(parents=True)
+        (external / "trial1_cam1.mp4").write_bytes(b"")
+        root = _write_project(
+            tmp_path / "proj",
+            {"cam1": "trial1_cam1.mp4"},
+            video_roots={"default": "{lab}/rig/day1"},
+            drives={current_platform(): {"lab": str(share)}},
+        )
+        proj = Project.load(root)
+        assert proj.video_path("trial1", "cam1") == external / "trial1_cam1.mp4"
+
+    def test_plain_root_converted_on_load(self, tmp_path):
+        share = tmp_path / "share"
+        external = share / "rig"
+        external.mkdir(parents=True)
+        (external / "trial1_cam1.mp4").write_bytes(b"")
+        root = _write_project(
+            tmp_path / "proj",
+            {"cam1": "trial1_cam1.mp4"},
+            video_roots={"default": str(external)},
+            drives={current_platform(): {"lab": str(share)}},
+        )
+        proj = Project.load(root)
+        assert proj.config["video_roots"]["default"] == "{lab}/rig"
+        on_disk = toml.load(root / "project.toml")
+        assert on_disk["video_roots"]["default"] == "{lab}/rig"
+        assert proj.video_path("trial1", "cam1") == external / "trial1_cam1.mp4"
+
+    def test_drive_missing_for_this_system_raises(self, tmp_path):
+        other = "windows" if current_platform() != "windows" else "mac"
+        root = _write_project(
+            tmp_path / "proj",
+            {"cam1": "trial1_cam1.mp4"},
+            video_roots={"default": "{lab}/rig"},
+            drives={other: {"lab": "Z:/"}},
+        )
+        with pytest.raises(FileNotFoundError, match=r"drives\.%s" % current_platform()):
+            Project.load(root)
+
+    def test_unmounted_drive_named_in_error(self, tmp_path):
+        share = tmp_path / "not_mounted"
+        root = _write_project(
+            tmp_path / "proj",
+            {"cam1": "trial1_cam1.mp4"},
+            video_roots={"default": "{lab}/rig"},
+            drives={current_platform(): {"lab": str(share)}},
+        )
+        with pytest.raises(FileNotFoundError, match="Drive not found"):
+            Project.load(root)

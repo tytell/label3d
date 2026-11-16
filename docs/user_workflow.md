@@ -43,6 +43,18 @@ There are two ways to start:
 
 Open the project with `uv run label3d <project folder>`.
 
+**Videos on a network drive, Mac and Windows.** A project that refers to videos where they are (`[video_roots]` in `project.toml`) stores their folders as paths, and the same drive has a different path on each system. Name the drive's root on each system in `project.toml`:
+
+```toml
+[drives.mac]
+tytelllab = "/Volumes/TytellLab$"
+
+[drives.windows]
+tytelllab = '\\rstore.it.tufts.edu\TytellLab$'
+```
+
+The next time the project opens, video roots on that drive are rewritten as `{tytelllab}/NewData/...`, and the project then opens on both systems. Use single quotes for Windows paths, so the backslashes are kept as they are.
+
 The first time you open it, assign videos to SLEAP files with **File > Set up Sleap files...**. The preset *one file per camera* works for most projects.
 
 **Skeletons.** The skeletons come from the `.slp` files, and cameras may have different ones (a node a camera never sees can be left out of its model). Starting without `.slp` files, load one with **File > Load skeleton...** — a `skeleton.json` or any `.slp` file — for all cameras or, to give some cameras a smaller skeleton, for chosen ones. The first **Sync** then creates each `.slp` file with its cameras' skeleton. A file must hold cameras with the same skeleton, so with several skeletons use *one file per camera per experiment*.

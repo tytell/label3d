@@ -100,11 +100,23 @@ PS18 = "charuco-all_20260901-101500"
 [camera_aliases]             # other names each camera has in file names (setup, Add axis take)
 LateralOrtho = ["Lateral"]
 
+[video_roots]                # experiment -> folder its trials.csv cells are relative to (setup)
+"20260619" = "{tytelllab}/NewData/VerticalOMR/20260619"   # {drive}/rest, see Drives below
+PS18 = "/data/PS18"          # or a plain path
+
+[drives.mac]                 # drive -> its root on each system (mac, windows, linux); by hand
+tytelllab = "/Volumes/TytellLab$"
+
+[drives.windows]
+tytelllab = '\\rstore.it.tufts.edu\TytellLab$'   # literal string: no escapes
+
 [alignment.PS18.transform]   # axis alignment (Phase 16); see Axis alignment below
 # …
 ```
 
 `[label3d]` and the comment line are written by `version.write_project_toml`, which every writer of `project.toml` goes through; the comment is put back each time, since the `toml` package drops comments. A project without `project_version` was made before 0.3.0. `Project.load()` refuses a project whose `project_version` is newer than `version.LAYOUT_VERSION`. Versions and upgrades are in [phase_20.md](phases/phase_20.md).
+
+**Drives.** A network share is mounted at a different path on each system, so a plain `[video_roots]` path written on one system is wrong on the other. `[drives.{system}]` names each share's root on that system (`mac`, `windows` or `linux`, from `sys.platform`), and a root written `{name}/rest` is that drive's root on the current system followed by `rest`, which always uses `/` (`drives.py`: `resolve_root`, `read_video_roots`). A plain root under a known drive's root, on any system, is rewritten in `{name}/rest` form and saved when the project loads (`convert_video_roots`): a project set up on one system has only to be given `[drives]`. Matching ignores case on Mac and Windows. A drive with no root for the current system stops the load with a message naming `[drives.{system}]`; a drive root that doesn't exist (not mounted) is named in the missing-videos error. `[drives]` is optional and needs no upgrade; setup doesn't write it.
 
 `[calibration.active]` and `[calibration.triangulated_with]` are written by `Project.set_active_calibration()` and `Project.set_triangulated_with()`. When the two differ for an experiment, the Label tab warns that its 3D points are stale.
 
