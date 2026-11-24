@@ -9,11 +9,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import sleap_io as sio
+import toml
 
 import logging
 logger = logging.getLogger(__name__)
 
 from label3d.adapters.base import PoseAdapter
+from label3d.drives import read_video_roots, resolve_root
+from label3d.video_matching import VideoMatcher
 from label3d.points import (
     CAM_COORDS,
     INDEX_NAMES,
@@ -53,11 +56,14 @@ class SleapAdapter(PoseAdapter):
         root: Path | None = None,
         unmatched: list[str] | None = None,
         progress: Callable[[int, int, str], object] | None = None,
+        video_roots: dict[str, Path] | None = None,
+        video_aliases: dict | None = None,
     ) -> pd.DataFrame:
         """Load .slp files and return a points-compatible DataFrame.
 
-        Each .slp file may cover one or more cameras (matched by video basename
-        against trials.csv).  When mapping is given, files is ignored: the
+        Each .slp file may cover one or more cameras (matched by full video path,
+        then suffix, then an unambiguous basename against trials.csv).
+        When mapping is given, files is ignored: the
         mapping's files (relative to root) are read, and videos in a file that
         are not assigned to that file are skipped.
 
@@ -78,11 +84,11 @@ class SleapAdapter(PoseAdapter):
         """
         cells_info = video_cells(trials, cameras)
         cell_ends = _cell_ends(trials, cameras)
-        basename_to_cells = basename_lookup(trials, cameras)
         rows: list[dict] = []
 
         sources = self._sources(files, mapping, root)
         for n_file, (slp_path, allowed) in enumerate(sources, start=1):
+            matcher = _video_matcher(trials, cameras, root, video_roots, slp_path, video_aliases)
             text = f"Reading {slp_path.name} (file {n_file} of {len(sources)})…"
             if progress is not None:
                 progress(0, 0, text)
@@ -98,9 +104,9 @@ class SleapAdapter(PoseAdapter):
                     progress(n_done, n_frames, text)
                 if not isinstance(lf.video.filename, str):
                     continue
-                video_basename = Path(lf.video.filename).name
+                video_basename = str(lf.video.filename).replace("\\", "/").rsplit("/", 1)[-1]
                 matches = [
-                    m for m in basename_to_cells.get(video_basename, []) if m in cells_info
+                    m for m in matcher.matches(lf.video.filename) if m in cells_info
                 ]
                 if not matches and unmatched is not None and video_basename not in unmatched:
                     unmatched.append(video_basename)
@@ -189,15 +195,14 @@ class SleapAdapter(PoseAdapter):
         """Return a mapping of (experiment, trial, camera) -> source .slp file path.
 
         Reads the video references embedded in each SLP file and matches them
-        against trials_df using the same basename lookup used during load.
+        against trials_df using the same path matching used during load.
         """
-        basename_to_trial_cam = basename_lookup(trials_df, cameras)
+        matcher = VideoMatcher(trials_df, cameras)
         file_map: dict[tuple[str, str, str], Path] = {}
         for slp_path in files:
             labels = sio.load_file(str(slp_path))
             for video in labels.videos:
-                basename = Path(video.filename).name
-                for key in basename_to_trial_cam.get(basename, []):
+                for key in matcher.matches(video.filename):
                     file_map[key] = slp_path
         return file_map
 
@@ -222,7 +227,7 @@ class SleapAdapter(PoseAdapter):
         - output_dir (Phase 17 export view): one {camera}_{trial}.slp per cell with data
 
         Each file is written once with all of its videos.  If the file already
-        exists, its skeletons, videos (matched by basename), suggestions,
+        exists, its skeletons, videos (matched by path), suggestions,
         tracks, sessions, ROIs, masks and provenance are kept; the labeled
         frames inside the trials' frame ranges are replaced.  Everything the
         project does not cover is kept untouched: videos that are not trial
@@ -240,7 +245,7 @@ class SleapAdapter(PoseAdapter):
         cells_info = {
             cell: info for cell, info in video_cells(trials_df, cameras).items()
         }
-        ranges = _video_ranges(cells_info, _cell_ends(trials_df, cameras))
+        ends = _cell_ends(trials_df, cameras)
         df = normalize_index(df)
         trial_groups = (
             {k: g for k, g in df.groupby(level=["experiment", "trial"], sort=False)}
@@ -270,11 +275,12 @@ class SleapAdapter(PoseAdapter):
 
         made: dict[int, object] = {}
         for path, cells in targets.items():
+            matcher = _video_matcher(trials_df, cameras, root, kwargs.get("video_roots"), path)
             new_skeleton = _new_file_skeleton(path, cells, skeletons, skeleton)
             key = id(new_skeleton)
             if key not in made:
                 made[key] = _make_skeleton(new_skeleton, df)
-            self._write_file(path, cells, trial_groups, made[key], cells_info, ranges, root)
+            self._write_file(path, cells, trial_groups, made[key], cells_info, matcher, ends)
         return len(targets)
 
     # -- Internal --------------------------------------------------------------
@@ -306,8 +312,8 @@ class SleapAdapter(PoseAdapter):
         trial_groups: dict[tuple[str, str], pd.DataFrame],
         sio_skeleton,
         cells_info: dict[Cell, tuple[str, int]],
-        ranges: dict[str, list[tuple[int, int | None]]],
-        root: Path | None,
+        matcher: VideoMatcher,
+        ends: dict[Cell, int],
     ) -> None:
         existing = sio.load_file(str(path)) if path.exists() else None
 
@@ -317,21 +323,25 @@ class SleapAdapter(PoseAdapter):
             skeleton = existing.skeletons[0]
 
         existing_videos = {}
+        ranges = {}
         if existing is not None:
             for video in existing.videos:
                 if isinstance(video.filename, str):
-                    existing_videos[Path(video.filename).name] = video
+                    matches = matcher.matches(video.filename)
+                    if matches:
+                        ranges[id(video)] = [(cells_info[c][1], ends.get(c)) for c in matches]
+                    for cell in matches:
+                        if cell in existing_videos:
+                            raise ValueError(f"Several SLEAP videos match {cell}: {video.filename}")
+                        existing_videos[cell] = video
 
         written: list = []
         labeled_frames: list = []
         for cell in cells:
             filename, start = cells_info[cell]
-            video = existing_videos.get(Path(filename).name)
+            video = existing_videos.get(cell)
             if video is None:
-                video_filename = (
-                    str((root / "experiments" / cell[0] / "videos" / filename).absolute())
-                    if root is not None else filename
-                )
+                video_filename = str(matcher.cell_paths[cell])
                 video = sio.Video(filename=video_filename, open_backend=False)
             if not any(v is video for v in written):
                 written.append(video)
@@ -351,18 +361,20 @@ class SleapAdapter(PoseAdapter):
         os.replace(tmp_path, path)
 
 
-def _video_ranges(
-    cells_info: dict[Cell, tuple[str, int]], cell_ends: dict[Cell, int]
-) -> dict[str, list[tuple[int, int | None]]]:
-    """Trial video basename -> the (first, last) video frames of its trials; last None if open."""
-    ranges: dict[str, list[tuple[int, int | None]]] = {}
-    for cell, (filename, start) in cells_info.items():
-        ranges.setdefault(Path(filename).name, []).append((start, cell_ends.get(cell)))
-    return ranges
-
-
-def _video_name(video) -> str | None:
-    return Path(video.filename).name if isinstance(video.filename, str) else None
+def _video_matcher(trials, cameras, root=None, video_roots=None, source=None, video_aliases=None):
+    config = {}
+    if root is not None:
+        config_path = root / "project.toml"
+        if config_path.exists():
+            config = toml.load(config_path)
+    if video_roots is None:
+        video_roots = read_video_roots(config)
+    source_key = ""
+    if source is not None and root is not None and source.is_relative_to(root):
+        source_key = source.relative_to(root).as_posix()
+    aliases = (video_aliases if video_aliases is not None else config.get("slp_video_paths", {})).get(source_key, {})
+    aliases = {name: resolve_root(value, config) for name, value in aliases.items()}
+    return VideoMatcher(trials, cameras, root, video_roots, aliases)
 
 
 def _in_ranges(frame_idx: int, ranges: list[tuple[int, int | None]]) -> bool:
@@ -376,8 +388,8 @@ def _merge_existing(
 ):
     """Labels with the new frames of the written videos and the rest of existing kept.
 
-    Videos that are not trial videos (their basename is in no trial, or they
-    are image sequences) are kept with all their frames, in the file's order;
+    Videos that are not matched to trial videos (or are image sequences) are
+    kept with all their frames, in the file's order;
     trial videos are kept only if written, with their frames outside every
     trial's range.  Suggestions, ROIs and masks of the kept videos are kept,
     unless they belong to a replaced instance, and sessions whose frames are
@@ -385,7 +397,7 @@ def _merge_existing(
     """
     written_ids = {id(v) for v in written}
     videos = [
-        v for v in existing.videos if id(v) in written_ids or _video_name(v) not in ranges
+        v for v in existing.videos if id(v) in written_ids or id(v) not in ranges
     ]
     videos += [v for v in written if not any(v is k for k in videos)]
     video_ids = {id(v) for v in videos}
@@ -393,7 +405,7 @@ def _merge_existing(
     kept_frames = [
         lf for lf in existing.labeled_frames
         if id(lf.video) in video_ids
-        and not _in_ranges(lf.frame_idx, ranges.get(_video_name(lf.video), []))
+        and not _in_ranges(lf.frame_idx, ranges.get(id(lf.video), []))
     ]
     kept_frame_ids = {id(lf) for lf in kept_frames}
     kept_instance_ids = {id(inst) for lf in kept_frames for inst in lf.instances}

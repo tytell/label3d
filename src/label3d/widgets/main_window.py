@@ -47,6 +47,7 @@ from label3d.state import ProjectState
 from label3d.version import project_version, version_string
 from label3d.video import FrameProvider
 from label3d.widgets.add_axis_take_dialog import AddAxisTakeDialog
+from label3d.widgets.add_videos_dialog import AddVideosDialog
 from label3d.widgets.axis_alignment_view import AxisAlignmentView
 from label3d.widgets.calibration_view import CalibrationView
 from label3d.widgets.camera_grid import CameraGrid, LayoutMode
@@ -274,6 +275,8 @@ class MainWindow(QMainWindow):
         self._sync_action = sync_action
         setup_slp_action = file_menu.addAction("Set up Sleap files...")
         setup_slp_action.triggered.connect(self._do_setup_slp)
+        add_videos_action = file_menu.addAction("Add videos from SLEAP...")
+        add_videos_action.triggered.connect(self._do_add_videos)
         import_action = file_menu.addAction("Import predictions...")
         import_action.setToolTip(
             "Read .slp prediction files (e.g. from sleap-nn track) into label3d"
@@ -900,7 +903,7 @@ class MainWindow(QMainWindow):
             return
         self._state.current_experiment = name  # auto-saves dirty store + emits signal
 
-    def _on_experiment_state_changed(self, name: str):
+    def _on_experiment_state_changed(self, name: str, read_slp: bool = True):
         """Reload everything after an experiment switch."""
         # Save current (trial, frame) before the project switches
         old_exp = self._project.active_experiment
@@ -941,7 +944,8 @@ class MainWindow(QMainWindow):
         self._refresh_calibration_combo()
         self._update_calibration_status()
         self._update_sync_action()
-        self._read_slp_on_open()
+        if read_slp:
+            self._read_slp_on_open()
 
     # -- Calibration switching -------------------------------------------------
 
@@ -1730,6 +1734,43 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(f"Triangulation failed: {msg}")
 
     # -- SLP setup -----------------------------------------------------------
+
+    def _do_add_videos(self) -> None:
+        if any(worker is not None and worker.isRunning() for worker in (
+            self._merge_tri_worker, self._all_tri_worker, self._switch_tri_worker,
+            self._export_worker,
+            getattr(self._calibration_view, "_detection_worker", None),
+            getattr(self._calibration_view, "_calibration_worker", None),
+            getattr(self._calibration_view, "_refine_worker", None),
+        )):
+            QMessageBox.information(self, "Add videos", "Wait for the current operation to finish before adding videos.")
+            return
+        dialog = AddVideosDialog(self._project, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.addition_result is None:
+            return
+        result = dialog.addition_result
+        result.refresh(self._project)
+        active = self._project.active_experiment
+        self._exp_combo.blockSignals(True)
+        self._exp_combo.clear()
+        self._exp_combo.addItems(sorted(self._project.experiments))
+        self._exp_combo.setCurrentText(active)
+        self._exp_combo.blockSignals(False)
+        several = len(self._project.experiments) > 1
+        self._exp_label.setVisible(several)
+        self._exp_combo.setVisible(several)
+        self._on_experiment_state_changed(active, read_slp=False)
+        self._state.set_skeletons(self._project.skeletons)
+        self._label_view.set_skeleton(self._project.skeleton)
+        message = (
+            f"Added {result.n_videos} video(s), {result.n_trials} new trial(s), "
+            f"and {result.n_experiments} new experiment(s).\n\n"
+            f"Imported {result.n_points} SLEAP point(s) for the selected videos. "
+            "Calibrate new experiments before triangulating their points.\n\n"
+            f"Backup: {result.backup_dir}"
+        )
+        self._status_bar.showMessage(f"Added {result.n_videos} videos from SLEAP")
+        QMessageBox.information(self, "Videos added", message)
 
     def _busy_dialog(self, text: str, title: str) -> QProgressDialog:
         progress = QProgressDialog(text, None, 0, 0, self)

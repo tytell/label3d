@@ -1766,6 +1766,15 @@ def execute_setup(config: SetupConfig, assignment: FileAssignment) -> Path:
         skeleton=skeleton_section,
         camera_aliases=config.camera_aliases,
         alignment=_extracted_frames_config(assignment),
+        discovery={
+            "match_strategy": config.match_strategy,
+            "trial_keyword": config.trial_keyword, "trial_regex": config.trial_regex,
+            "calib_regex": config.calib_regex or r"cal\d+",
+            "calib_keywords": config.effective_calib_keywords(),
+            "mtime_window_sec": config.mtime_window_sec,
+            "datestamp_window_sec": config.datestamp_window_sec,
+            "search_dirs": [str(p) for p in config.video_search_dirs],
+        },
     )
 
     return out
@@ -1898,6 +1907,7 @@ def write_project_toml(
     skeleton: dict | None = None,
     camera_aliases: dict[str, list[str]] | None = None,
     alignment: dict | None = None,
+    discovery: dict | None = None,
 ) -> Path:
     """Write project.toml to the project directory.
 
@@ -1927,6 +1937,8 @@ def write_project_toml(
         }
     if alignment:
         config_data["alignment"] = alignment
+    if discovery:
+        config_data["discovery"] = discovery
 
     path = project_dir / "project.toml"
     version.write_project_toml(path, config_data, new_project=True)
@@ -2198,7 +2210,7 @@ def _run_match_strategy(
     if strategy == "number":
         return _match_by_number(videos, strip_names)
     if strategy == "keyword":
-        return _match_by_keyword(videos, config.trial_keyword)
+        return _match_by_keyword(videos, config.trial_keyword, strip_names)
     if strategy == "regex":
         return _match_by_regex(videos, config.trial_regex)
     if strategy == "datestamp":
@@ -2326,7 +2338,10 @@ def _identify_camera(
     for cam, cam_aliases in (aliases or {}).items():
         names += [(alias, cam) for alias in cam_aliases]
     matches = sorted(
-        ((name, cam) for name, cam in names if name.lower() in filename_lower),
+        ((name, cam) for name, cam in names if (
+            re.search(r"(?<![A-Za-z0-9])" + re.escape(name) + r"(?![A-Za-z0-9])", filename, re.IGNORECASE)
+            if len(name) == 1 else name.lower() in filename_lower
+        )),
         key=lambda m: len(m[0]),
         reverse=True,
     )
@@ -2486,6 +2501,7 @@ def _extract_trial_key_datestamp(
 def _match_by_keyword(
     files: list[tuple[str, Path]],
     trial_keyword: str,
+    strip_names: list[str] | None = None,
 ) -> dict[str, dict[str, Path]]:
     """Match files into trials by a keyword+number pattern in the filename.
 
@@ -2497,7 +2513,13 @@ def _match_by_keyword(
     """
     key_groups: dict[str, dict[str, Path]] = {}
     for camera, filepath in files:
-        stem = re.sub(re.escape(camera), "", filepath.stem, flags=re.IGNORECASE).strip("_- ")
+        stem = filepath.stem
+        for name in strip_names or [camera]:
+            pattern = re.escape(name)
+            if len(name) == 1:
+                pattern = r"(?<![A-Za-z0-9])" + pattern + r"(?![A-Za-z0-9])"
+            stem = re.sub(pattern, "", stem, flags=re.IGNORECASE)
+        stem = stem.strip("_- ")
         pattern = re.compile(re.escape(trial_keyword) + r"\d+", re.IGNORECASE)
         m = pattern.search(stem)
         if m is None:

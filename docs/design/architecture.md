@@ -27,6 +27,8 @@ label3d/
 ├── alignment.py                 # ✓ [alignment] record, status, compute_alignment from clicks (Phase 16)
 ├── alignment_picks.py           # ✓ alignment_picks.parquet: saved axis clicks (Phase 16)
 ├── axis_takes.py                # ✓ Adding axis takes later: from files or a frame of a take/trial (Phase 16)
+├── add_videos.py                # ✓ Discover, validate and stage additional SLEAP trials/experiments
+├── video_matching.py            # ✓ Full-path/suffix matching; ambiguous basenames are rejected
 ├── instance_init.py             # ✓ random / average / reprojected instance init strategies
 ├── export.py                    # ✓ Parquet/CSV export (aligned 3D) and pre-flight checks, no Qt (Phases 13, 16)
 ├── export_cli.py                # ✓ label3d-export command line tool (Phase 13)

@@ -58,7 +58,7 @@ Project
 **Key design properties:**
 - `trials.csv` is **global** at the project root; it has an `experiment` column so all experiments' trials live in one file. Trial names may repeat across experiments and are disambiguated by the `experiment` value.
 - Each experiment has its own calibration registry and `points.parquet` — per-experiment because each has a distinct calibration and independent label data.
-- `.slp` files live in the top-level `slp/` folder, each in a folder of its own (`slp/{stem}/{name}.slp`) so that SLEAP's `models/` folder for it can sit beside it; `Project.slp_files()` finds them recursively, leaving out `models/` (SLEAP writes each model's training labels there as `.slp` files) and `backup/`. Older projects with the files directly in `slp/` still load. Sync rewrites only what the project covers: the labeled frames of trial videos inside each trial's `_start`–`_end`. Videos that are in no trial, with their frames and suggestions, and frames of trial videos outside every trial's range, are kept untouched, as are all skeletons, tracks, sessions, ROIs and masks that don't depend on rewritten frames (`_merge_existing` in `sleap_adapter.py`). The adapter receives the full global `trials.csv` and resolves which `(experiment, trial, camera)` each file belongs to by matching video basenames across all rows.
+- `.slp` files live in the top-level `slp/` folder, each in a folder of its own (`slp/{stem}/{name}.slp`) so that SLEAP's `models/` folder for it can sit beside it; `Project.slp_files()` finds them recursively, leaving out `models/` (SLEAP writes each model's training labels there as `.slp` files) and `backup/`. Older projects with the files directly in `slp/` still load. Sync rewrites only what the project covers: the labeled frames of trial videos inside each trial's `_start`–`_end`. Videos that are in no trial, with their frames and suggestions, and frames of trial videos outside every trial's range, are kept untouched, as are all skeletons, tracks, sessions, ROIs and masks that don't depend on rewritten frames (`_merge_existing` in `sleap_adapter.py`). The adapter receives the full global `trials.csv` and resolves each `(experiment, trial, camera)` using full paths, then path suffixes, and finally unambiguous basenames across all rows.
 - The points row index is `(experiment, trial, frame, instance, bodypart)` — the `experiment` level is constant within a single file but allows cross-experiment aggregation via plain `pd.concat`.
 - The calibration in use for each experiment is the registry entry named in `[calibration.active]` of `project.toml`; the geometry stack (triangulation, epipolar lines) always sees exactly one `CameraGroup` per experiment.
 - An experiment's axis alignment (Phase 16) is a rotation and origin in `[alignment]` of `project.toml`, applied to 3D points only as they leave label3d; see [Axis alignment](#axis-alignment-phase-16).
@@ -281,6 +281,25 @@ cam0 = { file = "PS18_PreCal_cam0.mp4", frame = 1 }
 **In exports**: a Parquet export records each experiment's alignment in its key-value metadata under `label3d.alignment`: JSON `{experiment: {"R": rows, "origin": [...], "calibration": id}}` (`export.read_alignment_metadata`). CSV gets nothing extra.
 
 **Camera aliases**: `[camera_aliases]` maps a camera to the other names it has in file names. Setup writes it from `SetupConfig.camera_aliases`; **Add axis take** uses it to match files to cameras (`Project.camera_aliases`).
+
+**Incremental registration.** **File > Add videos from SLEAP...** reads the mapped
+SLP files' video lists and proposes additions to `trials.csv` and `[slp.files]`
+(`add_videos.py`). `[discovery]` retains trial matching rules, calibration take
+keywords/regex, and extra search folders; setup writes these defaults for new
+projects. Search folders support the same `{drive}/rest` spelling as video roots.
+Explicit video relocations that cannot be matched structurally are saved under
+`[slp_video_paths."slp/<folder>/<file>.slp"]`, mapping each recorded video path to
+its accepted current path (also supporting named drives). These mappings are
+scoped to the source SLP file and are used on subsequent reads and writes.
+
+`VideoMatcher` prefers full paths, then the longest matching suffix, with unique
+basename fallback. A path naming a different experiment under a known collection
+does not fall back to an old experiment's video just because the basename is the
+same. Sync writes reuse the matched SLEAP video objects and preserve unrelated
+videos. Registering new videos never writes the SLP files. Replaced metadata,
+points and sync history are backed up under `import_backup/<timestamp>/` before
+staged files are committed; a failed commit restores them. The live project and
+GUI are refreshed on the main thread after the background operation completes.
 
 These tables and the clicks file are optional, so projects without them are valid as they are; no upgrade step adds them.
 

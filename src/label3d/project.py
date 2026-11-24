@@ -1026,6 +1026,33 @@ class Project:
             exp.axis_takes = _parse_rows(rows, cameras, AXIS)
         self.trials_df = trials_df
 
+    def refresh_trials(self, trials_df: pd.DataFrame | None = None) -> None:
+        """Refresh experiments, trials and takes after registering new videos.
+
+        Keeps the live points store; the window reloads it on the main thread
+        after an import has committed its updated points files.
+        """
+        trials_df = read_trials_csv(self.trials_csv_path) if trials_df is None else trials_df
+        roots = read_video_roots(self.config)
+        experiments = {}
+        for name in trials_df["experiment"].unique():
+            rows = trials_df[trials_df["experiment"] == name]
+            exp_dir = self.root / "experiments" / name
+            trials = _parse_rows(rows, self.cameras, TRIAL)
+            for trial in trials:
+                _resolve_trial_length(trial, exp_dir / "videos", roots.get(name), self.root)
+            calibrated, info = _read_camera_info(_active_calibration_path(self.config, name, exp_dir))
+            experiments[name] = ExperimentInfo(
+                name=name, root=exp_dir, cameras=list(self.cameras), trials=trials,
+                has_calibration=calibrated, camera_info=info,
+                calibration_takes=_parse_rows(rows, self.cameras, CALIBRATION),
+                axis_takes=_parse_rows(rows, self.cameras, AXIS), video_root=roots.get(name),
+            )
+        self.experiments, self.trials_df = experiments, trials_df
+        active = experiments[self.active_experiment]
+        self.trials = active.trials
+        self.has_calibration, self.camera_info = active.has_calibration, active.camera_info
+
     def reload_calibration(self, experiment: str | None = None) -> None:
         """Re-read an experiment's active calibration (default: the active
         experiment), after the pointer moved or a calibration was written."""

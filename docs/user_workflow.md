@@ -59,6 +59,41 @@ The first time you open it, assign videos to SLEAP files with **File > Set up Sl
 
 **Skeletons.** The skeletons come from the `.slp` files, and cameras may have different ones (a node a camera never sees can be left out of its model). Starting without `.slp` files, load one with **File > Load skeleton...** — a `skeleton.json` or any `.slp` file — for all cameras or, to give some cameras a smaller skeleton, for chosen ones. The first **Sync** then creates each `.slp` file with its cameras' skeleton. A file must hold cameras with the same skeleton, so with several skeletons use *one file per camera per experiment*.
 
+### Add trials or experiments after setup
+
+When new trial videos have been added to a SLEAP file in the project's `slp/`
+folder, choose **File > Add videos from SLEAP...**. It scans the mapped files'
+complete video lists, including videos with no labels or predictions yet.
+
+1. Review the proposed experiment, trial and camera for each new video. Existing
+   video roots and their shared parent folders are used to locate the recordings;
+   named drives work across Mac and Windows. A date in an experiment folder, such
+   as `20260805_zebrafish_1_synced_trimmed`, suggests `20260805`. Experiment names
+   are editable: recordings that need different calibrations need different
+   experiments, even when they share a date.
+2. Complete trial groups are selected together by default. Change the matching
+   keyword or regex and **Scan SLEAP files** again if the trial names are wrong.
+   Use **Add search folder...** or **Locate selected video...** for recordings
+   whose paths could not be resolved. You can assign a video to an existing
+   experiment or fill a missing camera in an existing trial; existing video
+   assignments cannot be replaced here.
+3. Choose **Add selected videos...**. For each new experiment, choose calibration
+   files or a folder. **Include subfolders** searches nested calibration folders.
+   Review each recording's take name and camera, or choose **Add calibration
+   later**. Calibration filenames do not need to contain the experiment's name.
+4. Confirm the additions. Trial videos stay in place. Calibration recordings are
+   copied into `experiments/<experiment>/calibrations/<camera>/`. The trial list,
+   video roots and SLEAP assignments are updated, and labels and predictions for
+   the selected videos are imported. New experiments appear in the selector
+   immediately. Calibrate them before triangulating their points.
+
+Scanning and cancelling write nothing. Registration keeps fresh backups of
+replaced files in `import_backup/<timestamp>/`, with a manifest of newly created
+files, and restores replaced files if a commit fails. It does not rewrite the
+SLEAP files; use **Sync with Sleap** afterwards when ready. Scanning again skips
+registered videos. The matching rules and extra search locations are remembered
+in `[discovery]` in `project.toml`.
+
 ## 2. Calibrate
 
 In the **Calibrate** tab, detect the charuco board in each calibration take and run the calibration. If an experiment has a take before and after the trials, label3d compares them and warns you if a camera seems to have moved in between.

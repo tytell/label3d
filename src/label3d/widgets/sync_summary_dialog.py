@@ -21,6 +21,7 @@ KIND_NAMES = {
     "close": "Sync on close",
     "import": "Import predictions",
     "setup": "Set up Sleap files",
+    "add": "Add videos from SLEAP",
 }
 
 COLUMNS = [
